@@ -3,115 +3,127 @@ module harmonics
   implicit none
   private
 
-  integer, allocatable, public :: nlon(:)
-  real(real64), allocatable :: mu(:), w(:), pnm(:, :, :)
-  integer :: current_T = -1
-
-  public :: init_harmonics, allocate_field
-  public :: field_to_a, a_to_field
+  type, public :: harmonic_transform
+    private
+    integer, allocatable :: nlon(:)
+    real(real64), allocatable :: mu(:), w(:), pnm(:, :, :)
+    integer :: current_T = -1
+  contains
+    procedure, public :: init
+    procedure, public :: allocate_field
+    procedure, public :: field_to_a
+    procedure, public :: a_to_field
+    procedure, public :: get_nlon
+  end type harmonic_transform
 
 contains
 
-  subroutine gauss_legendre(T)
+  subroutine gauss_legendre(this)
     use lapack_interfaces, only: dstev
 
-    integer, intent(in) :: T
+    class(harmonic_transform), intent(inout) :: this
     real(real64), allocatable :: e(:), z(:, :), work(:)
-    integer :: n, k, info
+    integer :: T, n, k, info
 
+    T = this%current_T
     n = 2*(T + 1)
-    allocate (mu(n))
-    allocate (w(n))
+    allocate (this%mu(n))
+    allocate (this%w(n))
     allocate (e(max(1, n - 1)))
     allocate (z(n, n))
     allocate (work(max(1, 2*n - 2)))
 
-    mu(:) = 0.0_real64
+    this%mu(:) = 0.0_real64
     do k = 1, n - 1
       e(k) = real(k, real64)/sqrt(4.0_real64*real(k, real64)**2 - 1.0_real64)
     end do
 
-    call dstev('V', n, mu, e, z, n, work, info)
+    call dstev('V', n, this%mu, e, z, n, work, info)
 
     if (info /= 0) error stop "DSTEV failed"
 
-    w(:) = 2.0_real64*z(1, :)**2
+    this%w(:) = 2.0_real64*z(1, :)**2
   end subroutine gauss_legendre
 
-  subroutine associated_legendre(T)
-    integer, intent(in) :: T
+  subroutine associated_legendre(this)
+    class(harmonic_transform), intent(inout) :: this
     real(real64) :: x, s, anm, bnm
-    integer :: j, n, m
+    integer :: T, j, n, m
 
-    allocate (pnm(2*(T + 1), 0:T, 0:T))
+    T = this%current_T
+    allocate (this%pnm(2*(T + 1), 0:T, 0:T))
 
-    pnm = 0.0_real64
+    this%pnm = 0.0_real64
     do j = 1, 2*(T + 1)
-      pnm(j, 0, 0) = 1.0_real64
-      x = mu(j)
+      this%pnm(j, 0, 0) = 1.0_real64
+      x = this%mu(j)
       s = sqrt(max(0.0_real64, 1.0_real64 - x*x))
       do m = 1, T
-        pnm(j, m, m) = sqrt(real(2*m + 1, real64)/real(2*m, real64))*s*pnm(j, m - 1, m - 1)
+        this%pnm(j, m, m) = sqrt(real(2*m + 1, real64)/real(2*m, real64))*s*this%pnm(j, m - 1, m - 1)
       end do
       do m = 0, T - 1
-        pnm(j, m + 1, m) = sqrt(real(2*m + 3, real64))*x*pnm(j, m, m)
+        this%pnm(j, m + 1, m) = sqrt(real(2*m + 3, real64))*x*this%pnm(j, m, m)
       end do
       do m = 0, T
         do n = m + 2, T
           anm = sqrt(real(4*n*n - 1, real64)/real(n*n - m*m, real64))
           bnm = sqrt(real((2*n + 1)*((n - 1)*(n - 1) - m*m), real64)/real((2*n - 3)*(n*n - m*m), real64))
-          pnm(j, n, m) = anm*x*pnm(j, n - 1, m) - bnm*pnm(j, n - 2, m)
+          this%pnm(j, n, m) = anm*x*this%pnm(j, n - 1, m) - bnm*this%pnm(j, n - 2, m)
         end do
       end do
     end do
   end subroutine associated_legendre
 
-  subroutine init_harmonics(T)
+  subroutine init(this, T)
+    class(harmonic_transform), intent(inout) :: this
     integer, intent(in) :: T
     integer :: G, j
 
-    if (T < 0) error stop "init_harmonics: T must be non-negative"
+    if (T < 0) error stop "init: T must be non-negative"
 
-    if (allocated(mu)) deallocate (mu)
-    if (allocated(w)) deallocate (w)
-    if (allocated(pnm)) deallocate (pnm)
-    if (allocated(nlon)) deallocate (nlon)
+    if (allocated(this%mu)) deallocate (this%mu)
+    if (allocated(this%w)) deallocate (this%w)
+    if (allocated(this%pnm)) deallocate (this%pnm)
+    if (allocated(this%nlon)) deallocate (this%nlon)
 
-    call gauss_legendre(T)
-    call associated_legendre(T)
+    this%current_T = T
+    call gauss_legendre(this)
+    call associated_legendre(this)
 
     G = T + 1
-    allocate (nlon(2*G))
+    allocate (this%nlon(2*G))
     do j = 1, G
-      nlon(j) = 20 + 4*(j - 1)
-      nlon(2*G + 1 - j) = nlon(j)
+      this%nlon(j) = 20 + 4*(j - 1)
+      this%nlon(2*G + 1 - j) = this%nlon(j)
     end do
+  end subroutine init
 
-    current_T = T
-  end subroutine init_harmonics
-
-  subroutine allocate_field(T, field)
-    integer, intent(in) :: T
+  subroutine allocate_field(this, field)
+    class(harmonic_transform), intent(in) :: this
     real(real64), allocatable, intent(out) :: field(:, :)
+    integer :: T
 
-    if (T < 0) error stop "allocate_field: T must be non-negative"
+    call check_transform_state(this)
+
+    T = this%current_T
     allocate (field(4*(T + 1) + 16, 2*(T + 1)))
   end subroutine allocate_field
 
-  subroutine field_to_a(T, field, a)
-    integer, intent(in) :: T
+  subroutine field_to_a(this, field, a)
+    class(harmonic_transform), intent(in) :: this
     real(real64), intent(in) :: field(:, :)
     complex(real64), allocatable, intent(out) :: a(:, :)
 
-    integer :: nlat, nlon_j, mmax_j
+    integer :: T, nlat, nlon_j, mmax_j
     integer :: j, k, n, m
     real(real64) :: pi, angle
     complex(real64) :: phase
     complex(real64), allocatable :: fm(:)
 
-    call check_transform_state(T)
-    call check_field_shape(T, field)
+    call check_transform_state(this)
+    call check_field_shape(this, field)
 
+    T = this%current_T
     nlat = 2*(T + 1)
     pi = acos(-1.0_real64)
 
@@ -123,7 +135,7 @@ contains
       fm = cmplx(0.0_real64, 0.0_real64, kind=real64)
 
       do j = 1, nlat
-        nlon_j = nlon(j)
+        nlon_j = this%nlon(j)
         mmax_j = min(T, nlon_j/2 - 1)
         if (m > mmax_j) cycle
 
@@ -137,25 +149,26 @@ contains
 
       do n = m, T
         do j = 1, nlat
-          a(n, m) = a(n, m) + 0.5_real64*w(j)*pnm(j, n, m)*fm(j)
+          a(n, m) = a(n, m) + 0.5_real64*this%w(j)*this%pnm(j, n, m)*fm(j)
         end do
       end do
     end do
   end subroutine field_to_a
 
-  subroutine a_to_field(T, a, field)
-    integer, intent(in) :: T
+  subroutine a_to_field(this, a, field)
+    class(harmonic_transform), intent(in) :: this
     complex(real64), intent(in) :: a(0:, 0:)
     real(real64), allocatable, intent(out) :: field(:, :)
 
-    integer :: nlat, nlon_j, mmax_j
+    integer :: T, nlat, nlon_j, mmax_j
     integer :: j, k, n, m
     real(real64) :: pi, angle
     complex(real64) :: phase
     complex(real64), allocatable :: fm(:)
 
-    call check_transform_state(T)
+    call check_transform_state(this)
 
+    T = this%current_T
     if (ubound(a, 1) < T .or. ubound(a, 2) < T) then
       error stop "a_to_field: a must contain indices 0:T,0:T"
     end if
@@ -163,7 +176,7 @@ contains
     nlat = 2*(T + 1)
     pi = acos(-1.0_real64)
 
-    call allocate_field(T, field)
+    call this%allocate_field(field)
     field = 0.0_real64
     allocate (fm(nlat))
 
@@ -171,16 +184,16 @@ contains
       fm = cmplx(0.0_real64, 0.0_real64, kind=real64)
 
       do j = 1, nlat
-        mmax_j = min(T, nlon(j)/2 - 1)
+        mmax_j = min(T, this%nlon(j)/2 - 1)
         if (m > mmax_j) cycle
 
         do n = m, T
-          fm(j) = fm(j) + a(n, m)*pnm(j, n, m)
+          fm(j) = fm(j) + a(n, m)*this%pnm(j, n, m)
         end do
       end do
 
       do j = 1, nlat
-        nlon_j = nlon(j)
+        nlon_j = this%nlon(j)
         mmax_j = min(T, nlon_j/2 - 1)
         if (m > mmax_j) cycle
 
@@ -198,22 +211,34 @@ contains
     end do
   end subroutine a_to_field
 
-  subroutine check_transform_state(T)
-    integer, intent(in) :: T
+  subroutine check_transform_state(this)
+    class(harmonic_transform), intent(in) :: this
 
-    if (current_T /= T) then
-      error stop "harmonics: call init_harmonics(T) before transforming"
+    if (this%current_T < 0) then
+      error stop "harmonics: call init(T) before using the transform"
     end if
-    if (.not. allocated(w) .or. .not. allocated(pnm) .or. .not. allocated(nlon)) then
+    if (.not. allocated(this%w) .or. .not. allocated(this%pnm) .or. .not. allocated(this%nlon)) then
       error stop "harmonics: transform tables are not initialized"
     end if
   end subroutine check_transform_state
 
-  subroutine check_field_shape(T, field)
-    integer, intent(in) :: T
-    real(real64), intent(in) :: field(:, :)
-    integer :: nlat, max_nlon
+  function get_nlon(this) result(nlon)
+    class(harmonic_transform), intent(in) :: this
+    integer, allocatable :: nlon(:)
 
+    if (.not. allocated(this%nlon)) then
+      error stop "harmonics: call init(T) before accessing nlon"
+    end if
+
+    nlon = this%nlon
+  end function get_nlon
+
+  subroutine check_field_shape(this, field)
+    class(harmonic_transform), intent(in) :: this
+    real(real64), intent(in) :: field(:, :)
+    integer :: T, nlat, max_nlon
+
+    T = this%current_T
     nlat = 2*(T + 1)
     max_nlon = 4*(T + 1) + 16
 

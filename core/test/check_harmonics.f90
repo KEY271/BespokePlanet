@@ -1,20 +1,23 @@
 program check_harmonics
   use iso_fortran_env, only: real64
-  use harmonics, only: init_harmonics, allocate_field, field_to_a, a_to_field, nlon
+  use harmonics, only: harmonic_transform
   implicit none
 
   integer, parameter :: T = 63
+  type(harmonic_transform) :: transform
+  integer, allocatable :: nlon(:)
   real(real64), allocatable :: field(:, :), field2(:, :)
   complex(real64), allocatable :: a(:, :)
   integer :: j, k, npts
   real(real64) :: err, max_err, rms_err, rel_rms_err, sum_err2, sum_ref2
 
-  call allocate_field(T, field)
-  call init_harmonics(T)
+  call transform%init(T)
+  call transform%allocate_field(field)
+  nlon = transform%get_nlon()
 
   field = 1.0_real64
-  call field_to_a(T, field, a)
-  call a_to_field(T, a, field2)
+  call transform%field_to_a(field, a)
+  call transform%a_to_field(a, field2)
   call calc_error(field, field2)
 
 contains

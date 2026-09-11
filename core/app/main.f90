@@ -1,9 +1,9 @@
 program main
-  use iso_fortran_env, only: real64
-  use harmonics, only: init_harmonics
+  use harmonics, only: harmonic_transform
   implicit none
 
   integer :: T = 63
+  type(harmonic_transform) :: transform
 
-  call init_harmonics(T)
+  call transform%init(T)
 end program main
