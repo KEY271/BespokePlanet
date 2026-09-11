@@ -5,6 +5,7 @@ author = "KEY271"
 maintainer = "52455240+KEY271@users.noreply.github.com"
 copyright = "Copyright 2026, KEY271"
 [build]
+link = ["lapack", "blas"]
 auto-executables = true
 auto-tests = true
 auto-examples = true

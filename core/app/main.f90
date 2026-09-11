@@ -1,6 +1,9 @@
 program main
-  use core, only: say_hello
+  use iso_fortran_env, only: real64
+  use harmonics, only: init_harmonics
   implicit none
 
-  call say_hello()
+  integer :: T = 63
+
+  call init_harmonics(T)
 end program main
