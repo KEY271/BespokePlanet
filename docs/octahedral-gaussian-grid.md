@@ -82,7 +82,7 @@ $$
 スカラー場 $f(\lambda,\mu)$ を
 
 $$
-f(\lambda,\mu)=\sum_{n=0}^\infty e^{im\lambda}\sum_{m=-n}^n a_n^m P_n^{|m|}(\mu)
+f(\lambda,\mu)=\sum_{n=0}^\infty\sum_{m=-n}^ne^{im\lambda}a_n^m P_n^{|m|}(\mu)
 $$
 
 と展開する。逆変換は
@@ -104,7 +104,8 @@ $$
 とする。このとき
 
 $$
-a_n^m=\frac{1}{M_j}\sum_{j=1}^Lw_j\chi_j^mP^{|m|}_n(\mu_j)\sum_{k=0}^{M_j-1}f_{j,k}e^{-im\lambda},\\
+a_n^m=\frac{1}{2}\sum_{j=1}^Lw_j\chi_j^mP^{|m|}_n(\mu_j)
+\frac{1}{M_j}\sum_{k=0}^{M_j-1}f_{j,k}e^{-im\lambda_{j,k}},\\
 \chi_j^m=\begin{cases}
   1, & |m| \le m_j^\text{max}\\
   0, & |m| > m_j^\text{max}
@@ -114,7 +115,88 @@ $$
 として変換を定義する。逆変換は
 
 $$
-f_{j,k}=\sum_{m=-m_j^\text{max}}^{m_j^\text{max}}e^{im\lambda_{j,k}}\chi_j^m\sum_{n=|m|}^Ta_n^mP_n^{|m|}(\mu_j)
+f_{j,k}=\sum_{m=-T}^T\chi_j^m e^{im\lambda_{j,k}}\sum_{n=|m|}^Ta_n^mP_n^{|m|}(\mu_j)
 $$
 
 で与えられるが、正確には互いに逆にはならない。
+
+## スペクトル微分
+
+球面調和展開されたスカラー場
+
+$$
+f(\lambda,\varphi)
+=\sum_{n=0}^T\sum_{m=-n}^n
+e^{im\lambda}a_n^mP_n^{|m|}(\mu),
+\qquad \mu=\sin\varphi
+$$
+
+の微分は展開係数と基底関数から求まる。
+
+経度微分では Fourier 基底を解析的に微分できるため、各係数に $im$ を掛ければよい：
+
+$$
+\frac{\partial f}{\partial\lambda}
+=\sum_{n=0}^T\sum_{m=-n}^n
+e^{im\lambda}(im a_n^m)P_n^{|m|}(\mu)
+$$
+
+したがって経度微分用の係数は $d_n^m=im a_n^m$ である。ただし reduced grid のリング $j$ へ逆変換するときは、元の場と同じ切断を適用して
+
+$$
+\left(\frac{\partial f}{\partial\lambda}\right)_{j,k}
+=\sum_{m=-T}^T\chi_j^m e^{im\lambda_{j,k}}
+\sum_{n=|m|}^Td_n^mP_n^{|m|}(\mu_j)
+$$
+
+とする。
+
+緯度微分では $\partial/\partial\varphi=\cos\varphi\,\partial/\partial\mu$ を使う。ここで
+
+$$
+\epsilon_{n,p}
+=\sqrt{\frac{n^2-p^2}{4n^2-1}},
+\qquad n\geq1,\qquad 0\leq p\leq n,
+$$
+
+と置き、$\epsilon_{0,0}=0$ と定義する。正規化済み陪 Legendre 関数の漸化式から
+
+$$
+(1-\mu^2)\frac{dP_n^p}{d\mu}
+=(n+1)\epsilon_{n,p}P_{n-1}^p
+-n\epsilon_{n+1,p}P_{n+1}^p
+$$
+
+が成り立つ。$p=|m|$ として次数ごとに項を集め直すと、余弦を掛けた緯度微分は一種類の基底 $P_n^{|m|}$ だけを使って
+
+$$
+\cos\varphi\frac{\partial f}{\partial\varphi}
+=\sum_{m=-T}^T e^{im\lambda}
+\sum_{n=|m|}^{T+1}b_n^mP_n^{|m|}(\mu)
+$$
+
+と書ける。その係数は
+
+$$
+b_n^m
+=(n+2)\epsilon_{n+1,|m|}a_{n+1}^m
+-(n-1)\epsilon_{n,|m|}a_{n-1}^m,
+\qquad |m|\leq n\leq T+1,
+$$
+
+である。ただし、範囲 $|m|\leq k\leq T$ の外にある入力係数は $a_k^m=0$ とする。
+
+実装では、各 $m$ について $b_{|m|:T+1}^m$ をゼロで初期化し、各入力係数 $a_n^m$（$n=|m|,\dots,T$）に対して
+
+$$
+\begin{aligned}
+b_{n-1}^m &\leftarrow b_{n-1}^m+(n+1)\epsilon_{n,|m|}a_n^m
+&& (n>|m|),\\
+b_{n+1}^m &\leftarrow b_{n+1}^m-n\epsilon_{n+1,|m|}a_n^m
+&& (n\geq|m|)
+\end{aligned}
+$$
+
+と更新すればよい。
+
+$b_{T+1}^m=-T\epsilon_{T+1,|m|}a_T^m$ は一般にはゼロでないため、緯度微分では $n=T+1$ を使わなければならない。

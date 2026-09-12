@@ -6,13 +6,16 @@ module harmonics
   type, public :: harmonic_transform
     private
     integer, allocatable :: nlon(:)
-    real(real64), allocatable :: mu(:), w(:), pnm(:, :, :)
+    real(real64), allocatable :: w(:), pnm(:, :, :)
     integer :: current_T = -1
+    real(real64), allocatable, public :: mu(:)
   contains
     procedure, public :: init
     procedure, public :: allocate_field
-    procedure, public :: field_to_a
-    procedure, public :: a_to_field
+    procedure, public :: grid_to_spectral
+    procedure, public :: spectral_to_grid
+    procedure, public :: gradient
+    procedure, public :: gradient_to_grid
     procedure, public :: get_nlon
   end type harmonic_transform
 
@@ -51,7 +54,7 @@ contains
     integer :: T, j, n, m
 
     T = this%current_T
-    allocate (this%pnm(2*(T + 1), 0:T, 0:T))
+    allocate (this%pnm(2*(T + 1), 0:T + 1, 0:T))
 
     this%pnm = 0.0_real64
     do j = 1, 2*(T + 1)
@@ -61,11 +64,11 @@ contains
       do m = 1, T
         this%pnm(j, m, m) = sqrt(real(2*m + 1, real64)/real(2*m, real64))*s*this%pnm(j, m - 1, m - 1)
       end do
-      do m = 0, T - 1
+      do m = 0, T
         this%pnm(j, m + 1, m) = sqrt(real(2*m + 3, real64))*x*this%pnm(j, m, m)
       end do
       do m = 0, T
-        do n = m + 2, T
+        do n = m + 2, T + 1
           anm = sqrt(real(4*n*n - 1, real64)/real(n*n - m*m, real64))
           bnm = sqrt(real((2*n + 1)*((n - 1)*(n - 1) - m*m), real64)/real((2*n - 3)*(n*n - m*m), real64))
           this%pnm(j, n, m) = anm*x*this%pnm(j, n - 1, m) - bnm*this%pnm(j, n - 2, m)
@@ -109,7 +112,7 @@ contains
     allocate (field(4*(T + 1) + 16, 2*(T + 1)))
   end subroutine allocate_field
 
-  subroutine field_to_a(this, field, a)
+  subroutine grid_to_spectral(this, field, a)
     class(harmonic_transform), intent(in) :: this
     real(real64), intent(in) :: field(:, :)
     complex(real64), allocatable, intent(out) :: a(:, :)
@@ -127,7 +130,7 @@ contains
     nlat = 2*(T + 1)
     pi = acos(-1.0_real64)
 
-    allocate (a(0:T, 0:T))
+    allocate (a(0:T + 1, 0:T))
     allocate (fm(nlat))
     a = cmplx(0.0_real64, 0.0_real64, kind=real64)
 
@@ -153,9 +156,9 @@ contains
         end do
       end do
     end do
-  end subroutine field_to_a
+  end subroutine grid_to_spectral
 
-  subroutine a_to_field(this, a, field)
+  subroutine spectral_to_grid(this, a, field)
     class(harmonic_transform), intent(in) :: this
     complex(real64), intent(in) :: a(0:, 0:)
     real(real64), allocatable, intent(out) :: field(:, :)
@@ -167,12 +170,9 @@ contains
     complex(real64), allocatable :: fm(:)
 
     call check_transform_state(this)
+    call check_spectral_shape(this, a, "spectral_to_grid")
 
     T = this%current_T
-    if (ubound(a, 1) < T .or. ubound(a, 2) < T) then
-      error stop "a_to_field: a must contain indices 0:T,0:T"
-    end if
-
     nlat = 2*(T + 1)
     pi = acos(-1.0_real64)
 
@@ -187,7 +187,7 @@ contains
         mmax_j = min(T, this%nlon(j)/2 - 1)
         if (m > mmax_j) cycle
 
-        do n = m, T
+        do n = m, T + 1
           fm(j) = fm(j) + a(n, m)*this%pnm(j, n, m)
         end do
       end do
@@ -209,7 +209,55 @@ contains
         end do
       end do
     end do
-  end subroutine a_to_field
+  end subroutine spectral_to_grid
+
+  subroutine gradient(this, a, zonal, meridional)
+    class(harmonic_transform), intent(in) :: this
+    complex(real64), intent(in) :: a(0:, 0:)
+    complex(real64), allocatable, intent(out) :: zonal(:, :), meridional(:, :)
+
+    ! Spectral coefficients of the cos(latitude)-scaled spherical gradient:
+    ! zonal = partial f / partial lambda,
+    ! meridional = cos(latitude) * partial f / partial phi.
+    integer :: T, n, m
+
+    call check_transform_state(this)
+    call check_spectral_shape(this, a, "gradient")
+
+    T = this%current_T
+    allocate (zonal(0:T + 1, 0:T), meridional(0:T + 1, 0:T))
+    zonal = cmplx(0.0_real64, 0.0_real64, kind=real64)
+    meridional = cmplx(0.0_real64, 0.0_real64, kind=real64)
+
+    do m = 0, T
+      do n = m, T
+        zonal(n, m) = cmplx(0.0_real64, real(m, real64), kind=real64)*a(n, m)
+        if (n > m) then
+          meridional(n - 1, m) = meridional(n - 1, m) + &
+                                 real(n + 1, real64)*legendre_epsilon(n, m)*a(n, m)
+        end if
+        meridional(n + 1, m) = meridional(n + 1, m) - &
+                               real(n, real64)*legendre_epsilon(n + 1, m)*a(n, m)
+      end do
+    end do
+  end subroutine gradient
+
+  subroutine gradient_to_grid(this, a, dfdlambda, dfdphi)
+    class(harmonic_transform) :: this
+    complex(real64), intent(in) :: a(0:, 0:)
+    real(real64), allocatable, intent(out) :: dfdlambda(:, :), dfdphi(:, :)
+    complex(real64), allocatable :: zonal_spec(:, :), meridional_spec(:, :)
+    integer :: j
+
+    call this%gradient(a, zonal_spec, meridional_spec)
+
+    call this%spectral_to_grid(zonal_spec, dfdlambda)
+    call this%spectral_to_grid(meridional_spec, dfdphi)
+
+    do j = 1, size(this%mu)
+      dfdphi(1:this%nlon(j), j) = dfdphi(1:this%nlon(j), j)/sqrt(1.0_real64 - this%mu(j)**2)
+    end do
+  end subroutine
 
   subroutine check_transform_state(this)
     class(harmonic_transform), intent(in) :: this
@@ -221,6 +269,33 @@ contains
       error stop "harmonics: transform tables are not initialized"
     end if
   end subroutine check_transform_state
+
+  subroutine check_spectral_shape(this, a, procedure_name)
+    class(harmonic_transform), intent(in) :: this
+    complex(real64), intent(in) :: a(0:, 0:)
+    character(*), intent(in) :: procedure_name
+    integer :: T
+
+    T = this%current_T
+    if (ubound(a, 1) < T + 1 .or. ubound(a, 2) < T) then
+      error stop procedure_name//": a must contain indices 0:T+1,0:T"
+    end if
+  end subroutine check_spectral_shape
+
+  pure function legendre_epsilon(n, m) result(value)
+    integer, intent(in) :: n, m
+    real(real64) :: value
+    real(real64) :: rn, rm
+
+    if (n == 0) then
+      value = 0.0_real64
+      return
+    end if
+
+    rn = real(n, real64)
+    rm = real(m, real64)
+    value = sqrt((rn*rn - rm*rm)/(4.0_real64*rn*rn - 1.0_real64))
+  end function legendre_epsilon
 
   function get_nlon(this) result(nlon)
     class(harmonic_transform), intent(in) :: this
