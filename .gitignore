@@ -1,1 +1,3 @@
 output
+viz/node_modules/
+__pycache__/

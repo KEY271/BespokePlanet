@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#07111d" />
+    <title>BespokePlanet — Flow Observatory</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="BespokePlanet home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span><b>BespokePlanet</b><small>FLOW OBSERVATORY</small></span>
+      </a>
+      <div class="run-picker">
+        <label for="run-select">SIMULATION</label>
+        <select id="run-select" aria-label="シミュレーションを選択"></select>
+      </div>
+      <div class="live-state"><span></span><b id="dataset-state">DATASET READY</b></div>
+    </header>
+
+    <main>
+      <section class="summary-row">
+        <div class="hero-meta" aria-label="シミュレーション概要">
+          <div><span>ELAPSED</span><strong id="elapsed">—</strong></div>
+          <div><span>GRID POINTS</span><strong id="point-count">—</strong></div>
+          <div><span>MAX SPEED</span><strong id="max-speed">—</strong></div>
+        </div>
+      </section>
+
+      <section class="visual-grid">
+        <article class="panel globe-panel">
+          <div class="panel-heading">
+            <div><span class="index">01</span><h2>Spherical field</h2></div>
+            <p>DRAG TO ROTATE · SCROLL TO ZOOM</p>
+          </div>
+          <div id="globe" class="viewport" aria-label="流速の三次元地球表示"></div>
+          <div class="coordinate-chip" id="globe-coordinate">λ 000.0° · φ 00.0°</div>
+        </article>
+
+        <article class="panel map-panel">
+          <div class="panel-heading">
+            <div><span class="index">02</span><h2>Equirectangular projection</h2></div>
+            <p>ALL GRID POINTS</p>
+          </div>
+          <div class="map-frame">
+            <div id="map" class="viewport" aria-label="流速の二次元正距円筒図法表示"></div>
+            <span class="axis-label north">90°N</span><span class="axis-label equator">EQ</span><span class="axis-label south">90°S</span>
+          </div>
+        </article>
+      </section>
+
+      <section class="transport" aria-label="再生コントロール">
+        <button id="play" class="play" type="button" aria-label="再生"><span></span></button>
+        <div class="timeline-wrap">
+          <div class="timeline-labels"><span>FRAME <b id="frame-number">00000</b></span><span id="time-label">T + 00:00:00</span></div>
+          <input id="timeline" type="range" min="0" max="0" value="0" step="1" aria-label="時刻" />
+        </div>
+        <label class="rate">RATE<select id="rate"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select></label>
+        <div class="legend">
+          <span>0</span><div class="legend-gradient"></div><span id="legend-max">— m s⁻¹</span>
+        </div>
+      </section>
+
+      <section class="panel diagnostics">
+        <div class="panel-heading">
+          <div><span class="index">03</span><h2>Conservation diagnostics</h2></div>
+          <p id="diagnostics-state">COMPUTING SPHERICAL INTEGRALS…</p>
+        </div>
+        <div class="metric-tabs" id="metric-tabs"></div>
+        <div class="chart-shell">
+          <canvas id="chart" aria-label="保存量の時系列グラフ"></canvas>
+          <div class="chart-readout"><span>CURRENT</span><strong id="metric-current">—</strong><small id="metric-drift">—</small></div>
+        </div>
+      </section>
+    </main>
+
+    <div id="fatal" class="fatal" role="alert" hidden></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

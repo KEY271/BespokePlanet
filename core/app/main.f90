@@ -15,8 +15,9 @@ program main
   implicit none
 
   integer, parameter :: T = 63
-  real(real64), parameter :: dt = 450.0_real64
-  real(real64), parameter :: duration = 24.0_real64*3600.0_real64
+  real(real64), parameter :: dt = 900.0_real64
+  real(real64), parameter :: duration = 10.0_real64*24.0_real64*3600.0_real64
+  integer, parameter :: output_interval_steps = 4
   integer(int64), parameter :: random_seed_value = 20260913_int64
   type(harmonic_transform) :: transform
   integer, allocatable :: nlon(:)
@@ -66,8 +67,10 @@ contains
     do step = 0, number_of_steps
       call solver%get_fields(zeta, u, v, cfl)
       maximum_cfl = max(maximum_cfl, cfl)
-      call write_snapshot(case_directory, step, nlon, zeta, u, v)
-      if (mod(step, 12) == 0 .or. step == number_of_steps) then
+      if (mod(step, output_interval_steps) == 0 .or. step == number_of_steps) then
+        call write_snapshot(case_directory, step, nlon, zeta, u, v)
+      end if
+      if (mod(step, 24) == 0 .or. step == number_of_steps) then
         write (*, '(2a,i0,a,f6.3)') trim(case_name), ': step ', step, ', CFL = ', cfl
       end if
       if (step < number_of_steps) call solver%advance()
@@ -81,8 +84,8 @@ contains
     end if
     initial_condition_json = make_initial_condition_json(initial_condition)
     call write_run_metadata(case_directory, case_name, initial_condition_json, T, dt, &
-                            duration, number_of_steps, maximum_cfl, elapsed_wall_seconds, &
-                            nlon, transform%mu)
+                            duration, number_of_steps, output_interval_steps, maximum_cfl, &
+                            elapsed_wall_seconds, nlon, transform%mu)
   end subroutine run_case
 
   function make_initial_condition_json(initial_condition) result(json)

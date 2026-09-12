@@ -55,16 +55,22 @@ contains
 
   subroutine write_run_metadata(case_directory, case_name, initial_condition_json, &
                                 truncation, time_step, duration, number_of_steps, &
-                                maximum_cfl, elapsed_wall_seconds, nlon, mu)
+                                snapshot_interval_steps, maximum_cfl, elapsed_wall_seconds, &
+                                nlon, mu)
     character(*), intent(in) :: case_directory, case_name, initial_condition_json
-    integer, intent(in) :: truncation, number_of_steps
+    integer, intent(in) :: truncation, number_of_steps, snapshot_interval_steps
     real(real64), intent(in) :: time_step, duration, maximum_cfl, elapsed_wall_seconds
     integer, intent(in) :: nlon(:)
     real(real64), intent(in) :: mu(:)
-    integer :: unit, point_count
+    integer :: unit, point_count, number_of_snapshots
 
     if (size(nlon) /= size(mu)) error stop 'metadata grid arrays have different sizes'
+    if (snapshot_interval_steps <= 0) error stop 'snapshot interval must be positive'
     point_count = sum(nlon)
+    number_of_snapshots = number_of_steps/snapshot_interval_steps + 1
+    if (mod(number_of_steps, snapshot_interval_steps) /= 0) then
+      number_of_snapshots = number_of_snapshots + 1
+    end if
     open (newunit=unit, file=trim(case_directory)//'/metadata.json', &
           status='replace', action='write')
     write (unit, '(a)') '{'
@@ -75,7 +81,10 @@ contains
     write (unit, '(a,es24.16e3,a)') '    "duration_seconds": ', duration, ','
     write (unit, '(a,es24.16e3,a)') '    "time_step_seconds": ', time_step, ','
     write (unit, '(a,i0,a)') '    "number_of_steps": ', number_of_steps, ','
-    write (unit, '(a,i0,a)') '    "number_of_snapshots": ', number_of_steps + 1, ','
+    write (unit, '(a,i0,a)') '    "snapshot_interval_steps": ', snapshot_interval_steps, ','
+    write (unit, '(a,es24.16e3,a)') &
+      '    "snapshot_interval_seconds": ', time_step*real(snapshot_interval_steps, real64), ','
+    write (unit, '(a,i0,a)') '    "number_of_snapshots": ', number_of_snapshots, ','
     write (unit, '(a)') '    "snapshot_time_seconds": "step * time_step_seconds"'
     write (unit, '(a)') '  },'
     write (unit, '(a)') '  "physical_constants": {'
