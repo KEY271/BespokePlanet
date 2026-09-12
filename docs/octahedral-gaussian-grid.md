@@ -141,15 +141,7 @@ $$
 e^{im\lambda}(im a_n^m)P_n^{|m|}(\mu)
 $$
 
-したがって経度微分用の係数は $d_n^m=im a_n^m$ である。ただし reduced grid のリング $j$ へ逆変換するときは、元の場と同じ切断を適用して
-
-$$
-\left(\frac{\partial f}{\partial\lambda}\right)_{j,k}
-=\sum_{m=-T}^T\chi_j^m e^{im\lambda_{j,k}}
-\sum_{n=|m|}^Td_n^mP_n^{|m|}(\mu_j)
-$$
-
-とする。
+したがって経度微分用の係数は $d_n^m=im a_n^m$ である。
 
 緯度微分では $\partial/\partial\varphi=\cos\varphi\,\partial/\partial\mu$ を使う。ここで
 
@@ -167,7 +159,7 @@ $$
 -n\epsilon_{n+1,p}P_{n+1}^p
 $$
 
-が成り立つ。$p=|m|$ として次数ごとに項を集め直すと、余弦を掛けた緯度微分は一種類の基底 $P_n^{|m|}$ だけを使って
+が成り立つ。$p=|m|$ として次数ごとに項を集め直すと、
 
 $$
 \cos\varphi\frac{\partial f}{\partial\varphi}
