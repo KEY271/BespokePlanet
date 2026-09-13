@@ -2,17 +2,20 @@ import * as THREE from "/vendor/three.module.js";
 
 const $ = (selector) => document.querySelector(selector);
 const state = {
-  runs: [], metadata: null, run: null, frameIndex: 0, speed: null,
-  scaleMax: 1, playing: false, rate: 1, lastTick: 0, accumulator: 0,
+  runs: [], metadata: null, run: null, field: null, frameIndex: 0, fieldValues: null,
+  frameRecord: null, scaleMode: "auto", scaleMax: 1, lockedScale: null,
+  playing: false, rate: 1, lastTick: 0, accumulator: 0,
   frameCache: new Map(), conservation: null, metricIndex: 0,
-  frameRequestId: 0, frameAbortController: null, playbackLoadPending: false,
+  globalScaleCache: new Map(), scaleRequestId: 0,
+  cacheGeneration: 0, frameRequestId: 0, frameAbortController: null, playbackLoadPending: false,
 };
 
 const ui = {
-  run: $("#run-select"), datasetState: $("#dataset-state"), elapsed: $("#elapsed"),
-  points: $("#point-count"), maxSpeed: $("#max-speed"), globe: $("#globe"), map: $("#map"),
+  run: $("#run-select"), field: $("#field-select"), datasetState: $("#dataset-state"), elapsed: $("#elapsed"),
+  points: $("#point-count"), maxValue: $("#max-value"), maxValueLabel: $("#max-value-label"), globe: $("#globe"), map: $("#map"),
   play: $("#play"), timeline: $("#timeline"), frame: $("#frame-number"), time: $("#time-label"),
-  rate: $("#rate"), legendMax: $("#legend-max"), coordinate: $("#globe-coordinate"),
+  rate: $("#rate"), legendMin: $("#legend-min"), legendMax: $("#legend-max"), coordinate: $("#globe-coordinate"),
+  scaleMode: $("#scale-mode"), gridPoints: $("#grid-points"),
   tabs: $("#metric-tabs"), chart: $("#chart"), metricCurrent: $("#metric-current"),
   metricDrift: $("#metric-drift"), diagnosticsState: $("#diagnostics-state"), fatal: $("#fatal"),
 };
@@ -20,7 +23,7 @@ const ui = {
 const views = { globe: null, map: null };
 
 async function fetchJSON(url) {
-  const response = await fetch(url);
+  const response = await fetch(url, { cache: "no-store" });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `${response.status} ${response.statusText}`);
   return data;
@@ -65,6 +68,20 @@ function runMaximumSpeed(metadata) {
   return Number.isFinite(maximumSpeed) && maximumSpeed > 0 ? maximumSpeed : null;
 }
 
+function selectedField() {
+  return state.metadata?.available_fields.find((field) => field.id === state.field) ?? null;
+}
+
+function formatFieldValue(value, unit) {
+  return `${formatValue(value)} ${unit}`;
+}
+
+function absolutePercentile(values, quantile) {
+  const ordered = Array.from(values, (value) => Math.abs(value)).sort((a, b) => a - b);
+  const index = Math.min(ordered.length - 1, Math.max(0, Math.ceil(quantile * ordered.length) - 1));
+  return ordered[index];
+}
+
 function createRenderer(container) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -84,7 +101,7 @@ function addGlobeGraticule(scene) {
     const points = [];
     for (let i = 0; i <= 128; i += 1) {
       const lon = (i / 128) * Math.PI * 2;
-      points.push(new THREE.Vector3(Math.cos(phi) * Math.cos(lon), Math.sin(phi), Math.cos(phi) * Math.sin(lon)).multiplyScalar(1.003));
+      points.push(new THREE.Vector3(Math.cos(phi) * Math.cos(lon), Math.sin(phi), -Math.cos(phi) * Math.sin(lon)).multiplyScalar(1.012));
     }
     scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), material));
   }
@@ -93,7 +110,7 @@ function addGlobeGraticule(scene) {
     for (let i = 0; i <= 128; i += 1) {
       const phi = -Math.PI / 2 + (i / 128) * Math.PI;
       const lon = THREE.MathUtils.degToRad(longitude);
-      points.push(new THREE.Vector3(Math.cos(phi) * Math.cos(lon), Math.sin(phi), Math.cos(phi) * Math.sin(lon)).multiplyScalar(1.003));
+      points.push(new THREE.Vector3(Math.cos(phi) * Math.cos(lon), Math.sin(phi), -Math.cos(phi) * Math.sin(lon)).multiplyScalar(1.012));
     }
     const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), material);
     scene.add(line, line.clone().rotateY(Math.PI));
@@ -104,11 +121,11 @@ function addMapGraticule(scene) {
   const vertices = [];
   for (let longitude = -150; longitude <= 150; longitude += 30) {
     const x = longitude / 180;
-    vertices.push(x, -1, 0, x, 1, 0);
+    vertices.push(x, -1, 0.01, x, 1, 0.01);
   }
   for (let latitude = -60; latitude <= 60; latitude += 30) {
     const y = latitude / 90;
-    vertices.push(-1, y, 0, 1, y, 0);
+    vertices.push(-1, y, 0.01, 1, y, 0.01);
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
@@ -127,9 +144,11 @@ function buildCoordinates(metadata) {
     for (let k = 0; k < nlon[j]; k += 1) {
       const longitude = (2 * Math.PI * k) / nlon[j] - Math.PI;
       const index = point * 3;
-      globe[index] = 1.009 * cosLatitude * Math.cos(longitude);
-      globe[index + 1] = 1.009 * Math.sin(latitude);
-      globe[index + 2] = 1.009 * cosLatitude * Math.sin(longitude);
+      globe[index] = 1.008 * cosLatitude * Math.cos(longitude);
+      globe[index + 1] = 1.008 * Math.sin(latitude);
+      // Mirror the WebGL z axis so eastward (increasing longitude) is screen-right,
+      // matching the equirectangular map when the globe is viewed from outside.
+      globe[index + 2] = -1.008 * cosLatitude * Math.sin(longitude);
       map[index] = longitude / Math.PI;
       map[index + 1] = latitude / (Math.PI / 2);
       map[index + 2] = 0;
@@ -139,15 +158,91 @@ function buildCoordinates(metadata) {
   return { globe, map };
 }
 
-function createPointCloud(positions, isMap) {
+function buildRingTriangles(metadata) {
+  const { nlon, ring_offsets: offsets } = metadata.grid;
+  const triangles = [];
+  for (let ring = 0; ring < nlon.length - 1; ring += 1) {
+    const lowerCount = nlon[ring];
+    const upperCount = nlon[ring + 1];
+    const lowerStart = offsets[ring];
+    const upperStart = offsets[ring + 1];
+    let lower = 0;
+    let upper = 0;
+    while (lower < lowerCount || upper < upperCount) {
+      const advanceLower = upper >= upperCount || (
+        lower < lowerCount
+        && (lower + 1) * upperCount < (upper + 1) * lowerCount
+      );
+      if (advanceLower) {
+        triangles.push(
+          lowerStart + (lower % lowerCount),
+          lowerStart + ((lower + 1) % lowerCount),
+          upperStart + (upper % upperCount),
+        );
+        lower += 1;
+      } else {
+        triangles.push(
+          lowerStart + (lower % lowerCount),
+          upperStart + ((upper + 1) % upperCount),
+          upperStart + (upper % upperCount),
+        );
+        upper += 1;
+      }
+    }
+  }
+  return triangles;
+}
+
+function createGlobeSurface(positions, triangles) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(positions.length), 3));
+  geometry.setIndex(triangles);
+  const material = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  return { mesh: new THREE.Mesh(geometry, material), colorSources: null };
+}
+
+function createMapSurface(positions, triangles) {
+  const expandedPositions = [];
+  const colorSources = [];
+  const appendTriangle = (sources, transformX) => {
+    for (const source of sources) {
+      const offset = source * 3;
+      expandedPositions.push(transformX(positions[offset]), positions[offset + 1], 0);
+      colorSources.push(source);
+    }
+  };
+  for (let index = 0; index < triangles.length; index += 3) {
+    const sources = triangles.slice(index, index + 3);
+    const xs = sources.map((source) => positions[source * 3]);
+    if (Math.max(...xs) - Math.min(...xs) > 1) {
+      appendTriangle(sources, (x) => (x < 0 ? x + 2 : x));
+    } else {
+      appendTriangle(sources, (x) => x);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(expandedPositions, 3));
+  geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(expandedPositions.length), 3));
+  const material = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  return { mesh: new THREE.Mesh(geometry, material), colorSources: new Uint32Array(colorSources) };
+}
+
+function createPointOverlay(positions, isMap) {
+  const overlayPositions = positions.slice();
+  if (isMap) {
+    for (let index = 2; index < overlayPositions.length; index += 3) overlayPositions[index] = 0.02;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(overlayPositions, 3));
   const material = new THREE.PointsMaterial({
-    size: isMap ? 2.0 : 0.019, vertexColors: true, sizeAttenuation: !isMap,
-    transparent: true, opacity: 0.94, depthWrite: !isMap,
+    size: isMap ? 1.8 : 0.012, color: 0xffffff, sizeAttenuation: !isMap,
+    transparent: true, opacity: 0.42, depthTest: false, depthWrite: false,
   });
-  return new THREE.Points(geometry, material);
+  const points = new THREE.Points(geometry, material);
+  points.visible = ui.gridPoints.checked;
+  points.renderOrder = 3;
+  return points;
 }
 
 function setupViews(metadata) {
@@ -159,6 +254,7 @@ function setupViews(metadata) {
     }
   }
   const coordinates = buildCoordinates(metadata);
+  const triangles = buildRingTriangles(metadata);
 
   const globeRenderer = createRenderer(ui.globe);
   const globeScene = new THREE.Scene();
@@ -170,9 +266,14 @@ function setupViews(metadata) {
   );
   globeScene.add(sphere);
   addGlobeGraticule(globeScene);
-  const globePoints = createPointCloud(coordinates.globe, false);
-  globeScene.add(globePoints);
-  views.globe = { renderer: globeRenderer, scene: globeScene, camera: globeCamera, points: globePoints, yaw: -0.5, pitch: 0.28, distance: 3.25 };
+  const globeSurface = createGlobeSurface(coordinates.globe, triangles);
+  const globePoints = createPointOverlay(coordinates.globe, false);
+  globeScene.add(globeSurface.mesh, globePoints);
+  views.globe = {
+    renderer: globeRenderer, scene: globeScene, camera: globeCamera,
+    surface: globeSurface.mesh, colorSources: globeSurface.colorSources,
+    pointOverlay: globePoints, yaw: Math.PI / 2, pitch: 0.28, distance: 3.25,
+  };
   installGlobeControls(views.globe);
 
   const mapRenderer = createRenderer(ui.map);
@@ -180,9 +281,14 @@ function setupViews(metadata) {
   const mapCamera = new THREE.OrthographicCamera(-1.08, 1.08, 1.08, -1.08, 0.1, 10);
   mapCamera.position.z = 2;
   addMapGraticule(mapScene);
-  const mapPoints = createPointCloud(coordinates.map, true);
-  mapScene.add(mapPoints);
-  views.map = { renderer: mapRenderer, scene: mapScene, camera: mapCamera, points: mapPoints };
+  const mapSurface = createMapSurface(coordinates.map, triangles);
+  const mapPoints = createPointOverlay(coordinates.map, true);
+  mapScene.add(mapSurface.mesh, mapPoints);
+  views.map = {
+    renderer: mapRenderer, scene: mapScene, camera: mapCamera,
+    surface: mapSurface.mesh, colorSources: mapSurface.colorSources,
+    pointOverlay: mapPoints,
+  };
 
   for (const key of ["globe", "map"]) {
     const view = views[key];
@@ -246,40 +352,126 @@ function colorFor(t, target, offset) {
   }
 }
 
-function updateColors(speed, scaleMax) {
+function updateColors(values, scaleMax, signed) {
+  const pointColors = new Float32Array(values.length * 3);
+  for (let i = 0; i < values.length; i += 1) {
+    const normalized = signed
+      ? 0.5 + values[i] / (2 * scaleMax)
+      : values[i] / scaleMax;
+    colorFor(THREE.MathUtils.clamp(normalized, 0, 1), pointColors, i * 3);
+  }
   for (const key of ["globe", "map"]) {
-    const attribute = views[key].points.geometry.getAttribute("color");
-    for (let i = 0; i < speed.length; i += 1) colorFor(Math.min(1, speed[i] / scaleMax), attribute.array, i * 3);
+    const view = views[key];
+    const attribute = view.surface.geometry.getAttribute("color");
+    if (view.colorSources === null) {
+      attribute.array.set(pointColors);
+    } else {
+      for (let vertex = 0; vertex < view.colorSources.length; vertex += 1) {
+        const sourceOffset = view.colorSources[vertex] * 3;
+        const targetOffset = vertex * 3;
+        attribute.array[targetOffset] = pointColors[sourceOffset];
+        attribute.array[targetOffset + 1] = pointColors[sourceOffset + 1];
+        attribute.array[targetOffset + 2] = pointColors[sourceOffset + 2];
+      }
+    }
     attribute.needsUpdate = true;
   }
 }
 
+function renderFieldRecord(record) {
+  const field = selectedField();
+  if (!field || !record) return;
+  if (state.scaleMode === "auto") {
+    state.scaleMax = Math.max(record.p995Absolute, Number.EPSILON);
+  } else if (state.scaleMode === "lock") {
+    state.scaleMax = Math.max(state.lockedScale ?? state.scaleMax, Number.EPSILON);
+  } else if (!(state.scaleMax > 0)) {
+    state.scaleMax = Math.max(record.p995Absolute, Number.EPSILON);
+  }
+  updateColors(record.values, state.scaleMax, field.signed);
+  const frameMaximum = field.signed
+    ? Math.max(Math.abs(record.minimum), Math.abs(record.maximum))
+    : record.maximum;
+  ui.maxValue.textContent = formatFieldValue(frameMaximum, field.unit);
+  ui.legendMin.textContent = field.signed ? formatFieldValue(-state.scaleMax, field.unit) : "0";
+  ui.legendMax.textContent = formatFieldValue(state.scaleMax, field.unit);
+}
+
+async function setScaleMode(mode) {
+  if (!["auto", "global", "lock"].includes(mode)) throw new Error(`Unknown scale mode: ${mode}`);
+  state.scaleMode = mode;
+  ui.scaleMode.value = mode;
+  const requestId = ++state.scaleRequestId;
+  if (mode === "lock") {
+    state.lockedScale = Math.max(state.scaleMax, Number.EPSILON);
+    renderFieldRecord(state.frameRecord);
+    return;
+  }
+  state.lockedScale = null;
+  if (mode === "auto") {
+    renderFieldRecord(state.frameRecord);
+    return;
+  }
+
+  const runAtStart = state.run;
+  const fieldAtStart = state.field;
+  const cacheKey = `${runAtStart}:${fieldAtStart}`;
+  let scale = state.globalScaleCache.get(cacheKey);
+  if (!(scale > 0)) {
+    scale = fieldAtStart === "speed" ? runMaximumSpeed(state.metadata) : null;
+  }
+  if (!(scale > 0)) {
+    const stats = await fetchJSON(`/api/runs/${encodeURIComponent(runAtStart)}/fields/${encodeURIComponent(fieldAtStart)}/statistics`);
+    const field = selectedField();
+    scale = field?.signed ? stats.maximum_absolute : stats.maximum;
+  }
+  if (
+    requestId !== state.scaleRequestId
+    || state.run !== runAtStart
+    || state.field !== fieldAtStart
+    || state.scaleMode !== "global"
+  ) return;
+  state.scaleMax = Math.max(scale, Number.EPSILON);
+  state.globalScaleCache.set(cacheKey, state.scaleMax);
+  renderFieldRecord(state.frameRecord);
+}
+
 async function loadFrame(frameIndex) {
   const runAtStart = state.run;
+  const fieldAtStart = state.field;
   const metadataAtStart = state.metadata;
+  const cacheGenerationAtStart = state.cacheGeneration;
   const requestId = ++state.frameRequestId;
   if (state.frameAbortController) state.frameAbortController.abort();
   state.frameAbortController = null;
 
   const step = metadataAtStart.available_steps[frameIndex];
-  const key = `${runAtStart}:${step}`;
+  const key = `${cacheGenerationAtStart}:${runAtStart}:${fieldAtStart}:${step}`;
   let record = state.frameCache.get(key);
   if (!record) {
     const controller = new AbortController();
     state.frameAbortController = controller;
     try {
-      const response = await fetch(`/api/runs/${encodeURIComponent(runAtStart)}/frame/${step}`, { signal: controller.signal });
+      const response = await fetch(
+        `/api/runs/${encodeURIComponent(runAtStart)}/fields/${encodeURIComponent(fieldAtStart)}/${step}?generation=${cacheGenerationAtStart}`,
+        { signal: controller.signal, cache: "no-store" },
+      );
       if (!response.ok) {
         const error = await response.json();
         if (requestId !== state.frameRequestId || state.run !== runAtStart) return false;
         throw new Error(error.error || "Could not load frame");
       }
-      const speed = new Float32Array(await response.arrayBuffer());
-      if (speed.length !== metadataAtStart.grid.point_count) throw new Error("Frame point count does not match metadata");
+      const values = new Float32Array(await response.arrayBuffer());
+      if (values.length !== metadataAtStart.grid.point_count) throw new Error("Frame point count does not match metadata");
+      const percentileHeader = response.headers.get("X-Field-P995-Absolute");
+      const headerPercentile = percentileHeader === null ? Number.NaN : Number(percentileHeader);
       record = {
-        speed,
-        max: Number(response.headers.get("X-Speed-Max")),
-        p98: Number(response.headers.get("X-Speed-P98")),
+        values,
+        minimum: Number(response.headers.get("X-Field-Minimum")),
+        maximum: Number(response.headers.get("X-Field-Maximum")),
+        p995Absolute: Number.isFinite(headerPercentile) && headerPercentile >= 0
+          ? headerPercentile
+          : absolutePercentile(values, 0.995),
       };
       state.frameCache.set(key, record);
       while (state.frameCache.size > 16) state.frameCache.delete(state.frameCache.keys().next().value);
@@ -290,30 +482,66 @@ async function loadFrame(frameIndex) {
       if (state.frameAbortController === controller) state.frameAbortController = null;
     }
   }
-  if (state.run !== runAtStart || state.metadata !== metadataAtStart || requestId !== state.frameRequestId) return false;
+  if (
+    state.run !== runAtStart
+    || state.field !== fieldAtStart
+    || state.metadata !== metadataAtStart
+    || state.cacheGeneration !== cacheGenerationAtStart
+    || requestId !== state.frameRequestId
+  ) return false;
   state.frameIndex = frameIndex;
-  state.speed = record.speed;
-  if (!(state.scaleMax > 0)) state.scaleMax = Math.max(record.p98, Number.EPSILON);
-  updateColors(record.speed, state.scaleMax);
+  state.fieldValues = record.values;
+  state.frameRecord = record;
+  renderFieldRecord(record);
   ui.timeline.value = String(frameIndex);
   ui.frame.textContent = String(step).padStart(5, "0");
   const seconds = step * state.metadata.simulation.time_step_seconds;
   ui.time.textContent = `T + ${formatDuration(seconds)}`;
   ui.elapsed.textContent = formatDuration(seconds);
-  ui.maxSpeed.textContent = `${record.max.toFixed(2)} m/s`;
-  ui.legendMax.textContent = `${state.scaleMax.toFixed(1)} m s⁻¹`;
   updateChartReadout();
   drawChart();
   return true;
 }
 
-async function selectRun(name) {
+async function setField(fieldId, frameIndex = state.frameIndex) {
   stopPlayback();
   state.frameRequestId += 1;
   if (state.frameAbortController) state.frameAbortController.abort();
   state.frameAbortController = null;
   state.playbackLoadPending = false;
+  state.scaleRequestId += 1;
+  const field = state.metadata.available_fields.find((candidate) => candidate.id === fieldId);
+  if (!field) throw new Error(`Field ${fieldId} is not available for this run`);
+  state.field = fieldId;
+  state.frameRecord = null;
+  state.scaleMax = 0;
+  state.lockedScale = null;
+  if (state.scaleMode === "lock") {
+    state.scaleMode = "auto";
+    ui.scaleMode.value = "auto";
+  }
+  ui.field.value = fieldId;
+  ui.maxValueLabel.textContent = field.signed ? `MAX |${field.symbol}|` : `MAX ${field.symbol}`;
+  ui.globe.setAttribute("aria-label", `${field.label} の三次元地球表示`);
+  ui.map.setAttribute("aria-label", `${field.label} の二次元正距円筒図法表示`);
+
+  await loadFrame(frameIndex);
+  if (state.field === fieldId && state.scaleMode === "global") await setScaleMode("global");
+}
+
+async function selectRun(name) {
+  stopPlayback();
+  state.cacheGeneration += 1;
+  state.frameCache.clear();
+  state.globalScaleCache.clear();
+  state.frameRequestId += 1;
+  if (state.frameAbortController) state.frameAbortController.abort();
+  state.frameAbortController = null;
+  state.playbackLoadPending = false;
   state.run = name;
+  state.field = null;
+  state.frameRecord = null;
+  state.scaleRequestId += 1;
   state.frameIndex = 0;
   state.conservation = null;
   state.metricIndex = 0;
@@ -322,12 +550,21 @@ async function selectRun(name) {
   const metadata = await fetchJSON(`/api/runs/${encodeURIComponent(name)}/metadata`);
   if (state.run !== name) return;
   state.metadata = metadata;
-  state.scaleMax = runMaximumSpeed(metadata) ?? 0;
+  ui.field.replaceChildren(...metadata.available_fields.map((field) => {
+    const option = document.createElement("option");
+    option.value = field.id;
+    option.textContent = field.label;
+    return option;
+  }));
   ui.points.textContent = Number(metadata.grid.point_count).toLocaleString("ja-JP");
   ui.timeline.max = String(metadata.available_steps.length - 1);
   ui.datasetState.textContent = `${metadata.available_frame_count} FRAMES READY`;
   setupViews(metadata);
-  await loadFrame(0);
+  const initialField = metadata.available_fields.some((field) => field.id === "speed")
+    ? "speed"
+    : metadata.available_fields[0].id;
+  await setField(initialField, 0);
+  if (state.run !== name) return;
   fetchJSON(`/api/runs/${encodeURIComponent(name)}/conservation`)
     .then((data) => {
       if (state.run !== name) return;
@@ -476,6 +713,7 @@ async function init() {
     option.value = run.name; option.textContent = run.case_name; return option;
   }));
   ui.run.addEventListener("change", () => selectRun(ui.run.value).catch(showFatal));
+  ui.field.addEventListener("change", () => setField(ui.field.value).catch(showFatal));
   ui.play.addEventListener("click", () => {
     if (state.playing) {
       stopPlayback();
@@ -491,6 +729,12 @@ async function init() {
     loadFrame(Number(ui.timeline.value)).catch(showFatal);
   });
   ui.rate.addEventListener("change", () => { state.rate = Number(ui.rate.value); });
+  ui.scaleMode.addEventListener("change", () => setScaleMode(ui.scaleMode.value).catch(showFatal));
+  ui.gridPoints.addEventListener("change", () => {
+    for (const view of Object.values(views)) {
+      if (view) view.pointOverlay.visible = ui.gridPoints.checked;
+    }
+  });
   window.addEventListener("resize", drawChart);
   await selectRun(state.runs[0].name);
 }

@@ -33,7 +33,7 @@ button, select, input { font: inherit; }
 .brand b { display: block; font-size: 15px; letter-spacing: -.02em; }
 .brand small { display: block; color: var(--muted); font-size: 8px; letter-spacing: .24em; margin-top: 3px; }
 .run-picker { display: flex; flex-direction: column; gap: 3px; }
-.run-picker label, .rate, .live-state { color: var(--muted); font-size: 9px; letter-spacing: .18em; }
+.run-picker label, .rate, .live-state, .grid-toggle { color: var(--muted); font-size: 9px; letter-spacing: .18em; }
 select { color: var(--ink); border: 0; border-bottom: 1px solid #52616c; background: transparent; padding: 2px 26px 4px 0; outline: 0; }
 select option { color: #07111d; }
 .live-state { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
@@ -73,6 +73,8 @@ main { width: min(1600px, 94vw); margin: 0 auto; }
 .timeline-labels b { color: var(--ink); font-weight: 500; }
 input[type="range"] { width: 100%; accent-color: var(--acid); height: 18px; margin: 7px 0 0; cursor: pointer; }
 .rate { display: flex; flex-direction: column; gap: 4px; }
+.grid-toggle { display: flex; align-items: center; gap: 7px; white-space: nowrap; cursor: pointer; }
+.grid-toggle input { width: 14px; height: 14px; margin: 0; accent-color: var(--acid); }
 .legend { width: 230px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; color: var(--muted); font: 8px/1 ui-monospace, monospace; }
 .legend-gradient { height: 5px; background: linear-gradient(90deg, #155eef, #4cc9f0, #e9eef2, #ff9f43, #f04438); }
 
@@ -102,7 +104,7 @@ input[type="range"] { width: 100%; accent-color: var(--acid); height: 18px; marg
 @media (max-width: 520px) {
   main { width: 96vw; }
   .brand small { display: none; }
-  .run-picker { max-width: 58vw; }
+  .run-picker { max-width: 42vw; }
   .run-picker select { width: 100%; }
   .hero-meta div { padding-left: 8px; }
   .panel-heading p { display: none; }

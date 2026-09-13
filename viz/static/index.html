@@ -17,6 +17,10 @@
         <label for="run-select">SIMULATION</label>
         <select id="run-select" aria-label="シミュレーションを選択"></select>
       </div>
+      <div class="run-picker">
+        <label for="field-select">FIELD</label>
+        <select id="field-select" aria-label="表示する場を選択"></select>
+      </div>
       <div class="live-state"><span></span><b id="dataset-state">DATASET READY</b></div>
     </header>
 
@@ -25,7 +29,7 @@
         <div class="hero-meta" aria-label="シミュレーション概要">
           <div><span>ELAPSED</span><strong id="elapsed">—</strong></div>
           <div><span>GRID POINTS</span><strong id="point-count">—</strong></div>
-          <div><span>MAX SPEED</span><strong id="max-speed">—</strong></div>
+          <div><span id="max-value-label">MAX VALUE</span><strong id="max-value">—</strong></div>
         </div>
       </section>
 
@@ -42,7 +46,7 @@
         <article class="panel map-panel">
           <div class="panel-heading">
             <div><span class="index">02</span><h2>Equirectangular projection</h2></div>
-            <p>ALL GRID POINTS</p>
+            <p>INTERPOLATED GRID SURFACE</p>
           </div>
           <div class="map-frame">
             <div id="map" class="viewport" aria-label="流速の二次元正距円筒図法表示"></div>
@@ -58,8 +62,10 @@
           <input id="timeline" type="range" min="0" max="0" value="0" step="1" aria-label="時刻" />
         </div>
         <label class="rate">RATE<select id="rate"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select></label>
+        <label class="rate">SCALE<select id="scale-mode"><option value="auto">AUTO · P99.5</option><option value="global">GLOBAL</option><option value="lock">LOCK CURRENT</option></select></label>
+        <label class="grid-toggle"><input id="grid-points" type="checkbox" /><span>GRID POINTS</span></label>
         <div class="legend">
-          <span>0</span><div class="legend-gradient"></div><span id="legend-max">— m s⁻¹</span>
+          <span id="legend-min">0</span><div class="legend-gradient"></div><span id="legend-max">—</span>
         </div>
       </section>
 

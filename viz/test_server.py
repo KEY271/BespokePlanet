@@ -12,6 +12,7 @@ class RepositoryTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         root = Path(self.temporary.name)
+        self.root = root
         run = root / "tiny"
         run.mkdir()
         mu = [-1 / math.sqrt(3), 1 / math.sqrt(3)]
@@ -29,6 +30,8 @@ class RepositoryTest(unittest.TestCase):
         for step in (0, 1, 2, 4):
             for field, values in {
                 "zeta": [0.0, 0.0, 0.0, 0.0],
+                "delta": [-2.0, -1.0, 1.0, 2.0],
+                "eta": [10.0, 20.0, 30.0, 40.0],
                 "u": [3.0, 3.0, 3.0, 3.0],
                 "v": [4.0, 4.0, 4.0, 4.0],
             }.items():
@@ -48,6 +51,42 @@ class RepositoryTest(unittest.TestCase):
         payload, stats = self.repository.speed_frame(run, 0)
         self.assertEqual(len(payload), 4 * 4)
         self.assertAlmostEqual(stats["maximum"], 5.0)
+
+    def test_exposes_and_encodes_all_supported_fields(self):
+        run = self.repository.get_run("tiny")
+        self.assertEqual(run.fields, ("zeta", "delta", "eta", "speed"))
+        metadata = self.repository.public_metadata(run)
+        self.assertIsInstance(metadata["data_generation"], int)
+        self.assertEqual(
+            [field["id"] for field in metadata["available_fields"]],
+            ["zeta", "delta", "eta", "speed"],
+        )
+        payload, stats = self.repository.field_frame(run, "delta", 0)
+        self.assertEqual(list(array("f", payload)), [-2.0, -1.0, 1.0, 2.0])
+        self.assertEqual(stats["minimum"], -2.0)
+        self.assertEqual(stats["maximum_absolute"], 2.0)
+        self.assertEqual(stats["p995_absolute"], 2.0)
+
+    def test_field_statistics_use_the_whole_run(self):
+        run = self.repository.get_run("tiny")
+        stats = self.repository.field_statistics(run, "eta")
+        self.assertEqual(stats, {"minimum": 10.0, "maximum": 40.0, "maximum_absolute": 40.0})
+
+    def test_rejects_unavailable_field(self):
+        run = self.repository.get_run("tiny")
+        with self.assertRaises(KeyError):
+            self.repository.field_frame(run, "temperature", 0)
+
+    def test_barotropic_run_only_exposes_zeta_and_speed(self):
+        run_path = self.root / "barotropic"
+        run_path.mkdir()
+        metadata = json.loads((self.root / "tiny" / "metadata.json").read_text())
+        (run_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+        for field in ("zeta", "u", "v"):
+            source = self.root / "tiny" / f"{field}_00000.bin"
+            (run_path / source.name).write_bytes(source.read_bytes())
+        run = self.repository.get_run("barotropic")
+        self.assertEqual(run.fields, ("zeta", "speed"))
 
     def test_conservation_for_uniform_flow(self):
         run = self.repository.get_run("tiny")

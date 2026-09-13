@@ -19,8 +19,19 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 
-FRAME_RE = re.compile(r"^(zeta|u|v)_(\d{5})\.bin$")
+FRAME_RE = re.compile(r"^(zeta|delta|eta|u|v)_(\d{5})\.bin$")
 RUN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+FIELD_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "zeta": {"label": "zeta", "symbol": "ζ", "unit": "s⁻¹", "signed": True},
+    "delta": {"label": "delta", "symbol": "δ", "unit": "s⁻¹", "signed": True},
+    "eta": {"label": "eta", "symbol": "η", "unit": "m", "signed": True},
+    "speed": {
+        "label": "sqrt(u² + v²)",
+        "symbol": "|u|",
+        "unit": "m s⁻¹",
+        "signed": False,
+    },
+}
 
 
 class DataError(RuntimeError):
@@ -33,6 +44,8 @@ class Run:
     path: Path
     metadata: dict[str, Any]
     steps: tuple[int, ...]
+    fields: tuple[str, ...]
+    data_generation: int
 
 
 def _read_float64(path: Path, expected_count: int) -> array:
@@ -75,7 +88,8 @@ def _gauss_legendre_weights(nodes: list[float]) -> list[float]:
 class Repository:
     def __init__(self, output_root: Path) -> None:
         self.output_root = output_root.resolve()
-        self._conservation_cache: dict[str, dict[str, Any]] = {}
+        self._conservation_cache: dict[tuple[str, int], dict[str, Any]] = {}
+        self._field_statistics_cache: dict[tuple[str, int, str], dict[str, float]] = {}
         self._cache_lock = threading.Lock()
 
     def discover(self) -> list[Run]:
@@ -112,12 +126,27 @@ class Repository:
         if int(grid["point_count"]) != offsets[-1]:
             raise DataError(f"Invalid point count in {metadata_path}")
 
-        step_sets = {field: set() for field in ("zeta", "u", "v")}
+        step_sets = {field: set() for field in ("zeta", "delta", "eta", "u", "v")}
         for path in run_path.iterdir():
             match = FRAME_RE.match(path.name)
             if match:
                 step_sets[match.group(1)].add(int(match.group(2)))
-        steps = tuple(sorted(set.intersection(*step_sets.values())))
+
+        fields: list[str] = []
+        required_components: list[str] = []
+        for field in ("zeta", "delta", "eta"):
+            if step_sets[field]:
+                fields.append(field)
+                required_components.append(field)
+        if step_sets["u"] and step_sets["v"]:
+            fields.append("speed")
+            required_components.extend(("u", "v"))
+        if not fields:
+            raise DataError(f"No supported fields found in {run_path}")
+
+        steps = tuple(
+            sorted(set.intersection(*(step_sets[field] for field in required_components)))
+        )
         simulation = metadata.get("simulation", {})
         if "snapshot_interval_steps" in simulation:
             interval = int(simulation["snapshot_interval_steps"])
@@ -132,40 +161,105 @@ class Repository:
             )
         if not steps:
             raise DataError(f"No complete frames found in {run_path}")
-        return Run(name=name, path=run_path, metadata=metadata, steps=steps)
+        return Run(
+            name=name,
+            path=run_path,
+            metadata=metadata,
+            steps=steps,
+            fields=tuple(fields),
+            data_generation=metadata_path.stat().st_mtime_ns,
+        )
 
     @staticmethod
     def public_metadata(run: Run) -> dict[str, Any]:
         metadata = dict(run.metadata)
         metadata["available_steps"] = list(run.steps)
         metadata["available_frame_count"] = len(run.steps)
+        metadata["data_generation"] = run.data_generation
+        metadata["available_fields"] = [
+            {"id": field, **FIELD_DEFINITIONS[field]} for field in run.fields
+        ]
         return metadata
 
-    def speed_frame(self, run: Run, step: int) -> tuple[bytes, dict[str, float]]:
+    def field_frame(
+        self, run: Run, field: str, step: int
+    ) -> tuple[bytes, dict[str, float]]:
         if step not in run.steps:
             raise KeyError(step)
+        if field not in run.fields:
+            raise KeyError(field)
+        values = self._field_values(run, field, step)
         count = int(run.metadata["grid"]["point_count"])
-        u = _read_float64(run.path / f"u_{step:05d}.bin", count)
-        v = _read_float64(run.path / f"v_{step:05d}.bin", count)
-        speeds = array("f", (math.hypot(east, north) for east, north in zip(u, v)))
-        finite = [value for value in speeds if math.isfinite(value)]
+        finite = [value for value in values if math.isfinite(value)]
         if len(finite) != count:
-            raise DataError(f"Frame {step} contains non-finite velocity")
+            raise DataError(f"Frame {step} contains non-finite values in {field}")
         ordered = sorted(finite)
         p98 = ordered[min(count - 1, int(0.98 * (count - 1)))]
+        absolute_ordered = sorted(abs(value) for value in finite)
+        p98_absolute = absolute_ordered[min(count - 1, int(0.98 * (count - 1)))]
+        p995_absolute = absolute_ordered[
+            min(count - 1, max(0, math.ceil(0.995 * count) - 1))
+        ]
         stats = {
             "minimum": ordered[0],
             "maximum": ordered[-1],
             "p98": p98,
+            "maximum_absolute": max(abs(ordered[0]), abs(ordered[-1])),
+            "p98_absolute": p98_absolute,
+            "p995_absolute": p995_absolute,
             "mean": math.fsum(ordered) / count,
         }
         if sys.byteorder != "little":
-            speeds.byteswap()
-        return speeds.tobytes(), stats
+            values.byteswap()
+        return values.tobytes(), stats
+
+    @staticmethod
+    def _field_values(run: Run, field: str, step: int) -> array:
+        count = int(run.metadata["grid"]["point_count"])
+        if field == "speed":
+            u = _read_float64(run.path / f"u_{step:05d}.bin", count)
+            v = _read_float64(run.path / f"v_{step:05d}.bin", count)
+            return array("f", (math.hypot(east, north) for east, north in zip(u, v)))
+        source = _read_float64(run.path / f"{field}_{step:05d}.bin", count)
+        return array("f", source)
+
+    def speed_frame(self, run: Run, step: int) -> tuple[bytes, dict[str, float]]:
+        """Backward-compatible alias for clients using the original speed API."""
+        return self.field_frame(run, "speed", step)
+
+    def field_statistics(self, run: Run, field: str) -> dict[str, float]:
+        if field not in run.fields:
+            raise KeyError(field)
+        key = (run.name, run.data_generation, field)
+        with self._cache_lock:
+            cached = self._field_statistics_cache.get(key)
+        if cached is not None:
+            return cached
+
+        minimum = math.inf
+        maximum = -math.inf
+        for step in run.steps:
+            for value in self._field_values(run, field, step):
+                if not math.isfinite(value):
+                    raise DataError(f"Frame {step} contains non-finite values in {field}")
+                minimum = min(minimum, value)
+                maximum = max(maximum, value)
+        result = {
+            "minimum": minimum,
+            "maximum": maximum,
+            "maximum_absolute": max(abs(minimum), abs(maximum)),
+        }
+        with self._cache_lock:
+            for stale_key in list(self._field_statistics_cache):
+                if stale_key[0] == run.name and stale_key[1] != run.data_generation:
+                    del self._field_statistics_cache[stale_key]
+            self._field_statistics_cache[key] = result
+        return result
 
     def conservation(self, run: Run) -> dict[str, Any]:
+        cache_key = (run.name, run.data_generation)
         with self._cache_lock:
-            cached = self._conservation_cache.get(run.name)
+            cached = self._conservation_cache.get(cache_key)
         if cached is not None:
             return cached
 
@@ -248,7 +342,10 @@ class Repository:
             "normalization": "global spherical mean",
         }
         with self._cache_lock:
-            self._conservation_cache[run.name] = result
+            for stale_key in list(self._conservation_cache):
+                if stale_key[0] == run.name and stale_key != cache_key:
+                    del self._conservation_cache[stale_key]
+            self._conservation_cache[cache_key] = result
         return result
 
 
@@ -282,6 +379,8 @@ class AppHandler(BaseHTTPRequestHandler):
                             "case_name": run.metadata.get("case_name", run.name),
                             "frame_count": len(run.steps),
                             "point_count": run.metadata["grid"]["point_count"],
+                            "equation": run.metadata.get("equation", "barotropic_vorticity"),
+                            "available_fields": list(run.fields),
                         }
                         for run in runs
                     ]
@@ -297,22 +396,25 @@ class AppHandler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[3] == "conservation":
                 self._send_json(self.repository.conservation(run))
                 return
+            if len(parts) == 6 and parts[3] == "fields" and parts[5] == "statistics":
+                self._send_json(self.repository.field_statistics(run, parts[4]))
+                return
+            if len(parts) == 6 and parts[3] == "fields":
+                field = parts[4]
+                try:
+                    step = int(parts[5])
+                except ValueError as exc:
+                    raise KeyError(parts[5]) from exc
+                payload, stats = self.repository.field_frame(run, field, step)
+                self._send_field(payload, stats)
+                return
             if len(parts) == 5 and parts[3] == "frame":
                 try:
                     step = int(parts[4])
                 except ValueError as exc:
                     raise KeyError(parts[4]) from exc
                 payload, stats = self.repository.speed_frame(run, step)
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "application/octet-stream")
-                self.send_header("Content-Length", str(len(payload)))
-                self.send_header("Cache-Control", "private, max-age=3600")
-                self.send_header("X-Speed-Min", f"{stats['minimum']:.9g}")
-                self.send_header("X-Speed-Max", f"{stats['maximum']:.9g}")
-                self.send_header("X-Speed-P98", f"{stats['p98']:.9g}")
-                self.send_header("X-Speed-Mean", f"{stats['mean']:.9g}")
-                self.end_headers()
-                self.wfile.write(payload)
+                self._send_field(payload, stats, legacy_speed_headers=True)
                 return
         if path.startswith("/vendor/"):
             vendor_name = path.removeprefix("/vendor/")
@@ -341,6 +443,27 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", f"{mime}; charset=utf-8" if mime.startswith("text/") else mime)
         self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _send_field(
+        self,
+        payload: bytes,
+        stats: dict[str, float],
+        legacy_speed_headers: bool = False,
+    ) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        for name, value in stats.items():
+            header = "-".join(part.capitalize() for part in name.split("_"))
+            self.send_header(f"X-Field-{header}", f"{value:.9g}")
+        if legacy_speed_headers:
+            self.send_header("X-Speed-Min", f"{stats['minimum']:.9g}")
+            self.send_header("X-Speed-Max", f"{stats['maximum']:.9g}")
+            self.send_header("X-Speed-P98", f"{stats['p98']:.9g}")
+            self.send_header("X-Speed-Mean", f"{stats['mean']:.9g}")
         self.end_headers()
         self.wfile.write(payload)
 

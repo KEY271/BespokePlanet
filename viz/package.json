@@ -2,7 +2,7 @@
   "name": "bespoke-planet-viz",
   "private": true,
   "version": "1.0.0",
-  "description": "Three.js frontend for the BespokePlanet barotropic vorticity solver",
+  "description": "Three.js frontend for the BespokePlanet atmospheric solvers",
   "dependencies": {
     "three": "0.179.1"
   }
