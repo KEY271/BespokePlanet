@@ -9,6 +9,8 @@ program check_harmonics
   integer, allocatable :: nlon(:)
   integer :: mmax_all
 
+  ! Reinitialization must release and replace the FFTW plans cleanly.
+  call transform%init(7)
   call transform%init(T)
   nlon = transform%get_nlon()
   mmax_all = minval(nlon)/2 - 1

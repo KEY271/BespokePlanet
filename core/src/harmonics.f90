@@ -1,13 +1,19 @@
 module harmonics
+  use iso_c_binding, only: c_associated, c_int, c_null_ptr, c_ptr
   use iso_fortran_env, only: real64
+  use fftw_interfaces, only: FFTW_ESTIMATE, FFTW_UNALIGNED, &
+                             fftw_destroy_plan, fftw_execute_dft_c2r, fftw_execute_dft_r2c, &
+                             fftw_plan_dft_c2r_1d, fftw_plan_dft_r2c_1d
   implicit none
   private
 
   type :: fft_plan
     integer :: length = 0
-    integer :: work_size = 0
-    complex(real64), allocatable :: chirp(:)
-    complex(real64), allocatable :: kernel_spectrum(:)
+    type(c_ptr) :: forward = c_null_ptr
+    type(c_ptr) :: backward = c_null_ptr
+  contains
+    final :: destroy_fft_plan
+    final :: destroy_fft_plans
   end type fft_plan
 
   type, public :: harmonic_transform
@@ -29,117 +35,66 @@ module harmonics
 
 contains
 
-  subroutine radix2_fft(values, inverse)
-    complex(real64), intent(inout) :: values(:)
-    logical, intent(in) :: inverse
-    complex(real64) :: even_value, odd_value, twiddle, twiddle_step
-    real(real64) :: angle, pi
-    integer :: i, j, k, block_size, n
-
-    n = size(values)
-    if (n <= 1) return
-    if (iand(n, n - 1) /= 0) error stop "radix2_fft: input length must be a power of two"
-
-    j = 1
-    do i = 1, n - 1
-      if (i < j) then
-        even_value = values(i)
-        values(i) = values(j)
-        values(j) = even_value
-      end if
-      k = n/2
-      do while (k >= 1 .and. j > k)
-        j = j - k
-        k = k/2
-      end do
-      j = j + k
-    end do
-
-    pi = acos(-1.0_real64)
-    block_size = 2
-    do
-      if (inverse) then
-        angle = 2.0_real64*pi/real(block_size, real64)
-      else
-        angle = -2.0_real64*pi/real(block_size, real64)
-      end if
-      twiddle_step = cmplx(cos(angle), sin(angle), kind=real64)
-
-      do i = 1, n, block_size
-        twiddle = cmplx(1.0_real64, 0.0_real64, kind=real64)
-        do k = 0, block_size/2 - 1
-          even_value = values(i + k)
-          odd_value = twiddle*values(i + k + block_size/2)
-          values(i + k) = even_value + odd_value
-          values(i + k + block_size/2) = even_value - odd_value
-          twiddle = twiddle*twiddle_step
-        end do
-      end do
-
-      if (block_size == n) exit
-      block_size = 2*block_size
-    end do
-
-    if (inverse) values = values/real(n, real64)
-  end subroutine radix2_fft
-
   subroutine initialize_fft_plan(plan, n)
     type(fft_plan), intent(out) :: plan
     integer, intent(in) :: n
-    complex(real64), allocatable :: kernel(:)
-    real(real64) :: angle, pi
-    integer :: k, work_size
-
-    ! Bluestein's algorithm maps an arbitrary-length DFT to a radix-2
-    ! convolution, which is needed because the octahedral rows have many sizes.
-    work_size = 1
-    do while (work_size < 2*n - 1)
-      work_size = 2*work_size
-    end do
+    real(real64), allocatable :: real_buffer(:)
+    complex(real64), allocatable :: complex_buffer(:)
+    integer(c_int) :: flags
 
     plan%length = n
-    plan%work_size = work_size
-    allocate (plan%chirp(n), kernel(work_size))
-    kernel = cmplx(0.0_real64, 0.0_real64, kind=real64)
-    pi = acos(-1.0_real64)
+    allocate (real_buffer(n), complex_buffer(n/2 + 1))
+    flags = ior(FFTW_ESTIMATE, FFTW_UNALIGNED)
+    plan%forward = fftw_plan_dft_r2c_1d(int(n, c_int), real_buffer, complex_buffer, flags)
+    plan%backward = fftw_plan_dft_c2r_1d(int(n, c_int), complex_buffer, real_buffer, flags)
 
-    do k = 0, n - 1
-      angle = pi*real(k, real64)**2/real(n, real64)
-      plan%chirp(k + 1) = cmplx(cos(angle), -sin(angle), kind=real64)
-      kernel(k + 1) = cmplx(cos(angle), sin(angle), kind=real64)
-      if (k > 0) kernel(work_size - k + 1) = kernel(k + 1)
-    end do
-
-    call radix2_fft(kernel, .false.)
-    call move_alloc(kernel, plan%kernel_spectrum)
+    if (.not. c_associated(plan%forward) .or. .not. c_associated(plan%backward)) then
+      call destroy_fft_plan(plan)
+      error stop "initialize_fft_plan: FFTW plan creation failed"
+    end if
   end subroutine initialize_fft_plan
 
-  subroutine execute_fft_forward(plan, values, workspace)
+  subroutine execute_fft_forward(plan, values, spectrum)
     type(fft_plan), intent(in) :: plan
-    complex(real64), intent(inout) :: values(:)
-    complex(real64), intent(inout) :: workspace(:)
+    real(real64), intent(inout) :: values(:)
+    complex(real64), intent(out) :: spectrum(:)
 
     if (size(values) /= plan%length) error stop "execute_fft_forward: inconsistent transform length"
-    if (size(workspace) < plan%work_size) error stop "execute_fft_forward: workspace is too small"
+    if (size(spectrum) /= plan%length/2 + 1) error stop "execute_fft_forward: inconsistent spectrum length"
 
-    workspace(1:plan%work_size) = cmplx(0.0_real64, 0.0_real64, kind=real64)
-    workspace(1:plan%length) = values*plan%chirp
-    call radix2_fft(workspace(1:plan%work_size), .false.)
-    workspace(1:plan%work_size) = workspace(1:plan%work_size)*plan%kernel_spectrum
-    call radix2_fft(workspace(1:plan%work_size), .true.)
-    values = workspace(1:plan%length)*plan%chirp
+    call fftw_execute_dft_r2c(plan%forward, values, spectrum)
   end subroutine execute_fft_forward
 
-  subroutine execute_fft_backward(plan, values, workspace)
+  subroutine execute_fft_backward(plan, spectrum, values)
     type(fft_plan), intent(in) :: plan
-    complex(real64), intent(inout) :: values(:)
-    complex(real64), intent(inout) :: workspace(:)
+    complex(real64), intent(inout) :: spectrum(:)
+    real(real64), intent(out) :: values(:)
 
-    ! The synthesis formula needs the unnormalized backward transform.
-    values = conjg(values)
-    call execute_fft_forward(plan, values, workspace)
-    values = conjg(values)
+    if (size(spectrum) /= plan%length/2 + 1) error stop "execute_fft_backward: inconsistent spectrum length"
+    if (size(values) /= plan%length) error stop "execute_fft_backward: inconsistent transform length"
+
+    ! FFTW's c2r transform is unnormalized, matching the synthesis formula.
+    call fftw_execute_dft_c2r(plan%backward, spectrum, values)
   end subroutine execute_fft_backward
+
+  subroutine destroy_fft_plan(plan)
+    type(fft_plan), intent(inout) :: plan
+
+    if (c_associated(plan%forward)) call fftw_destroy_plan(plan%forward)
+    if (c_associated(plan%backward)) call fftw_destroy_plan(plan%backward)
+    plan%forward = c_null_ptr
+    plan%backward = c_null_ptr
+    plan%length = 0
+  end subroutine destroy_fft_plan
+
+  subroutine destroy_fft_plans(plans)
+    type(fft_plan), intent(inout) :: plans(:)
+    integer :: j
+
+    do j = 1, size(plans)
+      call destroy_fft_plan(plans(j))
+    end do
+  end subroutine destroy_fft_plans
 
   subroutine gauss_legendre(this)
     use lapack_interfaces, only: dstev
@@ -242,7 +197,8 @@ contains
 
     integer :: T, nlat, nlon_j, mmax_j, plan_index
     integer :: j, n, m
-    complex(real64), allocatable :: fourier(:, :), samples(:), workspace(:)
+    real(real64), allocatable :: samples(:)
+    complex(real64), allocatable :: fourier(:, :), spectrum(:)
 
     call check_transform_state(this)
     call check_field_shape(this, field)
@@ -253,17 +209,17 @@ contains
     allocate (a(0:T + 1, 0:T))
     allocate (fourier(0:T, nlat))
     allocate (samples(maxval(this%nlon)))
-    allocate (workspace(maxval(this%fft_plans%work_size)))
+    allocate (spectrum(maxval(this%nlon)/2 + 1))
     a = cmplx(0.0_real64, 0.0_real64, kind=real64)
     fourier = cmplx(0.0_real64, 0.0_real64, kind=real64)
 
     do j = 1, nlat
       nlon_j = this%nlon(j)
       plan_index = min(j, nlat + 1 - j)
-      samples(1:nlon_j) = cmplx(field(1:nlon_j, j), 0.0_real64, kind=real64)
-      call execute_fft_forward(this%fft_plans(plan_index), samples(1:nlon_j), workspace)
+      samples(1:nlon_j) = field(1:nlon_j, j)
+      call execute_fft_forward(this%fft_plans(plan_index), samples(1:nlon_j), spectrum(1:nlon_j/2 + 1))
       mmax_j = min(T, nlon_j/2 - 1)
-      fourier(0:mmax_j, j) = samples(1:mmax_j + 1)/real(nlon_j, real64)
+      fourier(0:mmax_j, j) = spectrum(1:mmax_j + 1)/real(nlon_j, real64)
     end do
 
     do m = 0, T
@@ -283,7 +239,8 @@ contains
     integer :: T, nlat, nlon_j, mmax_j, plan_index
     integer :: j, n, m
     complex(real64) :: coefficient
-    complex(real64), allocatable :: spectrum(:), workspace(:)
+    real(real64), allocatable :: samples(:)
+    complex(real64), allocatable :: spectrum(:)
 
     call check_transform_state(this)
     call check_spectral_shape(this, a, "spectral_to_grid")
@@ -293,26 +250,24 @@ contains
 
     call this%allocate_field(field)
     field = 0.0_real64
-    allocate (spectrum(maxval(this%nlon)))
-    allocate (workspace(maxval(this%fft_plans%work_size)))
+    allocate (samples(maxval(this%nlon)))
+    allocate (spectrum(maxval(this%nlon)/2 + 1))
 
     do j = 1, nlat
       nlon_j = this%nlon(j)
       mmax_j = min(T, nlon_j/2 - 1)
-      spectrum(1:nlon_j) = cmplx(0.0_real64, 0.0_real64, kind=real64)
+      spectrum(1:nlon_j/2 + 1) = cmplx(0.0_real64, 0.0_real64, kind=real64)
       do m = 0, mmax_j
         coefficient = cmplx(0.0_real64, 0.0_real64, kind=real64)
         do n = m, T + 1
           coefficient = coefficient + a(n, m)*this%pnm(j, n, m)
         end do
         spectrum(m + 1) = coefficient
-        ! Complete the spectrum of the real grid field by Hermitian symmetry.
-        if (m > 0) spectrum(nlon_j - m + 1) = conjg(coefficient)
       end do
 
       plan_index = min(j, nlat + 1 - j)
-      call execute_fft_backward(this%fft_plans(plan_index), spectrum(1:nlon_j), workspace)
-      field(1:nlon_j, j) = real(spectrum(1:nlon_j), kind=real64)
+      call execute_fft_backward(this%fft_plans(plan_index), spectrum(1:nlon_j/2 + 1), samples(1:nlon_j))
+      field(1:nlon_j, j) = samples(1:nlon_j)
     end do
   end subroutine spectral_to_grid
 
