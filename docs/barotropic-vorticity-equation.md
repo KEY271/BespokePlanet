@@ -2,31 +2,19 @@
 
 ## 方程式
 
-地球半径 $a=6371\,\mathrm{km}$ の球面上の水平流が鉛直方向に変化しないと仮定する。経度を $\lambda$、緯度を $\varphi$、東向き・北向き風速をそれぞれ $u,v$ とすると、非圧縮流なら $u,v$ は流線関数 $\psi$ によって
+地球半径 $a=6371\,\mathrm{km}$ の球面上の水平流が鉛直方向に変化しないと仮定する。座標、基底、球面上の微分演算子の定義は [球面上の微分演算子](./spherical-derivation.md)に従う。非圧縮流なら、速度 $\boldsymbol{u}$ は流線関数 $\psi$ によって
 
 $$
-u=-\frac{1}{a}\frac{\partial\psi}{\partial\varphi},\qquad
-v=\frac{1}{a\cos\varphi}\frac{\partial\psi}{\partial\lambda}
+\boldsymbol{u}=\boldsymbol{k}\times\boldsymbol{\nabla}_s\psi
 $$
 
-と表せる。これは非発散流は閉 $1$-形式とみなせるが、$H^1(S^2)=0$ だからである。相対渦度 $\zeta$ を
+と表せる。相対渦度 $\zeta$ は
 
 $$
-\begin{aligned}
-\zeta=\frac{1}{a\cos\varphi}\left[\frac{\partial v}{\partial\lambda}-\frac{\partial(u\cos\varphi)}{\partial\varphi}\right]=\nabla_s^2\psi
-\end{aligned}
+\zeta=\nabla_s^2\psi
 $$
 
-と定義する。ただし球面ラプラシアンは
-
-$$
-\nabla_s^2 A
-=\frac{1}{a^2\cos^2\varphi}\frac{\partial^2 A}{\partial\lambda^2}
-+\frac{1}{a^2\cos\varphi}\frac{\partial}{\partial\varphi}
-\left(\cos\varphi\frac{\partial A}{\partial\varphi}\right)
-$$
-
-である。自転角速度を $\Omega=7.2921159\times10^{-5}\,\mathrm{rad/s}$ とし、惑星渦度を
+となる。自転角速度を $\Omega=7.2921159\times10^{-5}\,\mathrm{rad/s}$ とし、惑星渦度を
 
 $$
 f=2\Omega\sin\varphi
@@ -35,31 +23,10 @@ $$
 と定義し、絶対渦度を $q=\zeta+f$ と置く。外力も散逸もない順圧渦度方程式は
 
 $$
-\frac{\partial\zeta}{\partial t}+J(\psi,q)=0
+\frac{\partial\zeta}{\partial t}=-\bm\nabla_s\cdot(q\bm{u})
 $$
 
-となる。ただし球面上のヤコビアンを
-
-$$
-J(A,B)=\frac{1}{a^2\cos\varphi}
-\left(
-\frac{\partial A}{\partial\lambda}\frac{\partial B}{\partial\varphi}
--\frac{\partial A}{\partial\varphi}\frac{\partial B}{\partial\lambda}
-\right)
-$$
-
-とした。したがって方程式は絶対渦度の物質保存則
-
-$$
-\frac{Dq}{Dt}=0,
-\qquad
-\frac{D}{Dt}
-=\frac{\partial}{\partial t}
-+\frac{u}{a\cos\varphi}\frac{\partial}{\partial\lambda}
-+\frac{v}{a}\frac{\partial}{\partial\varphi}
-$$
-
-に等しい。
+となる。
 
 ## 格子解法
 
@@ -68,8 +35,9 @@ $$
 1. 相対渦度 $\zeta$ が既知であるとする。
 2. 流線関数 $\psi$ を $\zeta=\nabla_s^2\psi$ で求める。
 3. $u,v$ を $\psi$ から求める。
-4. 格子に戻して $J(\psi,q)$ を求める。
-5. 順圧渦度方程式で $\zeta$ を時間発展させる。
+4. 格子に変換して $q\bm{u}$ を求める。
+5. スペクトルに戻して $\bm\nabla_s\cdot(q\bm{u})$ を求める。
+6. 順圧渦度方程式で $\zeta$ を時間発展させる。
 
 ## スペクトル法
 
@@ -83,17 +51,7 @@ $$
 
 $n=0$ は空間的に一定な流線関数であり、速度に寄与しない。そこでゲージとして $\psi_0^0=0$ と置く。また、閉じた球面上では相対渦度の面積積分はゼロであるため、$\zeta_0^0$ もゼロでなければならない。丸め誤差で生じた $\zeta_0^0$ は各ステップでゼロに戻す。
 
-$u,v$ は [Octahedral Gaussian Grid のスペクトル微分](./octahedral-gaussian-grid.md#スペクトル微分)で求まる。
-
-2次の非線形項 $J(\psi,q)$ については、非発散性を利用すると
-
-$$
-J(\psi,q)
-=\nabla_s\cdot(\boldsymbol{v}q)
-=\frac{1}{a\cos\varphi}\left[\frac{\partial(uq)}{\partial\lambda}+\frac{\partial(vq\cos\varphi)}{\partial\varphi}\right]
-$$
-
-と書ける。$uq,vq\cos\varphi$ を格子で求めてからスペクトルに戻して微分すればよい。
+$u,v$ は [Octahedral Gaussian Grid のスペクトル微分](./octahedral-gaussian-grid.md#スペクトル微分)で求まる。2次の非線形項  $\bm{\nabla}_s\cdot(q\bm{u})$ については $uq,vq\cos\varphi$ を格子で求めてからスペクトルに戻して微分すればよい。
 
 ## Leapfrog 法
 

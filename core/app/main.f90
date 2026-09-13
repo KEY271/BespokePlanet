@@ -2,6 +2,16 @@ program main
   use iso_fortran_env, only: real64, int64
   use harmonics, only: harmonic_transform
   use barotropic_vorticity, only: barotropic_solver
+  use shallow_water, only: shallow_water_solver, gravity_acceleration, mean_depth, &
+                           gravity_wave_implicitness
+  use shallow_water_initial_conditions, only: isolated_height_mountain, &
+                                                single_harmonic_height, &
+                                                mountain_height_metres, &
+                                                mountain_longitude_degrees, &
+                                                mountain_latitude_degrees, &
+                                                mountain_angular_radius_degrees, &
+                                                height_mode_degree, height_mode_order, &
+                                                height_mode_amplitude_metres
   use barotropic_initial_conditions, only: single_harmonic_vorticity, &
                                            rossby_haurwitz_vorticity, &
                                            random_low_wavenumber_vorticity, &
@@ -11,7 +21,8 @@ program main
                                            rossby_haurwitz_omega, &
                                            rossby_haurwitz_wave_amplitude, &
                                            random_minimum_degree, random_maximum_degree
-  use field_output, only: make_directory, write_snapshot, write_run_metadata
+  use field_output, only: make_directory, write_snapshot, write_run_metadata, &
+                          write_shallow_water_snapshot, write_shallow_water_metadata
   implicit none
 
   integer, parameter :: T = 63
@@ -22,19 +33,48 @@ program main
   type(harmonic_transform) :: transform
   integer, allocatable :: nlon(:)
   character(len=:), allocatable :: output_root
+  character(len=64) :: equation_argument
+  integer :: argument_count
 
   call transform%init(T)
   nlon = transform%get_nlon()
   output_root = find_output_root()
   call make_directory(output_root)
 
-  call run_case('single_harmonic', 1)
-  call run_case('rossby_haurwitz_r4', 2)
-  call run_case('random_n8_n12_seed_20260913', 3)
+  argument_count = command_argument_count()
+  if (argument_count == 0) then
+    equation_argument = 'shallow-water'
+  else if (argument_count == 1) then
+    call get_command_argument(1, equation_argument)
+  else
+    call print_usage()
+    error stop 'too many command-line arguments'
+  end if
+
+  select case (trim(equation_argument))
+  case ('shallow-water', '--shallow-water', 'shallow_water', 'swe')
+    call run_shallow_water_case('shallow_water_mountain', 1)
+    call run_shallow_water_case('shallow_water_single_harmonic', 2)
+  case ('barotropic', '--barotropic', 'barotropic-vorticity', 'bve')
+    call run_barotropic_case('single_harmonic', 1)
+    call run_barotropic_case('rossby_haurwitz_r4', 2)
+    call run_barotropic_case('random_n8_n12_seed_20260913', 3)
+  case ('all')
+    call run_shallow_water_case('shallow_water_mountain', 1)
+    call run_shallow_water_case('shallow_water_single_harmonic', 2)
+    call run_barotropic_case('single_harmonic', 1)
+    call run_barotropic_case('rossby_haurwitz_r4', 2)
+    call run_barotropic_case('random_n8_n12_seed_20260913', 3)
+  case ('--help', '-h', 'help')
+    call print_usage()
+  case default
+    call print_usage()
+    error stop 'unknown equation argument'
+  end select
 
 contains
 
-  subroutine run_case(case_name, initial_condition)
+  subroutine run_barotropic_case(case_name, initial_condition)
     character(*), intent(in) :: case_name
     integer, intent(in) :: initial_condition
     type(barotropic_solver) :: solver
@@ -86,7 +126,64 @@ contains
     call write_run_metadata(case_directory, case_name, initial_condition_json, T, dt, &
                             duration, number_of_steps, output_interval_steps, maximum_cfl, &
                             elapsed_wall_seconds, nlon, transform%mu)
-  end subroutine run_case
+  end subroutine run_barotropic_case
+
+  subroutine run_shallow_water_case(case_name, initial_condition)
+    character(*), intent(in) :: case_name
+    integer, intent(in) :: initial_condition
+    type(shallow_water_solver) :: solver
+    complex(real64), allocatable :: initial_zeta(:, :), initial_delta(:, :), initial_eta(:, :)
+    complex(real64), allocatable :: zeta_spectral(:, :), delta_spectral(:, :), eta_spectral(:, :)
+    real(real64), allocatable :: zeta(:, :), delta(:, :), eta(:, :), u(:, :), v(:, :)
+    character(len=:), allocatable :: case_directory, initial_condition_json
+    integer :: step, number_of_steps
+    integer(int64) :: start_count, end_count, clock_rate, clock_max
+    real(real64) :: cfl, maximum_cfl, elapsed_wall_seconds
+
+    call system_clock(start_count, clock_rate, clock_max)
+    select case (initial_condition)
+    case (1)
+      call isolated_height_mountain(transform, T, initial_zeta, initial_delta, initial_eta)
+    case (2)
+      call single_harmonic_height(transform, T, initial_zeta, initial_delta, initial_eta)
+    case default
+      error stop 'unknown shallow-water initial condition'
+    end select
+
+    case_directory = output_root//'/'//case_name
+    call make_directory(case_directory)
+    call solver%init(T, dt)
+    call solver%set_initial_state(initial_zeta, initial_delta, initial_eta)
+    number_of_steps = nint(duration/dt)
+    maximum_cfl = 0.0_real64
+
+    do step = 0, number_of_steps
+      call solver%get_fields(zeta, delta, eta, u, v, cfl)
+      maximum_cfl = max(maximum_cfl, cfl)
+      if (mod(step, output_interval_steps) == 0 .or. step == number_of_steps) then
+        call solver%get_spectral_state(zeta_spectral, delta_spectral, eta_spectral)
+        call write_shallow_water_snapshot(case_directory, step, nlon, &
+                                          zeta_spectral, delta_spectral, eta_spectral, &
+                                          zeta, delta, eta, u, v)
+      end if
+      if (mod(step, 24) == 0 .or. step == number_of_steps) then
+        write (*, '(2a,i0,a,f6.3)') trim(case_name), ': step ', step, ', advective CFL = ', cfl
+      end if
+      if (step < number_of_steps) call solver%advance()
+    end do
+    call system_clock(end_count)
+    if (end_count >= start_count) then
+      elapsed_wall_seconds = real(end_count - start_count, real64)/real(clock_rate, real64)
+    else
+      elapsed_wall_seconds = real(clock_max - start_count + end_count + 1_int64, real64)/ &
+                             real(clock_rate, real64)
+    end if
+    initial_condition_json = make_shallow_water_initial_condition_json(initial_condition)
+    call write_shallow_water_metadata(case_directory, case_name, initial_condition_json, &
+                                      T, dt, duration, number_of_steps, output_interval_steps, &
+                                      maximum_cfl, elapsed_wall_seconds, nlon, transform%mu, &
+                                      gravity_acceleration, mean_depth, gravity_wave_implicitness)
+  end subroutine run_shallow_water_case
 
   function make_initial_condition_json(initial_condition) result(json)
     integer, intent(in) :: initial_condition
@@ -116,16 +213,46 @@ contains
     json = trim(buffer)
   end function make_initial_condition_json
 
+  function make_shallow_water_initial_condition_json(initial_condition) result(json)
+    integer, intent(in) :: initial_condition
+    character(len=:), allocatable :: json
+    character(len=768) :: buffer
+
+    select case (initial_condition)
+    case (1)
+      write (buffer, '(a,es24.16e3,a,es24.16e3,a,es24.16e3,a,es24.16e3,a)') &
+        '{"type":"isolated_gaussian_height_mountain","height_m":', mountain_height_metres, &
+        ',"longitude_degrees":', mountain_longitude_degrees, &
+        ',"latitude_degrees":', mountain_latitude_degrees, &
+        ',"angular_radius_degrees":', mountain_angular_radius_degrees, '}'
+    case (2)
+      write (buffer, '(a,i0,a,i0,a,es24.16e3,a)') &
+        '{"type":"single_spherical_harmonic_height","degree_n":', height_mode_degree, &
+        ',"zonal_order_m":', height_mode_order, &
+        ',"maximum_absolute_height_m":', height_mode_amplitude_metres, '}'
+    case default
+      error stop 'unknown shallow-water initial condition metadata'
+    end select
+    json = trim(buffer)
+  end function make_shallow_water_initial_condition_json
+
+  subroutine print_usage()
+    write (*, '(a)') 'Usage: core [shallow-water|barotropic|all]'
+    write (*, '(a)') '  shallow-water (default): run the mountain and single-harmonic height cases'
+    write (*, '(a)') '  barotropic:             run the three barotropic-vorticity cases'
+    write (*, '(a)') '  all:                    run every case'
+  end subroutine print_usage
+
   function find_output_root() result(path)
     character(len=:), allocatable :: path
     logical :: exists
 
-    inquire (file='docs/barotropic-vorticity-equation.md', exist=exists)
+    inquire (file='docs/shallow-water-equation.md', exist=exists)
     if (exists) then
       path = 'output'
       return
     end if
-    inquire (file='../docs/barotropic-vorticity-equation.md', exist=exists)
+    inquire (file='../docs/shallow-water-equation.md', exist=exists)
     if (exists) then
       path = '../output'
     else

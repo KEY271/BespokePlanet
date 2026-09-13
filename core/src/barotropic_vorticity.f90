@@ -1,16 +1,17 @@
 module barotropic_vorticity
   use iso_fortran_env, only: real64
   use harmonics, only: harmonic_transform
+  use raw_filter, only: raw_filter_epsilon, raw_filter_alpha, apply_raw_filter
+  use spectral_hyperdiffusion, only: hyperdiffusion_order, &
+                                       hyperdiffusion_timescale_seconds, &
+                                       apply_spectral_hyperdiffusion
   implicit none
   private
 
   real(real64), parameter, public :: earth_radius = 6.371e6_real64
   real(real64), parameter, public :: rotation_rate = 7.2921159e-5_real64
-  real(real64), parameter, public :: raw_filter_epsilon = 0.1_real64
-  real(real64), parameter, public :: raw_filter_alpha = 0.53_real64
-  integer, parameter, public :: hyperdiffusion_order = 4
-  real(real64), parameter, public :: hyperdiffusion_timescale_seconds = &
-    6.0_real64*3600.0_real64
+  public :: raw_filter_epsilon, raw_filter_alpha
+  public :: hyperdiffusion_order, hyperdiffusion_timescale_seconds
 
   type, public :: barotropic_solver
     private
@@ -69,52 +70,35 @@ contains
 
   subroutine advance(this)
     class(barotropic_solver), intent(inout) :: this
-    complex(real64), allocatable :: rhs(:, :), midpoint(:, :), next(:, :), delta(:, :)
-    integer :: n, m, T
-    real(real64) :: damping
+    complex(real64), allocatable :: rhs(:, :), midpoint(:, :), candidate(:, :), next(:, :)
+    complex(real64), allocatable :: filtered_current(:, :)
+    integer :: T
 
     call check_ready(this)
     T = this%truncation
-    allocate (midpoint(0:T + 1, 0:T), next(0:T + 1, 0:T))
+    allocate (midpoint(0:T + 1, 0:T), candidate(0:T + 1, 0:T))
     midpoint = cmplx(0.0_real64, 0.0_real64, kind=real64)
-    next = cmplx(0.0_real64, 0.0_real64, kind=real64)
+    candidate = cmplx(0.0_real64, 0.0_real64, kind=real64)
 
     if (this%step_number == 0) then
       call tendency(this, this%current, rhs)
-      do m = 0, T
-        do n = m, T
-          damping = damping_rate(this, n)
-          midpoint(n, m) = (this%current(n, m) + 0.5_real64*this%dt*rhs(n, m))/ &
-                           (1.0_real64 + 0.5_real64*this%dt*damping)
-        end do
-      end do
+      midpoint = this%current + 0.5_real64*this%dt*rhs
+      call apply_spectral_hyperdiffusion(T, 0.5_real64*this%dt, midpoint)
       call enforce_spectral_constraints(this, midpoint)
 
       call tendency(this, midpoint, rhs)
-      do m = 0, T
-        do n = m, T
-          damping = damping_rate(this, n)
-          next(n, m) = (this%current(n, m) + this%dt*rhs(n, m))/ &
-                       (1.0_real64 + this%dt*damping)
-        end do
-      end do
+      allocate (next(0:T + 1, 0:T))
+      next = this%current + this%dt*rhs
+      call apply_spectral_hyperdiffusion(T, this%dt, next)
       this%previous_filtered = this%current
     else
       call tendency(this, this%current, rhs)
-      do m = 0, T
-        do n = m, T
-          damping = damping_rate(this, n)
-          next(n, m) = (this%previous_filtered(n, m) + 2.0_real64*this%dt*rhs(n, m))/ &
-                       (1.0_real64 + 2.0_real64*this%dt*damping)
-        end do
-      end do
-      call enforce_spectral_constraints(this, next)
-
-      allocate (delta(0:T + 1, 0:T))
-      delta = 0.5_real64*raw_filter_epsilon* &
-              (this%previous_filtered - 2.0_real64*this%current + next)
-      this%previous_filtered = this%current + raw_filter_alpha*delta
-      next = next - (1.0_real64 - raw_filter_alpha)*delta
+      candidate = this%previous_filtered + 2.0_real64*this%dt*rhs
+      call apply_spectral_hyperdiffusion(T, 2.0_real64*this%dt, candidate)
+      call enforce_spectral_constraints(this, candidate)
+      call apply_raw_filter(this%previous_filtered, this%current, candidate, &
+                            filtered_current, next)
+      this%previous_filtered = filtered_current
       call enforce_spectral_constraints(this, this%previous_filtered)
     end if
 
@@ -233,16 +217,6 @@ contains
     call this%transform%grid_to_spectral(tendency_grid, rhs)
     call enforce_spectral_constraints(this, rhs)
   end subroutine tendency
-
-  pure real(real64) function damping_rate(this, n) result(rate)
-    class(barotropic_solver), intent(in) :: this
-    integer, intent(in) :: n
-    real(real64) :: ratio
-
-    ratio = real(n*(n + 1), real64)/ &
-            real(this%truncation*(this%truncation + 1), real64)
-    rate = ratio**hyperdiffusion_order/hyperdiffusion_timescale_seconds
-  end function damping_rate
 
   subroutine enforce_spectral_constraints(this, field)
     class(barotropic_solver), intent(in) :: this
