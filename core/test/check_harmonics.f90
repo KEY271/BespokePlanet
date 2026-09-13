@@ -20,6 +20,7 @@ program check_harmonics
   call check_mode(8, 3, cmplx(0.25_real64, 0.5_real64, kind=real64))
   call check_mode(T, 0, cmplx(1.0_real64, 0.0_real64, kind=real64))
   call check_mode(T, mmax_all, cmplx(-0.25_real64, 0.5_real64, kind=real64))
+  call check_mode(T, T, cmplx(0.125_real64, -0.25_real64, kind=real64))
   call check_spectral_extent()
   call check_extension_mode()
   call check_analytic_gradient(0, 'constant')
