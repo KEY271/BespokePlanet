@@ -7,6 +7,8 @@ module shallow_water_nonlinear
 
   public :: compute_shallow_water_nonlinear_tendency
   public :: diagnose_shallow_water_velocity
+  public :: flux_divergence
+  public :: flux_curl
 
 contains
 
@@ -101,6 +103,19 @@ contains
     end do
     call transform%grid_to_spectral(divergence_grid, divergence)
   end subroutine flux_divergence
+
+  subroutine flux_curl(transform, vector_u, vector_v, curl)
+    type(harmonic_transform), intent(inout) :: transform
+    real(real64), intent(in) :: vector_u(:, :), vector_v(:, :)
+    complex(real64), allocatable, intent(out) :: curl(:, :)
+    real(real64), allocatable :: rotated_u(:, :), rotated_v(:, :)
+
+    call transform%allocate_field(rotated_u)
+    call transform%allocate_field(rotated_v)
+    rotated_u = vector_v
+    rotated_v = -vector_u
+    call flux_divergence(transform, rotated_u, rotated_v, curl)
+  end subroutine flux_curl
 
   subroutine diagnose_shallow_water_velocity(transform, truncation, zeta, delta, u, v)
     type(harmonic_transform), intent(inout) :: transform

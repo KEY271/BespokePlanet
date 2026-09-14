@@ -12,6 +12,7 @@ program main
                                                 mountain_angular_radius_degrees, &
                                                 height_mode_degree, height_mode_order, &
                                                 height_mode_amplitude_metres
+  use dry_atmosphere, only: dry_atmosphere_solver
   use barotropic_initial_conditions, only: single_harmonic_vorticity, &
                                            rossby_haurwitz_vorticity, &
                                            random_low_wavenumber_vorticity, &
@@ -22,7 +23,8 @@ program main
                                            rossby_haurwitz_wave_amplitude, &
                                            random_minimum_degree, random_maximum_degree
   use field_output, only: make_directory, write_snapshot, write_run_metadata, &
-                          write_shallow_water_snapshot, write_shallow_water_metadata
+                          write_shallow_water_snapshot, write_shallow_water_metadata, &
+                          write_dry_snapshot, write_dry_metadata
   implicit none
 
   integer, parameter :: T = 63
@@ -43,7 +45,7 @@ program main
 
   argument_count = command_argument_count()
   if (argument_count == 0) then
-    equation_argument = 'shallow-water'
+    equation_argument = 'dry'
   else if (argument_count == 1) then
     call get_command_argument(1, equation_argument)
   else
@@ -59,7 +61,10 @@ program main
     call run_barotropic_case('single_harmonic', 1)
     call run_barotropic_case('rossby_haurwitz_r4', 2)
     call run_barotropic_case('random_n8_n12_seed_20260913', 3)
+  case ('dry', '--dry', 'dry-atmosphere')
+    call run_dry_case()
   case ('all')
+    call run_dry_case()
     call run_shallow_water_case('shallow_water_mountain', 1)
     call run_shallow_water_case('shallow_water_single_harmonic', 2)
     call run_barotropic_case('single_harmonic', 1)
@@ -185,6 +190,49 @@ contains
                                       gravity_acceleration, mean_depth, gravity_wave_implicitness)
   end subroutine run_shallow_water_case
 
+  subroutine run_dry_case()
+    type(dry_atmosphere_solver) :: solver
+    real(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
+    real(real64), allocatable :: surface_pressure(:, :), u(:, :, :), v(:, :, :)
+    real(real64), allocatable :: pressure_half(:), delta_pressure(:), layer_l(:), alpha(:), reference_temperature(:)
+    real(real64), allocatable :: a_half(:), b_half(:)
+    character(len=:), allocatable :: case_directory
+    integer :: step, number_of_steps
+    integer(int64) :: start_count, end_count, clock_rate, clock_max
+    real(real64) :: cfl, maximum_cfl, elapsed_wall_seconds
+
+    call system_clock(start_count, clock_rate, clock_max)
+    case_directory = output_root//'/dry_jablonowski_williamson'
+    call make_directory(case_directory)
+    call solver%init(T, dt)
+    call solver%set_jablonowski_williamson_state(.true.)
+    number_of_steps = nint(duration/dt)
+    maximum_cfl = 0.0_real64
+    do step = 0, number_of_steps
+      call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, cfl)
+      maximum_cfl = max(maximum_cfl, cfl)
+      if (mod(step, output_interval_steps) == 0 .or. step == number_of_steps) then
+        call write_dry_snapshot(case_directory, step, nlon, zeta, delta, temperature, surface_pressure, u, v)
+      end if
+      if (mod(step, 24) == 0 .or. step == number_of_steps) then
+        write (*, '(a,i0,a,f6.3)') 'dry_jablonowski_williamson: step ', step, ', advective CFL = ', cfl
+      end if
+      if (step < number_of_steps) call solver%advance()
+    end do
+    call system_clock(end_count)
+    if (end_count >= start_count) then
+      elapsed_wall_seconds = real(end_count - start_count, real64)/real(clock_rate, real64)
+    else
+      elapsed_wall_seconds = real(clock_max - start_count + end_count + 1_int64, real64)/ &
+                             real(clock_rate, real64)
+    end if
+    call solver%get_reference_atmosphere(pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
+                                         a_half, b_half)
+    call write_dry_metadata(case_directory, T, dt, duration, number_of_steps, output_interval_steps, &
+                            maximum_cfl, elapsed_wall_seconds, nlon, transform%mu, &
+                            pressure_half, delta_pressure, layer_l, alpha, reference_temperature, a_half, b_half)
+  end subroutine run_dry_case
+
   function make_initial_condition_json(initial_condition) result(json)
     integer, intent(in) :: initial_condition
     character(len=:), allocatable :: json
@@ -237,9 +285,10 @@ contains
   end function make_shallow_water_initial_condition_json
 
   subroutine print_usage()
-    write (*, '(a)') 'Usage: core [shallow-water|barotropic|all]'
-    write (*, '(a)') '  shallow-water (default): run the mountain and single-harmonic height cases'
+    write (*, '(a)') 'Usage: core [shallow-water|barotropic|dry|all]'
+    write (*, '(a)') '  shallow-water:           run the mountain and single-harmonic height cases'
     write (*, '(a)') '  barotropic:             run the three barotropic-vorticity cases'
+    write (*, '(a)') '  dry (default):          run the 10-day Jablonowski-Williamson dry-atmosphere case'
     write (*, '(a)') '  all:                    run every case'
   end subroutine print_usage
 

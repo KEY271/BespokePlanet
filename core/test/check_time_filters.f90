@@ -10,6 +10,7 @@ program check_time_filters
 
   call check_raw_formula()
   call check_hyperdiffusion_formula()
+  call check_custom_hyperdiffusion_timescale()
 
 contains
 
@@ -61,6 +62,19 @@ contains
       error stop 'shared hyperdiffusion has the wrong modal damping'
     end if
   end subroutine check_hyperdiffusion_formula
+
+  subroutine check_custom_hyperdiffusion_timescale()
+    complex(real64), allocatable :: field(:, :)
+    real(real64), parameter :: custom_timescale = 3600.0_real64
+
+    call allocate_test_field(field)
+    field = cmplx(0.0_real64, 0.0_real64, kind=real64)
+    field(T, 0) = cmplx(1.0_real64, 0.0_real64, kind=real64)
+    call apply_spectral_hyperdiffusion(T, custom_timescale, field, custom_timescale)
+    if (abs(real(field(T, 0), real64) - 0.5_real64) > 1.0e-15_real64) then
+      error stop 'shared hyperdiffusion ignored a custom e-folding timescale'
+    end if
+  end subroutine check_custom_hyperdiffusion_timescale
 
   subroutine allocate_test_field(field)
     complex(real64), allocatable, intent(out) :: field(:, :)

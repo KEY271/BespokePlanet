@@ -3,7 +3,8 @@ import * as THREE from "/vendor/three.module.js";
 const $ = (selector) => document.querySelector(selector);
 const state = {
   runs: [], metadata: null, run: null, field: null, frameIndex: 0, fieldValues: null,
-  frameRecord: null, scaleMode: "auto", scaleMax: 1, lockedScale: null,
+  frameRecord: null, scaleMode: "auto", scaleMin: 0, scaleMax: 1, lockedScale: null,
+  level: null,
   playing: false, rate: 1, lastTick: 0, accumulator: 0,
   frameCache: new Map(), conservation: null, metricIndex: 0,
   globalScaleCache: new Map(), scaleRequestId: 0,
@@ -16,8 +17,10 @@ const ui = {
   play: $("#play"), timeline: $("#timeline"), frame: $("#frame-number"), time: $("#time-label"),
   rate: $("#rate"), legendMin: $("#legend-min"), legendMax: $("#legend-max"), coordinate: $("#globe-coordinate"),
   scaleMode: $("#scale-mode"), gridPoints: $("#grid-points"),
+  levelPicker: $("#level-picker"), level: $("#level-select"),
   tabs: $("#metric-tabs"), chart: $("#chart"), metricCurrent: $("#metric-current"),
-  metricDrift: $("#metric-drift"), diagnosticsState: $("#diagnostics-state"), fatal: $("#fatal"),
+  metricDrift: $("#metric-drift"), diagnosticsState: $("#diagnostics-state"),
+  diagnostics: $("#diagnostics"), fatal: $("#fatal"),
 };
 
 const views = { globe: null, map: null };
@@ -72,12 +75,23 @@ function selectedField() {
   return state.metadata?.available_fields.find((field) => field.id === state.field) ?? null;
 }
 
+function selectedFieldUsesLevel() {
+  return Boolean(selectedField()?.uses_level);
+}
+
+function formatReferencePressure(pressurePa) {
+  const pressureHpa = pressurePa / 100;
+  return pressureHpa >= 100
+    ? pressureHpa.toFixed(0)
+    : pressureHpa.toFixed(1);
+}
+
 function formatFieldValue(value, unit) {
   return `${formatValue(value)} ${unit}`;
 }
 
-function absolutePercentile(values, quantile) {
-  const ordered = Array.from(values, (value) => Math.abs(value)).sort((a, b) => a - b);
+function percentile(values, quantile, absolute = false) {
+  const ordered = Array.from(values, (value) => absolute ? Math.abs(value) : value).sort((a, b) => a - b);
   const index = Math.min(ordered.length - 1, Math.max(0, Math.ceil(quantile * ordered.length) - 1));
   return ordered[index];
 }
@@ -352,12 +366,11 @@ function colorFor(t, target, offset) {
   }
 }
 
-function updateColors(values, scaleMax, signed) {
+function updateColors(values, scaleMin, scaleMax) {
+  const scaleWidth = Math.max(scaleMax - scaleMin, Number.EPSILON);
   const pointColors = new Float32Array(values.length * 3);
   for (let i = 0; i < values.length; i += 1) {
-    const normalized = signed
-      ? 0.5 + values[i] / (2 * scaleMax)
-      : values[i] / scaleMax;
+    const normalized = (values[i] - scaleMin) / scaleWidth;
     colorFor(THREE.MathUtils.clamp(normalized, 0, 1), pointColors, i * 3);
   }
   for (const key of ["globe", "map"]) {
@@ -382,18 +395,29 @@ function renderFieldRecord(record) {
   const field = selectedField();
   if (!field || !record) return;
   if (state.scaleMode === "auto") {
-    state.scaleMax = Math.max(record.p995Absolute, Number.EPSILON);
+    if (field.signed) {
+      state.scaleMax = Math.max(record.p995Absolute, Number.EPSILON);
+      state.scaleMin = -state.scaleMax;
+    } else if (field.zero_based) {
+      state.scaleMin = 0;
+      state.scaleMax = Math.max(record.p995, Number.EPSILON);
+    } else {
+      state.scaleMin = record.p005;
+      state.scaleMax = Math.max(record.p995, state.scaleMin + Number.EPSILON);
+    }
   } else if (state.scaleMode === "lock") {
-    state.scaleMax = Math.max(state.lockedScale ?? state.scaleMax, Number.EPSILON);
-  } else if (!(state.scaleMax > 0)) {
+    state.scaleMin = state.lockedScale?.minimum ?? state.scaleMin;
+    state.scaleMax = state.lockedScale?.maximum ?? state.scaleMax;
+  } else if (!(state.scaleMax > state.scaleMin)) {
+    state.scaleMin = field.signed ? -Math.max(record.p995Absolute, Number.EPSILON) : 0;
     state.scaleMax = Math.max(record.p995Absolute, Number.EPSILON);
   }
-  updateColors(record.values, state.scaleMax, field.signed);
+  updateColors(record.values, state.scaleMin, state.scaleMax);
   const frameMaximum = field.signed
     ? Math.max(Math.abs(record.minimum), Math.abs(record.maximum))
     : record.maximum;
   ui.maxValue.textContent = formatFieldValue(frameMaximum, field.unit);
-  ui.legendMin.textContent = field.signed ? formatFieldValue(-state.scaleMax, field.unit) : "0";
+  ui.legendMin.textContent = formatFieldValue(state.scaleMin, field.unit);
   ui.legendMax.textContent = formatFieldValue(state.scaleMax, field.unit);
 }
 
@@ -403,7 +427,7 @@ async function setScaleMode(mode) {
   ui.scaleMode.value = mode;
   const requestId = ++state.scaleRequestId;
   if (mode === "lock") {
-    state.lockedScale = Math.max(state.scaleMax, Number.EPSILON);
+    state.lockedScale = { minimum: state.scaleMin, maximum: state.scaleMax };
     renderFieldRecord(state.frameRecord);
     return;
   }
@@ -415,24 +439,34 @@ async function setScaleMode(mode) {
 
   const runAtStart = state.run;
   const fieldAtStart = state.field;
-  const cacheKey = `${runAtStart}:${fieldAtStart}`;
+  const levelAtStart = state.level;
+  const levelKey = selectedFieldUsesLevel() ? state.level : "surface";
+  const cacheKey = `${runAtStart}:${fieldAtStart}:${levelKey}`;
   let scale = state.globalScaleCache.get(cacheKey);
-  if (!(scale > 0)) {
-    scale = fieldAtStart === "speed" ? runMaximumSpeed(state.metadata) : null;
+  if (!scale && fieldAtStart === "speed") {
+    const speedMaximum = runMaximumSpeed(state.metadata);
+    if (speedMaximum > 0) scale = { minimum: 0, maximum: speedMaximum };
   }
-  if (!(scale > 0)) {
-    const stats = await fetchJSON(`/api/runs/${encodeURIComponent(runAtStart)}/fields/${encodeURIComponent(fieldAtStart)}/statistics`);
+  if (!scale) {
+    const query = selectedFieldUsesLevel() && Number.isInteger(levelAtStart)
+      ? `?level=${encodeURIComponent(levelAtStart)}`
+      : "";
+    const stats = await fetchJSON(`/api/runs/${encodeURIComponent(runAtStart)}/fields/${encodeURIComponent(fieldAtStart)}/statistics${query}`);
     const field = selectedField();
-    scale = field?.signed ? stats.maximum_absolute : stats.maximum;
+    scale = field?.signed
+      ? { minimum: -stats.maximum_absolute, maximum: stats.maximum_absolute }
+      : { minimum: field?.zero_based ? 0 : stats.minimum, maximum: stats.maximum };
   }
   if (
     requestId !== state.scaleRequestId
     || state.run !== runAtStart
     || state.field !== fieldAtStart
+    || state.level !== levelAtStart
     || state.scaleMode !== "global"
   ) return;
-  state.scaleMax = Math.max(scale, Number.EPSILON);
-  state.globalScaleCache.set(cacheKey, state.scaleMax);
+  state.scaleMin = scale.minimum;
+  state.scaleMax = Math.max(scale.maximum, scale.minimum + Number.EPSILON);
+  state.globalScaleCache.set(cacheKey, { minimum: state.scaleMin, maximum: state.scaleMax });
   renderFieldRecord(state.frameRecord);
 }
 
@@ -440,20 +474,27 @@ async function loadFrame(frameIndex) {
   const runAtStart = state.run;
   const fieldAtStart = state.field;
   const metadataAtStart = state.metadata;
+  const levelAtStart = state.level;
   const cacheGenerationAtStart = state.cacheGeneration;
   const requestId = ++state.frameRequestId;
   if (state.frameAbortController) state.frameAbortController.abort();
   state.frameAbortController = null;
 
   const step = metadataAtStart.available_steps[frameIndex];
-  const key = `${cacheGenerationAtStart}:${runAtStart}:${fieldAtStart}:${step}`;
+  const fieldAtStartMetadata = metadataAtStart.available_fields.find((field) => field.id === fieldAtStart);
+  const levelKey = fieldAtStartMetadata?.uses_level ? levelAtStart : "surface";
+  const key = `${cacheGenerationAtStart}:${runAtStart}:${fieldAtStart}:${levelKey}:${step}`;
   let record = state.frameCache.get(key);
   if (!record) {
     const controller = new AbortController();
     state.frameAbortController = controller;
     try {
+      const params = new URLSearchParams({ generation: String(cacheGenerationAtStart) });
+      if (fieldAtStartMetadata?.uses_level && Number.isInteger(levelAtStart)) {
+        params.set("level", String(levelAtStart));
+      }
       const response = await fetch(
-        `/api/runs/${encodeURIComponent(runAtStart)}/fields/${encodeURIComponent(fieldAtStart)}/${step}?generation=${cacheGenerationAtStart}`,
+        `/api/runs/${encodeURIComponent(runAtStart)}/fields/${encodeURIComponent(fieldAtStart)}/${step}?${params}`,
         { signal: controller.signal, cache: "no-store" },
       );
       if (!response.ok) {
@@ -465,14 +506,20 @@ async function loadFrame(frameIndex) {
       if (values.length !== metadataAtStart.grid.point_count) throw new Error("Frame point count does not match metadata");
       const percentileHeader = response.headers.get("X-Field-P995-Absolute");
       const headerPercentile = percentileHeader === null ? Number.NaN : Number(percentileHeader);
+      const p005Header = response.headers.get("X-Field-P005");
+      const p995Header = response.headers.get("X-Field-P995");
       record = {
         values,
         minimum: Number(response.headers.get("X-Field-Minimum")),
         maximum: Number(response.headers.get("X-Field-Maximum")),
+        p005: p005Header === null ? Number.NaN : Number(p005Header),
+        p995: p995Header === null ? Number.NaN : Number(p995Header),
         p995Absolute: Number.isFinite(headerPercentile) && headerPercentile >= 0
           ? headerPercentile
-          : absolutePercentile(values, 0.995),
+          : percentile(values, 0.995, true),
       };
+      if (!Number.isFinite(record.p005)) record.p005 = percentile(values, 0.005);
+      if (!Number.isFinite(record.p995)) record.p995 = percentile(values, 0.995);
       state.frameCache.set(key, record);
       while (state.frameCache.size > 16) state.frameCache.delete(state.frameCache.keys().next().value);
     } catch (error) {
@@ -486,6 +533,7 @@ async function loadFrame(frameIndex) {
     state.run !== runAtStart
     || state.field !== fieldAtStart
     || state.metadata !== metadataAtStart
+    || state.level !== levelAtStart
     || state.cacheGeneration !== cacheGenerationAtStart
     || requestId !== state.frameRequestId
   ) return false;
@@ -514,6 +562,7 @@ async function setField(fieldId, frameIndex = state.frameIndex) {
   if (!field) throw new Error(`Field ${fieldId} is not available for this run`);
   state.field = fieldId;
   state.frameRecord = null;
+  state.scaleMin = 0;
   state.scaleMax = 0;
   state.lockedScale = null;
   if (state.scaleMode === "lock") {
@@ -524,9 +573,39 @@ async function setField(fieldId, frameIndex = state.frameIndex) {
   ui.maxValueLabel.textContent = field.signed ? `MAX |${field.symbol}|` : `MAX ${field.symbol}`;
   ui.globe.setAttribute("aria-label", `${field.label} の三次元地球表示`);
   ui.map.setAttribute("aria-label", `${field.label} の二次元正距円筒図法表示`);
+  ui.level.disabled = !field.uses_level;
 
   await loadFrame(frameIndex);
   if (state.field === fieldId && state.scaleMode === "global") await setScaleMode("global");
+}
+
+async function setLevelFromInput() {
+  if (!state.metadata?.vertical_coordinate) return;
+  const vertical = state.metadata.vertical_coordinate;
+  const requested = Number(ui.level.value);
+  if (!Number.isInteger(requested)) {
+    ui.level.value = String(state.level);
+    return;
+  }
+  const level = Math.min(
+    Number(vertical.number_of_levels),
+    Math.max(1, Math.trunc(requested)),
+  );
+  ui.level.value = String(level);
+  if (level === state.level) return;
+  state.level = level;
+  if (!selectedFieldUsesLevel()) return;
+  stopPlayback();
+  state.frameRecord = null;
+  state.scaleMin = 0;
+  state.scaleMax = 0;
+  state.lockedScale = null;
+  if (state.scaleMode === "lock") {
+    state.scaleMode = "auto";
+    ui.scaleMode.value = "auto";
+  }
+  await loadFrame(state.frameIndex);
+  if (state.scaleMode === "global") await setScaleMode("global");
 }
 
 async function selectRun(name) {
@@ -540,6 +619,7 @@ async function selectRun(name) {
   state.playbackLoadPending = false;
   state.run = name;
   state.field = null;
+  state.level = null;
   state.frameRecord = null;
   state.scaleRequestId += 1;
   state.frameIndex = 0;
@@ -550,6 +630,18 @@ async function selectRun(name) {
   const metadata = await fetchJSON(`/api/runs/${encodeURIComponent(name)}/metadata`);
   if (state.run !== name) return;
   state.metadata = metadata;
+  const vertical = metadata.vertical_coordinate;
+  ui.levelPicker.hidden = !vertical;
+  if (vertical) {
+    state.level = Number(vertical.default_level);
+    ui.level.replaceChildren(...vertical.reference_full_level_pressure_pa.map((pressurePa, index) => {
+      const option = document.createElement("option");
+      option.value = String(index + 1);
+      option.textContent = `L${String(index + 1).padStart(2, "0")} · ≈ ${formatReferencePressure(Number(pressurePa))} hPa`;
+      return option;
+    }));
+    ui.level.value = String(state.level);
+  }
   ui.field.replaceChildren(...metadata.available_fields.map((field) => {
     const option = document.createElement("option");
     option.value = field.id;
@@ -558,13 +650,17 @@ async function selectRun(name) {
   }));
   ui.points.textContent = Number(metadata.grid.point_count).toLocaleString("ja-JP");
   ui.timeline.max = String(metadata.available_steps.length - 1);
-  ui.datasetState.textContent = `${metadata.available_frame_count} FRAMES READY`;
+  ui.datasetState.textContent = vertical
+    ? `${metadata.available_frame_count} FRAMES · LEVELS READY`
+    : `${metadata.available_frame_count} FRAMES READY`;
   setupViews(metadata);
   const initialField = metadata.available_fields.some((field) => field.id === "speed")
     ? "speed"
     : metadata.available_fields[0].id;
   await setField(initialField, 0);
   if (state.run !== name) return;
+  ui.diagnostics.hidden = metadata.supports_conservation_diagnostics === false;
+  if (metadata.supports_conservation_diagnostics === false) return;
   fetchJSON(`/api/runs/${encodeURIComponent(name)}/conservation`)
     .then((data) => {
       if (state.run !== name) return;
@@ -714,6 +810,7 @@ async function init() {
   }));
   ui.run.addEventListener("change", () => selectRun(ui.run.value).catch(showFatal));
   ui.field.addEventListener("change", () => setField(ui.field.value).catch(showFatal));
+  ui.level.addEventListener("change", () => setLevelFromInput().catch(showFatal));
   ui.play.addEventListener("click", () => {
     if (state.playing) {
       stopPlayback();

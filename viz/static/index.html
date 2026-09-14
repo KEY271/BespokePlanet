@@ -21,6 +21,10 @@
         <label for="field-select">FIELD</label>
         <select id="field-select" aria-label="表示する場を選択"></select>
       </div>
+      <div class="run-picker level-picker" id="level-picker" hidden>
+        <label for="level-select">LEVEL · p₀ REF.</label>
+        <select id="level-select" aria-label="表示する大気層"></select>
+      </div>
       <div class="live-state"><span></span><b id="dataset-state">DATASET READY</b></div>
     </header>
 
@@ -69,7 +73,7 @@
         </div>
       </section>
 
-      <section class="panel diagnostics">
+      <section class="panel diagnostics" id="diagnostics">
         <div class="panel-heading">
           <div><span class="index">03</span><h2>Conservation diagnostics</h2></div>
           <p id="diagnostics-state">COMPUTING SPHERICAL INTEGRALS…</p>

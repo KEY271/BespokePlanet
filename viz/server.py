@@ -16,20 +16,49 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 
 FRAME_RE = re.compile(r"^(zeta|delta|eta|u|v)_(\d{5})\.bin$")
+DRY_LEVEL_FRAME_RE = re.compile(
+    r"^(zeta|delta|temperature|u|v)_l(\d{2})_(\d{5})\.bin$"
+)
+DRY_SURFACE_FRAME_RE = re.compile(r"^surface_pressure_(\d{5})\.bin$")
 RUN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 FIELD_DEFINITIONS: dict[str, dict[str, Any]] = {
     "zeta": {"label": "zeta", "symbol": "ζ", "unit": "s⁻¹", "signed": True},
     "delta": {"label": "delta", "symbol": "δ", "unit": "s⁻¹", "signed": True},
     "eta": {"label": "eta", "symbol": "η", "unit": "m", "signed": True},
+    "temperature": {
+        "label": "temperature",
+        "symbol": "T",
+        "unit": "K",
+        "signed": False,
+    },
+    "surface_pressure": {
+        "label": "surface pressure",
+        "symbol": "pₛ",
+        "unit": "Pa",
+        "signed": False,
+    },
+    "u": {
+        "label": "eastward wind u",
+        "symbol": "u",
+        "unit": "m s⁻¹",
+        "signed": True,
+    },
+    "v": {
+        "label": "northward wind v",
+        "symbol": "v",
+        "unit": "m s⁻¹",
+        "signed": True,
+    },
     "speed": {
         "label": "sqrt(u² + v²)",
         "symbol": "|u|",
         "unit": "m s⁻¹",
         "signed": False,
+        "zero_based": True,
     },
 }
 
@@ -46,6 +75,98 @@ class Run:
     steps: tuple[int, ...]
     fields: tuple[str, ...]
     data_generation: int
+    is_dry: bool = False
+    level_count: int = 0
+
+
+def _full_level_pressure(top: float, bottom: float) -> float:
+    """Pressure represented by a layer-centred prognostic value."""
+    if not (math.isfinite(top) and math.isfinite(bottom) and 0.0 < top < bottom):
+        raise DataError("Dry-atmosphere half-level pressures must increase downward")
+    thickness = bottom - top
+    alpha = 1.0 - top * math.log(bottom / top) / thickness
+    return bottom * math.exp(-alpha)
+
+
+def _normalized_metadata(raw: dict[str, Any]) -> dict[str, Any]:
+    """Normalize legacy dry metadata to the schema used by the visualizer."""
+    metadata = dict(raw)
+    grid = dict(metadata["grid"])
+    nlon = [int(value) for value in grid["nlon"]]
+    offsets = [0]
+    for ring_size in nlon:
+        offsets.append(offsets[-1] + ring_size)
+    grid.setdefault("ring_offsets", offsets)
+    grid.setdefault("point_count", offsets[-1])
+    metadata["grid"] = grid
+
+    equation = metadata.get("equation", "barotropic_vorticity")
+    if equation != "dry_hydrostatic_atmosphere":
+        metadata.setdefault("supports_conservation_diagnostics", True)
+        return metadata
+
+    metadata.setdefault(
+        "simulation",
+        {
+            "duration_seconds": metadata.get("duration_seconds"),
+            "time_step_seconds": metadata.get("time_step_seconds"),
+            "number_of_steps": metadata.get("number_of_steps"),
+            "snapshot_interval_steps": metadata.get("snapshot_interval_steps"),
+            "number_of_snapshots": metadata.get("number_of_snapshots"),
+        },
+    )
+    metadata.setdefault(
+        "numerics",
+        {
+            "spectral_truncation": metadata.get("spectral_truncation"),
+            "maximum_cfl": metadata.get("maximum_advective_cfl"),
+        },
+    )
+    half_levels = [float(value) for value in metadata["reference_half_level_pressure_pa"]]
+    level_count = int(metadata.get("number_of_levels", len(half_levels) - 1))
+    if len(half_levels) != level_count + 1:
+        raise DataError("Dry-atmosphere metadata has an invalid vertical level count")
+    full_levels = [
+        _full_level_pressure(half_levels[k], half_levels[k + 1])
+        for k in range(level_count)
+    ]
+    default_level = min(
+        range(1, level_count + 1),
+        key=lambda level: abs(math.log(full_levels[level - 1] / 50000.0)),
+    )
+    vertical = dict(metadata.get("vertical_coordinate", {}))
+    for obsolete_key in (
+        "minimum_pressure_pa",
+        "maximum_pressure_pa",
+        "default_pressure_pa",
+        "interpolation",
+    ):
+        vertical.pop(obsolete_key, None)
+    vertical.update(
+        {
+            "type": "hybrid_sigma_pressure",
+            "number_of_levels": level_count,
+            "reference_half_level_pressure_pa": half_levels,
+            "reference_full_level_pressure_pa": full_levels,
+            "default_level": default_level,
+            "level_order": "top_to_bottom",
+        }
+    )
+    a_half = metadata.get("hybrid_a_half_pa")
+    b_half = metadata.get("hybrid_b_half")
+    if a_half is not None or b_half is not None:
+        if a_half is None or b_half is None:
+            raise DataError("Dry-atmosphere metadata must contain both hybrid A and B")
+        vertical["a_half_pa"] = [float(value) for value in a_half]
+        vertical["b_half"] = [float(value) for value in b_half]
+        if len(vertical["a_half_pa"]) != level_count + 1 or len(vertical["b_half"]) != level_count + 1:
+            raise DataError("Dry-atmosphere hybrid coefficients have an invalid length")
+        vertical["pressure_is_column_dependent"] = True
+    else:
+        vertical["pressure_is_column_dependent"] = False
+    metadata["vertical_coordinate"] = vertical
+    metadata["supports_conservation_diagnostics"] = False
+    return metadata
 
 
 def _read_float64(path: Path, expected_count: int) -> array:
@@ -89,7 +210,9 @@ class Repository:
     def __init__(self, output_root: Path) -> None:
         self.output_root = output_root.resolve()
         self._conservation_cache: dict[tuple[str, int], dict[str, Any]] = {}
-        self._field_statistics_cache: dict[tuple[str, int, str], dict[str, float]] = {}
+        self._field_statistics_cache: dict[
+            tuple[str, int, str, int | None], dict[str, float]
+        ] = {}
         self._cache_lock = threading.Lock()
 
     def discover(self) -> list[Run]:
@@ -114,7 +237,9 @@ class Repository:
         if run_path.parent != self.output_root or not run_path.is_dir():
             raise KeyError(name)
         metadata_path = run_path / "metadata.json"
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata = _normalized_metadata(
+            json.loads(metadata_path.read_text(encoding="utf-8"))
+        )
         grid = metadata["grid"]
         mu = grid["mu"]
         nlon = grid["nlon"]
@@ -125,6 +250,13 @@ class Repository:
             raise DataError(f"Invalid ring offsets in {metadata_path}")
         if int(grid["point_count"]) != offsets[-1]:
             raise DataError(f"Invalid point count in {metadata_path}")
+
+        is_dry = metadata.get("equation") == "dry_hydrostatic_atmosphere"
+        level_count = int(metadata.get("vertical_coordinate", {}).get("number_of_levels", 0))
+        if is_dry:
+            return self._load_dry_run(
+                name, run_path, metadata_path, metadata, level_count
+            )
 
         step_sets = {field: set() for field in ("zeta", "delta", "eta", "u", "v")}
         for path in run_path.iterdir():
@@ -171,30 +303,112 @@ class Repository:
         )
 
     @staticmethod
+    def _load_dry_run(
+        name: str,
+        run_path: Path,
+        metadata_path: Path,
+        metadata: dict[str, Any],
+        level_count: int,
+    ) -> Run:
+        if level_count <= 0 or level_count > 99:
+            raise DataError(f"Invalid dry-atmosphere level count in {metadata_path}")
+        level_steps = {
+            field: {level: set() for level in range(1, level_count + 1)}
+            for field in ("zeta", "delta", "temperature", "u", "v")
+        }
+        surface_steps: set[int] = set()
+        for path in run_path.iterdir():
+            level_match = DRY_LEVEL_FRAME_RE.match(path.name)
+            if level_match:
+                field, level_text, step_text = level_match.groups()
+                level = int(level_text)
+                if 1 <= level <= level_count:
+                    level_steps[field][level].add(int(step_text))
+                continue
+            surface_match = DRY_SURFACE_FRAME_RE.match(path.name)
+            if surface_match:
+                surface_steps.add(int(surface_match.group(1)))
+
+        def complete_level_steps(field: str) -> set[int]:
+            return set.intersection(
+                *(level_steps[field][level] for level in range(1, level_count + 1))
+            )
+
+        complete = {
+            field: complete_level_steps(field)
+            for field in ("zeta", "delta", "temperature", "u", "v")
+        }
+        fields: list[str] = []
+        required_step_sets: list[set[int]] = []
+        if surface_steps:
+            fields.append("surface_pressure")
+            required_step_sets.append(surface_steps)
+        for field in ("temperature", "zeta", "delta", "u", "v"):
+            if complete[field]:
+                fields.append(field)
+                required_step_sets.append(complete[field])
+        if complete["u"] and complete["v"]:
+            fields.append("speed")
+        if not fields or not required_step_sets:
+            raise DataError(f"No supported dry-atmosphere fields found in {run_path}")
+
+        steps = tuple(sorted(set.intersection(*required_step_sets)))
+        simulation = metadata["simulation"]
+        interval = int(simulation["snapshot_interval_steps"])
+        final_step = int(simulation["number_of_steps"])
+        if interval <= 0:
+            raise DataError(f"Invalid snapshot interval in {metadata_path}")
+        steps = tuple(
+            step
+            for step in steps
+            if 0 <= step <= final_step
+            and (step % interval == 0 or step == final_step)
+        )
+        if not steps:
+            raise DataError(f"No complete dry-atmosphere frames found in {run_path}")
+        return Run(
+            name=name,
+            path=run_path,
+            metadata=metadata,
+            steps=steps,
+            fields=tuple(fields),
+            data_generation=metadata_path.stat().st_mtime_ns,
+            is_dry=True,
+            level_count=level_count,
+        )
+
+    @staticmethod
     def public_metadata(run: Run) -> dict[str, Any]:
         metadata = dict(run.metadata)
         metadata["available_steps"] = list(run.steps)
         metadata["available_frame_count"] = len(run.steps)
         metadata["data_generation"] = run.data_generation
         metadata["available_fields"] = [
-            {"id": field, **FIELD_DEFINITIONS[field]} for field in run.fields
+            {
+                "id": field,
+                **FIELD_DEFINITIONS[field],
+                "uses_level": run.is_dry and field != "surface_pressure",
+            }
+            for field in run.fields
         ]
         return metadata
 
     def field_frame(
-        self, run: Run, field: str, step: int
+        self, run: Run, field: str, step: int, level: int | None = None
     ) -> tuple[bytes, dict[str, float]]:
         if step not in run.steps:
             raise KeyError(step)
         if field not in run.fields:
             raise KeyError(field)
-        values = self._field_values(run, field, step)
+        values = self._field_values(run, field, step, level)
         count = int(run.metadata["grid"]["point_count"])
         finite = [value for value in values if math.isfinite(value)]
         if len(finite) != count:
             raise DataError(f"Frame {step} contains non-finite values in {field}")
         ordered = sorted(finite)
+        p005 = ordered[min(count - 1, max(0, math.floor(0.005 * count)))]
         p98 = ordered[min(count - 1, int(0.98 * (count - 1)))]
+        p995 = ordered[min(count - 1, max(0, math.ceil(0.995 * count) - 1))]
         absolute_ordered = sorted(abs(value) for value in finite)
         p98_absolute = absolute_ordered[min(count - 1, int(0.98 * (count - 1)))]
         p995_absolute = absolute_ordered[
@@ -203,7 +417,9 @@ class Repository:
         stats = {
             "minimum": ordered[0],
             "maximum": ordered[-1],
+            "p005": p005,
             "p98": p98,
+            "p995": p995,
             "maximum_absolute": max(abs(ordered[0]), abs(ordered[-1])),
             "p98_absolute": p98_absolute,
             "p995_absolute": p995_absolute,
@@ -214,8 +430,41 @@ class Repository:
         return values.tobytes(), stats
 
     @staticmethod
-    def _field_values(run: Run, field: str, step: int) -> array:
+    def _field_values(
+        run: Run, field: str, step: int, level: int | None = None
+    ) -> array:
         count = int(run.metadata["grid"]["point_count"])
+        if run.is_dry:
+            if field == "surface_pressure":
+                return array(
+                    "f",
+                    _read_float64(
+                        run.path / f"surface_pressure_{step:05d}.bin", count
+                    ),
+                )
+            selected_level = int(
+                run.metadata["vertical_coordinate"]["default_level"]
+                if level is None
+                else level
+            )
+            if not 1 <= selected_level <= run.level_count:
+                raise DataError(
+                    f"Level must be between 1 and {run.level_count} for this run"
+                )
+            if field == "speed":
+                east = _read_float64(
+                    run.path / f"u_l{selected_level:02d}_{step:05d}.bin", count
+                )
+                north = _read_float64(
+                    run.path / f"v_l{selected_level:02d}_{step:05d}.bin", count
+                )
+                return array(
+                    "f", (math.hypot(u_value, v_value) for u_value, v_value in zip(east, north))
+                )
+            source = _read_float64(
+                run.path / f"{field}_l{selected_level:02d}_{step:05d}.bin", count
+            )
+            return array("f", source)
         if field == "speed":
             u = _read_float64(run.path / f"u_{step:05d}.bin", count)
             v = _read_float64(run.path / f"v_{step:05d}.bin", count)
@@ -227,10 +476,13 @@ class Repository:
         """Backward-compatible alias for clients using the original speed API."""
         return self.field_frame(run, "speed", step)
 
-    def field_statistics(self, run: Run, field: str) -> dict[str, float]:
+    def field_statistics(
+        self, run: Run, field: str, level: int | None = None
+    ) -> dict[str, float]:
         if field not in run.fields:
             raise KeyError(field)
-        key = (run.name, run.data_generation, field)
+        level_key = None if level is None else int(level)
+        key = (run.name, run.data_generation, field, level_key)
         with self._cache_lock:
             cached = self._field_statistics_cache.get(key)
         if cached is not None:
@@ -239,7 +491,7 @@ class Repository:
         minimum = math.inf
         maximum = -math.inf
         for step in run.steps:
-            for value in self._field_values(run, field, step):
+            for value in self._field_values(run, field, step, level):
                 if not math.isfinite(value):
                     raise DataError(f"Frame {step} contains non-finite values in {field}")
                 minimum = min(minimum, value)
@@ -257,6 +509,10 @@ class Repository:
         return result
 
     def conservation(self, run: Run) -> dict[str, Any]:
+        if run.is_dry:
+            raise DataError(
+                "Conservation diagnostics are not yet defined for dry-atmosphere output"
+            )
         cache_key = (run.name, run.data_generation)
         with self._cache_lock:
             cached = self._conservation_cache.get(cache_key)
@@ -368,7 +624,17 @@ class AppHandler(BaseHTTPRequestHandler):
             self._json_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
 
     def _route_get(self) -> None:
-        path = unquote(urlparse(self.path).path)
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+        query = parse_qs(parsed.query)
+        level: int | None = None
+        if "level" in query:
+            try:
+                if len(query["level"]) != 1:
+                    raise ValueError
+                level = int(query["level"][0])
+            except ValueError as exc:
+                raise DataError("level must be one integer") from exc
         if path == "/api/runs":
             runs = self.repository.discover()
             self._send_json(
@@ -397,7 +663,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._send_json(self.repository.conservation(run))
                 return
             if len(parts) == 6 and parts[3] == "fields" and parts[5] == "statistics":
-                self._send_json(self.repository.field_statistics(run, parts[4]))
+                self._send_json(
+                    self.repository.field_statistics(run, parts[4], level)
+                )
                 return
             if len(parts) == 6 and parts[3] == "fields":
                 field = parts[4]
@@ -405,8 +673,10 @@ class AppHandler(BaseHTTPRequestHandler):
                     step = int(parts[5])
                 except ValueError as exc:
                     raise KeyError(parts[5]) from exc
-                payload, stats = self.repository.field_frame(run, field, step)
-                self._send_field(payload, stats)
+                payload, stats = self.repository.field_frame(
+                    run, field, step, level
+                )
+                self._send_field(payload, stats, level=level)
                 return
             if len(parts) == 5 and parts[3] == "frame":
                 try:
@@ -451,6 +721,7 @@ class AppHandler(BaseHTTPRequestHandler):
         payload: bytes,
         stats: dict[str, float],
         legacy_speed_headers: bool = False,
+        level: int | None = None,
     ) -> None:
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/octet-stream")
@@ -459,6 +730,8 @@ class AppHandler(BaseHTTPRequestHandler):
         for name, value in stats.items():
             header = "-".join(part.capitalize() for part in name.split("_"))
             self.send_header(f"X-Field-{header}", f"{value:.9g}")
+        if level is not None:
+            self.send_header("X-Field-Level", str(level))
         if legacy_speed_headers:
             self.send_header("X-Speed-Min", f"{stats['minimum']:.9g}")
             self.send_header("X-Speed-Max", f"{stats['maximum']:.9g}")

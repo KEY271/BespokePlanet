@@ -4,8 +4,8 @@ root := justfile_directory()
 test:
     cd "{{ root }}/core" && fpm test --profile release --link-flag "$(pkg-config --libs-only-L fftw3)"
 
-# Run the model in release mode (equation: shallow-water, barotropic, or all).
-run equation="shallow-water":
+# Run the model in release mode (equation: shallow-water, barotropic, dry, or all).
+run equation="dry":
     cd "{{ root }}/core" && fpm run --profile release --link-flag "$(pkg-config --libs-only-L fftw3)" -- "{{ equation }}"
 
 # Start the visualizer (defaults to http://127.0.0.1:8000).
