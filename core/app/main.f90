@@ -31,6 +31,8 @@ program main
   real(real64), parameter :: dt = 900.0_real64
   real(real64), parameter :: duration = 10.0_real64*24.0_real64*3600.0_real64
   integer, parameter :: output_interval_steps = 16
+  real(real64), parameter :: held_suarez_duration = 200.0_real64*24.0_real64*3600.0_real64
+  integer, parameter :: held_suarez_output_interval_steps = nint(5.0_real64*24.0_real64*3600.0_real64/dt)
   !> Progress is logged once per simulated day (and at the final step).
   integer, parameter :: log_interval_steps = max(1, nint(86400.0_real64/dt))
   integer(int64), parameter :: random_seed_value = 20260913_int64
@@ -66,6 +68,8 @@ program main
   case ('dry', '--dry', 'dry-atmosphere')
     call run_dry_case('dry_jablonowski_williamson_steady', .false.)
     call run_dry_case('dry_jablonowski_williamson_perturbed', .true.)
+  case ('held-suarez', '--held-suarez', 'held_suarez')
+    call run_dry_case('dry_held_suarez', .false., held_suarez=.true.)
   case ('all')
     call run_dry_case('dry_jablonowski_williamson_steady', .false.)
     call run_dry_case('dry_jablonowski_williamson_perturbed', .true.)
@@ -74,6 +78,7 @@ program main
     call run_barotropic_case('single_harmonic', 1)
     call run_barotropic_case('rossby_haurwitz_r4', 2)
     call run_barotropic_case('random_n8_n12_seed_20260913', 3)
+    call run_dry_case('dry_held_suarez', .false., held_suarez=.true.)
   case ('--help', '-h', 'help')
     call print_usage()
   case default
@@ -95,7 +100,7 @@ contains
     real(real64) :: cfl, maximum_cfl, elapsed_wall_seconds
 
     call system_clock(start_count)
-    call write_case_header(case_name)
+    call write_case_header(case_name, duration)
     select case (initial_condition)
     case (1)
       call single_harmonic_vorticity(transform, T, initial_zeta)
@@ -145,7 +150,7 @@ contains
     real(real64) :: cfl, maximum_cfl, elapsed_wall_seconds
 
     call system_clock(start_count)
-    call write_case_header(case_name)
+    call write_case_header(case_name, duration)
     select case (initial_condition)
     case (1)
       call isolated_height_mountain(transform, T, initial_zeta, initial_delta, initial_eta)
@@ -184,38 +189,54 @@ contains
                                       gravity_acceleration, mean_depth, gravity_wave_implicitness)
   end subroutine run_shallow_water_case
 
-  subroutine run_dry_case(case_name, include_perturbation)
+  subroutine run_dry_case(case_name, include_perturbation, held_suarez)
     character(*), intent(in) :: case_name
     !> .false. keeps the balanced zonal base state (should stay steady);
     !> .true. adds the localized wind perturbation that triggers the baroclinic wave.
     logical, intent(in) :: include_perturbation
+    logical, intent(in), optional :: held_suarez
     type(dry_atmosphere_solver) :: solver
     real(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     real(real64), allocatable :: surface_pressure(:, :), u(:, :, :), v(:, :, :)
     real(real64), allocatable :: pressure_half(:), delta_pressure(:), layer_l(:), alpha(:), reference_temperature(:)
     real(real64), allocatable :: a_half(:), b_half(:)
     character(len=:), allocatable :: case_directory, initial_condition
-    integer :: step, number_of_steps
+    integer :: step, number_of_steps, snapshot_interval_steps
     integer(int64) :: start_count
-    real(real64) :: cfl, maximum_cfl, elapsed_wall_seconds
+    real(real64) :: cfl, maximum_cfl, elapsed_wall_seconds, case_duration
+    logical :: use_held_suarez
 
     call system_clock(start_count)
-    call write_case_header(case_name)
-    if (include_perturbation) then
+    use_held_suarez = .false.
+    if (present(held_suarez)) use_held_suarez = held_suarez
+    if (use_held_suarez) then
+      initial_condition = 'Held-Suarez resting isothermal atmosphere with thermal and Rayleigh forcing'
+      case_duration = held_suarez_duration
+      snapshot_interval_steps = held_suarez_output_interval_steps
+    else if (include_perturbation) then
       initial_condition = 'Jablonowski-Williamson with localized wind perturbation'
+      case_duration = duration
+      snapshot_interval_steps = output_interval_steps
     else
       initial_condition = 'Jablonowski-Williamson balanced base state without perturbation'
+      case_duration = duration
+      snapshot_interval_steps = output_interval_steps
     end if
+    call write_case_header(case_name, case_duration)
     case_directory = output_root//'/'//case_name
     call make_directory(case_directory)
     call solver%init(T, dt)
-    call solver%set_jablonowski_williamson_state(include_perturbation)
-    number_of_steps = nint(duration/dt)
+    if (use_held_suarez) then
+      call solver%set_held_suarez_state()
+    else
+      call solver%set_jablonowski_williamson_state(include_perturbation)
+    end if
+    number_of_steps = nint(case_duration/dt)
     maximum_cfl = 0.0_real64
     do step = 0, number_of_steps
       ! Grid fields are synthesized only for snapshots.  On every other step the CFL of
       ! the current state comes from the grid winds that advance already builds.
-      if (mod(step, output_interval_steps) == 0 .or. step == number_of_steps) then
+      if (mod(step, snapshot_interval_steps) == 0 .or. step == number_of_steps) then
         call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, cfl)
         maximum_cfl = max(maximum_cfl, cfl)
         call write_dry_snapshot(case_directory, step, nlon, zeta, delta, temperature, surface_pressure, u, v)
@@ -234,8 +255,8 @@ contains
     elapsed_wall_seconds = elapsed_seconds(start_count)
     call solver%get_reference_atmosphere(pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
                                          a_half, b_half)
-    call write_dry_metadata(case_directory, initial_condition, T, dt, duration, number_of_steps, &
-                            output_interval_steps, &
+    call write_dry_metadata(case_directory, initial_condition, T, dt, case_duration, number_of_steps, &
+                            snapshot_interval_steps, &
                             maximum_cfl, elapsed_wall_seconds, nlon, transform%mu, &
                             pressure_half, delta_pressure, layer_l, alpha, reference_temperature, a_half, b_half)
   end subroutine run_dry_case
@@ -292,11 +313,12 @@ contains
   end function make_shallow_water_initial_condition_json
 
   !> Printed once when a case starts.
-  subroutine write_case_header(case_name)
+  subroutine write_case_header(case_name, case_duration)
     character(*), intent(in) :: case_name
+    real(real64), intent(in) :: case_duration
 
-    write (*, '(3a,f0.1,a,i0,a,f0.1,a)') '== ', trim(case_name), ': ', duration/86400.0_real64, &
-      ' days, ', nint(duration/dt), ' steps, dt = ', dt, ' s'
+    write (*, '(3a,f0.1,a,i0,a,f0.1,a)') '== ', trim(case_name), ': ', case_duration/86400.0_real64, &
+      ' days, ', nint(case_duration/dt), ' steps, dt = ', dt, ' s'
   end subroutine write_case_header
 
   logical function is_log_step(step, number_of_steps)
@@ -361,11 +383,12 @@ contains
   end function elapsed_seconds
 
   subroutine print_usage()
-    write (*, '(a)') 'Usage: core [shallow-water|barotropic|dry|all]'
+    write (*, '(a)') 'Usage: core [shallow-water|barotropic|dry|held-suarez|all]'
     write (*, '(a)') '  shallow-water:           run the mountain and single-harmonic height cases'
     write (*, '(a)') '  barotropic:             run the three barotropic-vorticity cases'
     write (*, '(a)') '  dry (default):          run the 10-day Jablonowski-Williamson dry-atmosphere cases'
     write (*, '(a)') '                          (steady base state and localized wind perturbation)'
+    write (*, '(a)') '  held-suarez:            run the 200-day forced dry-atmosphere case (output every 5 days)'
     write (*, '(a)') '  all:                    run every case'
   end subroutine print_usage
 

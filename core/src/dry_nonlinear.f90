@@ -4,6 +4,7 @@ module dry_nonlinear
   use barotropic_vorticity, only: earth_radius, rotation_rate
   use shallow_water_nonlinear, only: diagnose_shallow_water_velocity, flux_curl_divergence
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate, dry_air_gas_constant, dry_air_kappa
+  use dry_held_suarez, only: held_suarez_forcing
   implicit none
   private
 
@@ -15,7 +16,7 @@ contains
                                             zeta, delta, temperature, log_surface_pressure, &
                                             surface_geopotential, &
                                             rhs_zeta, rhs_delta, rhs_temperature, &
-                                            rhs_log_surface_pressure, maximum_speed)
+                                            rhs_log_surface_pressure, maximum_speed, apply_held_suarez)
     type(harmonic_transform), intent(inout) :: transform
     integer, intent(in) :: truncation
     type(hybrid_sigma_coordinate), intent(in) :: coordinate
@@ -26,6 +27,7 @@ contains
     complex(real64), allocatable, intent(out) :: rhs_log_surface_pressure(:, :)
     !> Largest horizontal wind speed (m/s) of the input state, a by-product of the grid winds.
     real(real64), intent(out), optional :: maximum_speed
+    logical, intent(in), optional :: apply_held_suarez
     real(real64), allocatable :: zeta_grid(:, :, :), delta_grid(:, :, :), temperature_grid(:, :, :)
     real(real64), allocatable :: u(:, :, :), v(:, :, :), log_ps(:, :), ps(:, :)
     real(real64), allocatable :: surface_geopotential_grid(:, :)
@@ -36,6 +38,7 @@ contains
     real(real64), allocatable :: pressure_gradient_u(:, :, :), pressure_gradient_v(:, :, :)
     real(real64), allocatable :: vertical_u(:, :, :), vertical_v(:, :, :), vertical_t(:, :, :)
     real(real64), allocatable :: vector_u(:, :), vector_v(:, :)
+    real(real64), allocatable :: held_temperature_tendency(:, :)
     real(real64), allocatable :: tendency_grid(:, :), dtdlambda(:, :), dtdphi(:, :)
     real(real64), allocatable :: temporary_grid(:, :), temporary_u(:, :), temporary_v(:, :)
     complex(real64), allocatable :: temporary_spectral(:, :), curl_spectral(:, :), divergence_spectral(:, :)
@@ -43,8 +46,12 @@ contains
     integer :: number_of_levels, nx, ny, i, j, k, n, m
     real(real64) :: cosphi, gradient_u, gradient_v, coefficient, thermodynamic_q
     real(real64) :: absolute_vorticity, kinetic, maximum_speed_squared
+    real(real64) :: full_level_pressure, forcing_u, forcing_v, forcing_temperature
+    logical :: use_held_suarez
 
     number_of_levels = coordinate%number_of_levels
+    use_held_suarez = .false.
+    if (present(apply_held_suarez)) use_held_suarez = apply_held_suarez
     if (size(zeta, 3) /= number_of_levels .or. size(delta, 3) /= number_of_levels .or. &
         size(temperature, 3) /= number_of_levels) then
       error stop 'dry nonlinear state has the wrong number of vertical levels'
@@ -176,11 +183,13 @@ contains
     call transform%allocate_field(vector_u)
     call transform%allocate_field(vector_v)
     call transform%allocate_field(tendency_grid)
+    call transform%allocate_field(held_temperature_tendency)
     maximum_speed_squared = 0.0_real64
     do k = 1, number_of_levels
       vector_u = 0.0_real64
       vector_v = 0.0_real64
       tendency_grid = 0.0_real64
+      held_temperature_tendency = 0.0_real64
       ! With the momentum forcing F = -(vertical advection) - R T (pressure-gradient term),
       !   d(zeta)/dt = -div((zeta+f) u) + curl F,   d(delta)/dt = curl((zeta+f) u) + div F - lap(K+Phi).
       ! Since -div(A u, A v) = curl(A v, -A u) and curl(A u, A v) = div(A v, -A u), both
@@ -195,6 +204,15 @@ contains
             dry_air_gas_constant*temperature_grid(i, j, k)*pressure_gradient_u(i, j, k)
           vector_v(i, j) = -absolute_vorticity*u(i, j, k) - vertical_v(i, j, k) - &
             dry_air_gas_constant*temperature_grid(i, j, k)*pressure_gradient_v(i, j, k)
+          if (use_held_suarez) then
+            full_level_pressure = pressure_half(i, j, k)*exp(-alpha(i, j, k))
+            call held_suarez_forcing(transform%mu(j), full_level_pressure, ps(i, j), &
+              temperature_grid(i, j, k), u(i, j, k), v(i, j, k), &
+              forcing_u, forcing_v, forcing_temperature)
+            vector_u(i, j) = vector_u(i, j) + forcing_u
+            vector_v(i, j) = vector_v(i, j) + forcing_v
+            held_temperature_tendency(i, j) = forcing_temperature
+          end if
           tendency_grid(i, j) = kinetic + geopotential(i, j, k)
         end do
       end do
@@ -221,7 +239,8 @@ contains
              alpha(i, j, k)*mass_divergence(i, j, k))/delta_p(i, j, k)
           tendency_grid(i, j) = -u(i, j, k)*dtdlambda(i, j)/(earth_radius*cosphi) - &
             v(i, j, k)*dtdphi(i, j)/earth_radius - vertical_t(i, j, k) + &
-            dry_air_kappa*temperature_grid(i, j, k)*thermodynamic_q
+            dry_air_kappa*temperature_grid(i, j, k)*thermodynamic_q + &
+            held_temperature_tendency(i, j)
         end do
       end do
       call transform%grid_to_spectral(tendency_grid, temporary_spectral)

@@ -187,7 +187,8 @@ $$
 \end{aligned}
 $$
 
-となる。外力 $\bm{F}_k$ は一応書いてあるが、実際にはとりあえず $0$ にする。ただし
+となる。外力 $\bm{F}_k$ は通常の乾燥大気ケースでは $0$ とし、
+[Held–Suarez ケース](./Held-Suarez.md)では同文書の Rayleigh 摩擦を与える。ただし
 
 $$
 \begin{aligned}

@@ -9,6 +9,7 @@ module dry_atmosphere
   use dry_gravity_wave, only: dry_gravity_wave_solver
   use dry_nonlinear, only: compute_dry_nonlinear_tendency
   use dry_initial_conditions, only: jablonowski_williamson_initial_state
+  use dry_held_suarez, only: held_suarez_initial_state
   implicit none
   private
 
@@ -25,6 +26,7 @@ module dry_atmosphere
     integer :: number_of_levels = 0
     integer :: step_number = -1
     real(real64) :: dt = 0.0_real64
+    logical :: held_suarez_forcing_enabled = .false.
     !> Advective CFL of the state that the most recent advance started from.
     real(real64) :: last_advance_cfl = 0.0_real64
     complex(real64), allocatable :: previous_zeta(:, :, :), previous_delta(:, :, :)
@@ -37,6 +39,7 @@ module dry_atmosphere
     procedure, public :: init => initialize_dry_solver
     procedure, public :: set_initial_state
     procedure, public :: set_jablonowski_williamson_state
+    procedure, public :: set_held_suarez_state
     procedure, public :: advance
     procedure, public :: get_fields
     procedure, public :: get_spectral_state
@@ -62,6 +65,7 @@ contains
     this%dt = dt
     this%step_number = -1
     this%last_advance_cfl = 0.0_real64
+    this%held_suarez_forcing_enabled = .false.
     call this%transform%init(truncation)
     if (present(a_half)) then
       call this%coordinate%init(a_half, b_half)
@@ -121,6 +125,7 @@ contains
     this%previous_delta = this%current_delta
     this%previous_temperature = this%current_temperature
     this%previous_log_ps = this%current_log_ps
+    this%held_suarez_forcing_enabled = .false.
     this%step_number = 0
   end subroutine set_initial_state
 
@@ -139,6 +144,18 @@ contains
                                               surface_geopotential)
     call this%set_initial_state(zeta, delta, temperature, log_ps, surface_geopotential)
   end subroutine set_jablonowski_williamson_state
+
+  subroutine set_held_suarez_state(this)
+    class(dry_atmosphere_solver), intent(inout) :: this
+    complex(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :), log_ps(:, :)
+    complex(real64), allocatable :: surface_geopotential(:, :)
+
+    call check_initialized(this)
+    call held_suarez_initial_state(this%transform, this%truncation, this%coordinate, &
+                                   zeta, delta, temperature, log_ps, surface_geopotential)
+    call this%set_initial_state(zeta, delta, temperature, log_ps, surface_geopotential)
+    this%held_suarez_forcing_enabled = .true.
+  end subroutine set_held_suarez_state
 
   subroutine advance(this)
     class(dry_atmosphere_solver), intent(inout) :: this
@@ -218,7 +235,8 @@ contains
     call compute_dry_nonlinear_tendency(this%transform, this%truncation, this%coordinate, &
                                         current_zeta, current_delta, current_temperature, current_log_ps, &
                                         this%surface_geopotential, &
-                                        rhs_zeta, rhs_delta, rhs_temperature, rhs_log_ps, maximum_speed)
+                                        rhs_zeta, rhs_delta, rhs_temperature, rhs_log_ps, maximum_speed, &
+                                        this%held_suarez_forcing_enabled)
     call allocate_state(this, candidate_zeta, candidate_delta, candidate_temperature, candidate_log_ps)
     candidate_zeta = previous_zeta + centered_interval*rhs_zeta
     call this%gravity_wave%solve(centered_interval, &

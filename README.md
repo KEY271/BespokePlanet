@@ -25,8 +25,11 @@ brew install gcc fpm fftw lapack openblas pkg-config just node
 # テストを実行
 just test
 
-# モデルを実行（shallow-water / barotropic / dry / all、省略時は dry）
+# モデルを実行（shallow-water / barotropic / dry / held-suarez / all、省略時は dry）
 just run dry
+
+# Held–Suarez 強制を 200 日間実行（5 日ごとに出力）
+just run held-suarez
 
 # ビジュアライザを起動し、http://127.0.0.1:8000 を開く
 just viz
@@ -43,6 +46,7 @@ just viz
 - [hybrid-sigma 座標](./docs/hybrid-sigma.md)
 - [乾燥大気](./docs/dry.md)
 - [Jablonowski–Williamson の初期状態](./docs/Jablonowski-Williamson.md)
+- [Held–Suarez 強制](./docs/Held-Suarez.md)
 
 ## ライセンス
 
