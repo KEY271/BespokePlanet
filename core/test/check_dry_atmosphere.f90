@@ -14,6 +14,7 @@ program check_dry_atmosphere
   call check_precomputed_gravity_wave_inverse()
   call check_resting_atmosphere()
   call check_jablonowski_state()
+  call check_jablonowski_steady_state()
 
 contains
 
@@ -32,9 +33,9 @@ contains
         any(coordinate%reference_temperature <= 0.0_real64)) then
       error stop 'dry reference atmosphere contains a nonphysical value'
     end if
-    if (abs(coordinate%full_level_eta(1) - 0.05_real64) > 1.0e-14_real64 .or. &
-        abs(coordinate%full_level_eta(10) - 0.95_real64) > 1.0e-14_real64) then
-      error stop 'dry full-level eta values are not located at layer centres'
+    if (abs(coordinate%full_level_eta(1) - 0.03_real64) > 1.0e-14_real64 .or. &
+        abs(coordinate%full_level_eta(10) - 0.94_real64) > 1.0e-14_real64) then
+      error stop 'dry full-level eta values do not match the hybrid-sigma pressures'
     end if
   end subroutine check_reference_atmosphere
 
@@ -138,6 +139,51 @@ contains
     end if
     if (maxval(abs(u)) <= 1.0_real64) error stop 'Jablonowski-Williamson jet is absent'
   end subroutine check_jablonowski_state
+
+  subroutine check_jablonowski_steady_state()
+    ! Without the wind perturbation the Jablonowski-Williamson base state is a steady
+    ! solution.  It stays balanced only when eta is consistent with the hybrid-sigma
+    ! pressures and the surface geopotential is supplied; otherwise |v| grows to
+    ! several m/s and ps oscillates by several hPa within a day.
+    integer, parameter :: steady_truncation = 21
+    integer, parameter :: steady_steps = 96
+    real(real64), parameter :: wind_tolerance = 1.0_real64
+    real(real64), parameter :: surface_pressure_tolerance = 100.0_real64
+    type(harmonic_transform) :: transform
+    type(dry_atmosphere_solver) :: solver
+    real(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
+    real(real64), allocatable :: surface_pressure(:, :), u(:, :, :), v(:, :, :), initial_u(:, :, :)
+    integer, allocatable :: nlon(:)
+    real(real64) :: maximum_v, maximum_u_change, maximum_surface_pressure_change
+    integer :: step, j
+
+    call transform%init(steady_truncation)
+    nlon = transform%get_nlon()
+    call solver%init(steady_truncation, time_step)
+    call solver%set_jablonowski_williamson_state(.false.)
+    call solver%get_fields(zeta, delta, temperature, surface_pressure, initial_u, v)
+    do step = 1, steady_steps
+      call solver%advance()
+    end do
+    call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v)
+
+    maximum_v = 0.0_real64
+    maximum_u_change = 0.0_real64
+    maximum_surface_pressure_change = 0.0_real64
+    do j = 1, size(nlon)
+      maximum_v = max(maximum_v, maxval(abs(v(1:nlon(j), j, :))))
+      maximum_u_change = max(maximum_u_change, &
+        maxval(abs(u(1:nlon(j), j, :) - initial_u(1:nlon(j), j, :))))
+      maximum_surface_pressure_change = max(maximum_surface_pressure_change, &
+        maxval(abs(surface_pressure(1:nlon(j), j) - reference_surface_pressure)))
+    end do
+    if (maximum_v > wind_tolerance .or. maximum_u_change > wind_tolerance .or. &
+        maximum_surface_pressure_change > surface_pressure_tolerance) then
+      write (*, '(a,3es12.4)') 'max |v|, max |du|, max |dps| = ', maximum_v, maximum_u_change, &
+        maximum_surface_pressure_change
+      error stop 'Jablonowski-Williamson base state is not steady'
+    end if
+  end subroutine check_jablonowski_steady_state
 
   subroutine allocate_zero_state(levels, surface_pressure, delta, temperature)
     integer, intent(in) :: levels

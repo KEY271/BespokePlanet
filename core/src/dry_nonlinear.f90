@@ -13,18 +13,20 @@ contains
 
   subroutine compute_dry_nonlinear_tendency(transform, truncation, coordinate, &
                                             zeta, delta, temperature, log_surface_pressure, &
+                                            surface_geopotential, &
                                             rhs_zeta, rhs_delta, rhs_temperature, &
                                             rhs_log_surface_pressure)
     type(harmonic_transform), intent(inout) :: transform
     integer, intent(in) :: truncation
     type(hybrid_sigma_coordinate), intent(in) :: coordinate
     complex(real64), intent(in) :: zeta(0:, 0:, :), delta(0:, 0:, :), temperature(0:, 0:, :)
-    complex(real64), intent(in) :: log_surface_pressure(0:, 0:)
+    complex(real64), intent(in) :: log_surface_pressure(0:, 0:), surface_geopotential(0:, 0:)
     complex(real64), allocatable, intent(out) :: rhs_zeta(:, :, :), rhs_delta(:, :, :)
     complex(real64), allocatable, intent(out) :: rhs_temperature(:, :, :)
     complex(real64), allocatable, intent(out) :: rhs_log_surface_pressure(:, :)
     real(real64), allocatable :: zeta_grid(:, :, :), delta_grid(:, :, :), temperature_grid(:, :, :)
     real(real64), allocatable :: u(:, :, :), v(:, :, :), log_ps(:, :), ps(:, :)
+    real(real64), allocatable :: surface_geopotential_grid(:, :)
     real(real64), allocatable :: dlogps_dlambda(:, :), dlogps_dphi(:, :)
     real(real64), allocatable :: pressure_half(:, :, :), delta_p(:, :, :), layer_l(:, :, :)
     real(real64), allocatable :: alpha(:, :, :), geopotential_half(:, :, :), geopotential(:, :, :)
@@ -103,7 +105,9 @@ contains
                         layer_l(:, :, k)/delta_p(:, :, k)
     end do
 
-    geopotential_half(:, :, number_of_levels) = 0.0_real64
+    ! The surface geopotential is a fixed lower boundary condition, not a prognostic field.
+    call transform%spectral_to_grid(surface_geopotential, surface_geopotential_grid)
+    geopotential_half(:, :, number_of_levels) = surface_geopotential_grid
     do k = number_of_levels, 1, -1
       geopotential(:, :, k) = geopotential_half(:, :, k) + &
         alpha(:, :, k)*dry_air_gas_constant*temperature_grid(:, :, k)

@@ -108,11 +108,12 @@ contains
     end do
   end subroutine write_dry_snapshot
 
-  subroutine write_dry_metadata(case_directory, truncation, time_step, duration, number_of_steps, &
-                                snapshot_interval_steps, maximum_cfl, elapsed_wall_seconds, nlon, mu, &
+  subroutine write_dry_metadata(case_directory, initial_condition, truncation, time_step, duration, &
+                                number_of_steps, snapshot_interval_steps, maximum_cfl, &
+                                elapsed_wall_seconds, nlon, mu, &
                                 pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
                                 a_half, b_half)
-    character(*), intent(in) :: case_directory
+    character(*), intent(in) :: case_directory, initial_condition
     integer, intent(in) :: truncation, number_of_steps, snapshot_interval_steps
     real(real64), intent(in) :: time_step, duration, maximum_cfl, elapsed_wall_seconds
     integer, intent(in) :: nlon(:)
@@ -127,7 +128,7 @@ contains
     write (unit, '(a)') '{'
     write (unit, '(a)') '  "schema_version": 1,'
     write (unit, '(a)') '  "equation": "dry_hydrostatic_atmosphere",'
-    write (unit, '(a)') '  "initial_condition": "Jablonowski-Williamson with localized wind perturbation",'
+    write (unit, '(a)') '  "initial_condition": "'//initial_condition//'",'
     write (unit, '(a,es24.16e3,a)') '  "duration_seconds": ', duration, ','
     write (unit, '(a,es24.16e3,a)') '  "time_step_seconds": ', time_step, ','
     write (unit, '(a,i0,a)') '  "number_of_steps": ', number_of_steps, ','

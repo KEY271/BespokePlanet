@@ -74,9 +74,11 @@ contains
       this%reference_l(k) = log(this%reference_p_half(k)/this%reference_p_half(k - 1))
       this%reference_alpha(k) = 1.0_real64 - &
         this%reference_p_half(k - 1)*this%reference_l(k)/this%reference_delta_p(k)
-      ! The tabulated A/B values are located at the uniformly spaced eta
-      ! interfaces 0,1/N,...,1; prognostic variables live at layer centres.
-      this%full_level_eta(k) = (real(k, real64) - 0.5_real64)/real(number_of_levels, real64)
+      ! eta is tied to the hybrid coefficients by eta_{k+1/2} = A_{k+1/2}/p0 + B_{k+1/2},
+      ! so that p = eta*p0 wherever ps = p0.  Full levels are the arithmetic mean of
+      ! the bounding half levels.
+      this%full_level_eta(k) = 0.5_real64*(this%reference_p_half(k - 1) + &
+        this%reference_p_half(k))/reference_surface_pressure
       this%reference_temperature(k) = jablonowski_mean_temperature(this%full_level_eta(k))
       this%lambda(k) = reference_surface_pressure*( &
         b_half(k)/this%reference_p_half(k) - b_half(k - 1)/this%reference_p_half(k - 1))

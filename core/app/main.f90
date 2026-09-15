@@ -30,7 +30,7 @@ program main
   integer, parameter :: T = 63
   real(real64), parameter :: dt = 900.0_real64
   real(real64), parameter :: duration = 10.0_real64*24.0_real64*3600.0_real64
-  integer, parameter :: output_interval_steps = 4
+  integer, parameter :: output_interval_steps = 16
   integer(int64), parameter :: random_seed_value = 20260913_int64
   type(harmonic_transform) :: transform
   integer, allocatable :: nlon(:)
@@ -62,9 +62,11 @@ program main
     call run_barotropic_case('rossby_haurwitz_r4', 2)
     call run_barotropic_case('random_n8_n12_seed_20260913', 3)
   case ('dry', '--dry', 'dry-atmosphere')
-    call run_dry_case()
+    call run_dry_case('dry_jablonowski_williamson_steady', .false.)
+    call run_dry_case('dry_jablonowski_williamson_perturbed', .true.)
   case ('all')
-    call run_dry_case()
+    call run_dry_case('dry_jablonowski_williamson_steady', .false.)
+    call run_dry_case('dry_jablonowski_williamson_perturbed', .true.)
     call run_shallow_water_case('shallow_water_mountain', 1)
     call run_shallow_water_case('shallow_water_single_harmonic', 2)
     call run_barotropic_case('single_harmonic', 1)
@@ -190,22 +192,31 @@ contains
                                       gravity_acceleration, mean_depth, gravity_wave_implicitness)
   end subroutine run_shallow_water_case
 
-  subroutine run_dry_case()
+  subroutine run_dry_case(case_name, include_perturbation)
+    character(*), intent(in) :: case_name
+    !> .false. keeps the balanced zonal base state (should stay steady);
+    !> .true. adds the localized wind perturbation that triggers the baroclinic wave.
+    logical, intent(in) :: include_perturbation
     type(dry_atmosphere_solver) :: solver
     real(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     real(real64), allocatable :: surface_pressure(:, :), u(:, :, :), v(:, :, :)
     real(real64), allocatable :: pressure_half(:), delta_pressure(:), layer_l(:), alpha(:), reference_temperature(:)
     real(real64), allocatable :: a_half(:), b_half(:)
-    character(len=:), allocatable :: case_directory
+    character(len=:), allocatable :: case_directory, initial_condition
     integer :: step, number_of_steps
     integer(int64) :: start_count, end_count, clock_rate, clock_max
     real(real64) :: cfl, maximum_cfl, elapsed_wall_seconds
 
     call system_clock(start_count, clock_rate, clock_max)
-    case_directory = output_root//'/dry_jablonowski_williamson'
+    if (include_perturbation) then
+      initial_condition = 'Jablonowski-Williamson with localized wind perturbation'
+    else
+      initial_condition = 'Jablonowski-Williamson balanced base state without perturbation'
+    end if
+    case_directory = output_root//'/'//case_name
     call make_directory(case_directory)
     call solver%init(T, dt)
-    call solver%set_jablonowski_williamson_state(.true.)
+    call solver%set_jablonowski_williamson_state(include_perturbation)
     number_of_steps = nint(duration/dt)
     maximum_cfl = 0.0_real64
     do step = 0, number_of_steps
@@ -215,7 +226,7 @@ contains
         call write_dry_snapshot(case_directory, step, nlon, zeta, delta, temperature, surface_pressure, u, v)
       end if
       if (mod(step, 24) == 0 .or. step == number_of_steps) then
-        write (*, '(a,i0,a,f6.3)') 'dry_jablonowski_williamson: step ', step, ', advective CFL = ', cfl
+        write (*, '(2a,i0,a,f6.3)') trim(case_name), ': step ', step, ', advective CFL = ', cfl
       end if
       if (step < number_of_steps) call solver%advance()
     end do
@@ -228,7 +239,8 @@ contains
     end if
     call solver%get_reference_atmosphere(pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
                                          a_half, b_half)
-    call write_dry_metadata(case_directory, T, dt, duration, number_of_steps, output_interval_steps, &
+    call write_dry_metadata(case_directory, initial_condition, T, dt, duration, number_of_steps, &
+                            output_interval_steps, &
                             maximum_cfl, elapsed_wall_seconds, nlon, transform%mu, &
                             pressure_half, delta_pressure, layer_l, alpha, reference_temperature, a_half, b_half)
   end subroutine run_dry_case
@@ -288,7 +300,8 @@ contains
     write (*, '(a)') 'Usage: core [shallow-water|barotropic|dry|all]'
     write (*, '(a)') '  shallow-water:           run the mountain and single-harmonic height cases'
     write (*, '(a)') '  barotropic:             run the three barotropic-vorticity cases'
-    write (*, '(a)') '  dry (default):          run the 10-day Jablonowski-Williamson dry-atmosphere case'
+    write (*, '(a)') '  dry (default):          run the 10-day Jablonowski-Williamson dry-atmosphere cases'
+    write (*, '(a)') '                          (steady base state and localized wind perturbation)'
     write (*, '(a)') '  all:                    run every case'
   end subroutine print_usage
 

@@ -2,7 +2,7 @@
 
 ## 予報変数と基礎方程式
 
-各ステップで時間発展させる変数は、相対渦度 $\zeta$ と発散 $\delta$、温度 $T$、地表面気圧 $\ln p_s$ である。以下は [hybrid-sigma 座標](./hybrid-sigma.md)の記号に従う。
+各ステップで時間発展させる変数は、相対渦度 $\zeta$ と発散 $\delta$、温度 $T$、地表面気圧 $\ln p_s$ である。地表ジオポテンシャル $\Phi_s$ は時間変化しない下端の境界条件として固定し、予報しない。以下は [hybrid-sigma 座標](./hybrid-sigma.md)の記号に従う。
 
 基礎方程式は
 
@@ -227,7 +227,7 @@ $$
 
 ## 重力波
 
-基準大気からのずれを重力波として分離して陰的に解く。基準大気は [Jablonowski–Williamson の初期状態](./Jablonowski-Williamson.md)の水平平均温度を $\widetilde T_k$ とし、地表面気圧は $p_s=p_0=10^5\,\mathrm{Pa}$、$\zeta=\delta=0$ とする。基準大気の量にはチルダをつけて表し、基準大気からのずれはプライムをつけて表すと、線形化した方程式は
+基準大気からのずれを重力波として分離して陰的に解く。基準大気は [Jablonowski–Williamson の初期状態](./Jablonowski-Williamson.md)の水平平均温度を $\widetilde T_k$ とし、地表面気圧は $p_s=p_0=10^5\,\mathrm{Pa}$、$\zeta=\delta=0$ とする。地表ジオポテンシャル $\Phi_s$ は時間変化しないので基準大気からのずれには含めず、$-\nabla_\eta^2\Phi_s$ は後述の元の方程式の右辺 $\mathcal{R}(X)$ にだけ現れる。したがって $\Phi_s$ を与えても下の線形演算子と陰的に解く行列は変わらない。基準大気の量にはチルダをつけて表し、基準大気からのずれはプライムをつけて表すと、線形化した方程式は
 
 $$
 \begin{aligned}
@@ -340,7 +340,7 @@ $$
 X^{q+1}=F(\Delta t,\overline X^{q-1},X^q)
 $$
 
-と書く。初期値 $X^0$ には [Jablonowski--Williamson の初期状態](./Jablonowski-Williamson.md)を用いる。最初の二時刻は
+と書く。初期値 $X^0$ と地表ジオポテンシャル $\Phi_s$ には [Jablonowski--Williamson の初期状態](./Jablonowski-Williamson.md)を用いる。$\Phi_s$ は積分中ずっと固定し、超粘性や RAW フィルターも適用しない。最初の二時刻は
 
 $$
 \begin{aligned}

@@ -29,6 +29,8 @@ module dry_atmosphere
     complex(real64), allocatable :: previous_temperature(:, :, :), previous_log_ps(:, :)
     complex(real64), allocatable :: current_zeta(:, :, :), current_delta(:, :, :)
     complex(real64), allocatable :: current_temperature(:, :, :), current_log_ps(:, :)
+    ! Time-independent lower boundary condition; it is never advanced or filtered.
+    complex(real64), allocatable :: surface_geopotential(:, :)
   contains
     procedure, public :: init => initialize_dry_solver
     procedure, public :: set_initial_state
@@ -76,12 +78,17 @@ contains
     this%current_delta = 0.0_real64
     this%current_temperature = 0.0_real64
     this%current_log_ps = 0.0_real64
+    if (allocated(this%surface_geopotential)) deallocate (this%surface_geopotential)
+    allocate (this%surface_geopotential(0:truncation + 1, 0:truncation))
+    this%surface_geopotential = 0.0_real64
   end subroutine initialize_dry_solver
 
-  subroutine set_initial_state(this, zeta, delta, temperature, log_surface_pressure)
+  subroutine set_initial_state(this, zeta, delta, temperature, log_surface_pressure, surface_geopotential)
     class(dry_atmosphere_solver), intent(inout) :: this
     complex(real64), intent(in) :: zeta(0:, 0:, :), delta(0:, 0:, :), temperature(0:, 0:, :)
     complex(real64), intent(in) :: log_surface_pressure(0:, 0:)
+    !> Fixed surface geopotential; a flat surface (zero) is used when absent.
+    complex(real64), intent(in), optional :: surface_geopotential(0:, 0:)
 
     call check_initialized(this)
     call check_state_shape(this, zeta, 'zeta')
@@ -95,6 +102,15 @@ contains
     this%current_delta = delta(0:this%truncation + 1, 0:this%truncation, 1:this%number_of_levels)
     this%current_temperature = temperature(0:this%truncation + 1, 0:this%truncation, 1:this%number_of_levels)
     this%current_log_ps = log_surface_pressure(0:this%truncation + 1, 0:this%truncation)
+    this%surface_geopotential = 0.0_real64
+    if (present(surface_geopotential)) then
+      if (ubound(surface_geopotential, 1) < this%truncation + 1 .or. &
+          ubound(surface_geopotential, 2) < this%truncation) then
+        error stop 'dry atmosphere surface geopotential has an inconsistent shape'
+      end if
+      this%surface_geopotential = surface_geopotential(0:this%truncation + 1, 0:this%truncation)
+    end if
+    call enforce_spectral_field(this%truncation, this%surface_geopotential, .false.)
     call enforce_state_constraints(this, this%current_zeta, this%current_delta, &
                                    this%current_temperature, this%current_log_ps)
     this%previous_zeta = this%current_zeta
@@ -108,14 +124,16 @@ contains
     class(dry_atmosphere_solver), intent(inout) :: this
     logical, intent(in), optional :: include_perturbation
     complex(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :), log_ps(:, :)
+    complex(real64), allocatable :: surface_geopotential(:, :)
     logical :: perturb
 
     call check_initialized(this)
     perturb = .true.
     if (present(include_perturbation)) perturb = include_perturbation
     call jablonowski_williamson_initial_state(this%transform, this%truncation, this%coordinate, &
-                                              perturb, zeta, delta, temperature, log_ps)
-    call this%set_initial_state(zeta, delta, temperature, log_ps)
+                                              perturb, zeta, delta, temperature, log_ps, &
+                                              surface_geopotential)
+    call this%set_initial_state(zeta, delta, temperature, log_ps, surface_geopotential)
   end subroutine set_jablonowski_williamson_state
 
   subroutine advance(this)
@@ -186,6 +204,7 @@ contains
     centered_interval = 2.0_real64*interval
     call compute_dry_nonlinear_tendency(this%transform, this%truncation, this%coordinate, &
                                         current_zeta, current_delta, current_temperature, current_log_ps, &
+                                        this%surface_geopotential, &
                                         rhs_zeta, rhs_delta, rhs_temperature, rhs_log_ps)
     call allocate_state(this, candidate_zeta, candidate_delta, candidate_temperature, candidate_log_ps)
     candidate_zeta = previous_zeta + centered_interval*rhs_zeta
