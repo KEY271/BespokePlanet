@@ -24,7 +24,11 @@ program main
                                            random_minimum_degree, random_maximum_degree
   use field_output, only: make_directory, write_snapshot, write_run_metadata, &
                           write_shallow_water_snapshot, write_shallow_water_metadata, &
-                          write_dry_snapshot, write_dry_metadata
+                          write_dry_snapshot, write_dry_metadata, &
+                          initialize_radiation_daily_output, append_radiation_daily_output, &
+                          write_radiation_monthly_output, write_radiation_yearly_snapshot, &
+                          write_radiation_metadata
+  use dry_radiation, only: solar_day, days_per_month, months_per_year, days_per_year, orbital_period
   implicit none
 
   integer, parameter :: T = 63
@@ -33,6 +37,9 @@ program main
   integer, parameter :: output_interval_steps = 16
   real(real64), parameter :: held_suarez_duration = 200.0_real64*24.0_real64*3600.0_real64
   integer, parameter :: held_suarez_output_interval_steps = nint(5.0_real64*24.0_real64*3600.0_real64/dt)
+  real(real64), parameter :: radiation_time_step = 1200.0_real64
+  integer, parameter :: radiation_number_of_years = 5
+  real(real64), parameter :: radiation_duration = real(radiation_number_of_years, real64)*orbital_period
   !> Progress is logged once per simulated day (and at the final step).
   integer, parameter :: log_interval_steps = max(1, nint(86400.0_real64/dt))
   integer(int64), parameter :: random_seed_value = 20260913_int64
@@ -70,6 +77,8 @@ program main
     call run_dry_case('dry_jablonowski_williamson_perturbed', .true.)
   case ('held-suarez', '--held-suarez', 'held_suarez')
     call run_dry_case('dry_held_suarez', .false., held_suarez=.true.)
+  case ('radiation', '--radiation', 'uniform-radiation', '--uniform-radiation', 'uniform_radiation')
+    call run_radiation_case()
   case ('all')
     call run_dry_case('dry_jablonowski_williamson_steady', .false.)
     call run_dry_case('dry_jablonowski_williamson_perturbed', .true.)
@@ -79,6 +88,7 @@ program main
     call run_barotropic_case('rossby_haurwitz_r4', 2)
     call run_barotropic_case('random_n8_n12_seed_20260913', 3)
     call run_dry_case('dry_held_suarez', .false., held_suarez=.true.)
+    call run_radiation_case()
   case ('--help', '-h', 'help')
     call print_usage()
   case default
@@ -100,7 +110,7 @@ contains
     real(real64) :: cfl, maximum_cfl, elapsed_wall_seconds
 
     call system_clock(start_count)
-    call write_case_header(case_name, duration)
+    call write_case_header(case_name, duration, dt)
     select case (initial_condition)
     case (1)
       call single_harmonic_vorticity(transform, T, initial_zeta)
@@ -126,7 +136,7 @@ contains
         call write_snapshot(case_directory, step, nlon, zeta, u, v)
       end if
       if (is_log_step(step, number_of_steps)) then
-        call write_progress(step, number_of_steps, step, 'CFL', cfl, start_count)
+        call write_progress(step, number_of_steps, step, 'CFL', cfl, start_count, dt)
       end if
       if (step < number_of_steps) call solver%advance()
     end do
@@ -150,7 +160,7 @@ contains
     real(real64) :: cfl, maximum_cfl, elapsed_wall_seconds
 
     call system_clock(start_count)
-    call write_case_header(case_name, duration)
+    call write_case_header(case_name, duration, dt)
     select case (initial_condition)
     case (1)
       call isolated_height_mountain(transform, T, initial_zeta, initial_delta, initial_eta)
@@ -177,7 +187,7 @@ contains
                                           zeta, delta, eta, u, v)
       end if
       if (is_log_step(step, number_of_steps)) then
-        call write_progress(step, number_of_steps, step, 'advective CFL', cfl, start_count)
+        call write_progress(step, number_of_steps, step, 'advective CFL', cfl, start_count, dt)
       end if
       if (step < number_of_steps) call solver%advance()
     end do
@@ -222,7 +232,7 @@ contains
       case_duration = duration
       snapshot_interval_steps = output_interval_steps
     end if
-    call write_case_header(case_name, case_duration)
+    call write_case_header(case_name, case_duration, dt)
     case_directory = output_root//'/'//case_name
     call make_directory(case_directory)
     call solver%init(T, dt)
@@ -249,7 +259,7 @@ contains
       ! Logged after advance, so the elapsed time already covers step + 1 completed steps.
       if (is_log_step(step, number_of_steps)) then
         call write_progress(step, number_of_steps, min(step + 1, number_of_steps), &
-                            'advective CFL', cfl, start_count)
+                            'advective CFL', cfl, start_count, dt)
       end if
     end do
     elapsed_wall_seconds = elapsed_seconds(start_count)
@@ -260,6 +270,109 @@ contains
                             maximum_cfl, elapsed_wall_seconds, nlon, transform%mu, &
                             pressure_half, delta_pressure, layer_l, alpha, reference_temperature, a_half, b_half)
   end subroutine run_dry_case
+
+  subroutine run_radiation_case()
+    type(dry_atmosphere_solver) :: solver
+    real(real64), allocatable :: monthly_surface_temperature(:, :), monthly_surface_pressure(:, :)
+    real(real64), allocatable :: zonal_temperature(:, :), zonal_u(:, :), zonal_v(:, :)
+    real(real64), allocatable :: eddy_uv(:, :), eddy_vt(:, :)
+    real(real64), allocatable :: pressure_half(:), delta_pressure(:), layer_l(:), alpha(:)
+    real(real64), allocatable :: reference_temperature(:), a_half(:), b_half(:)
+    character(len=:), allocatable :: case_directory
+    integer :: completed_step, number_of_steps, daily_interval_steps
+    integer :: month, month_boundary_step, year, year_boundary_step
+    integer(int64) :: start_count
+    real(real64) :: cfl, maximum_cfl, elapsed_wall_seconds, diagnostic_time
+    real(real64) :: mean_atmospheric_temperature, mean_surface_temperature, mean_deep_temperature
+    real(real64) :: mean_kinetic_energy, mean_surface_pressure
+    real(real64) :: mean_incoming_shortwave, mean_reflected_shortwave, mean_outgoing_longwave
+
+    call system_clock(start_count)
+    call write_case_header('dry_radiation', radiation_duration, radiation_time_step)
+    case_directory = output_root//'/dry_radiation'
+    call make_directory(case_directory)
+    call initialize_radiation_daily_output(case_directory)
+    call solver%init(T, radiation_time_step)
+    call solver%set_radiation_state()
+    call write_current_radiation_snapshot(solver, case_directory, 1, nlon)
+    number_of_steps = nint(radiation_duration/radiation_time_step)
+    daily_interval_steps = nint(solar_day/radiation_time_step)
+    if (abs(real(daily_interval_steps, real64)*radiation_time_step - solar_day) > 1.0e-12_real64) then
+      error stop 'radiation time step must divide the solar day exactly'
+    end if
+    maximum_cfl = 0.0_real64
+    month = 1
+    month_boundary_step = month*days_per_month*daily_interval_steps
+    year = 2
+    year_boundary_step = (year - 1)*days_per_year*daily_interval_steps
+
+    do completed_step = 1, number_of_steps
+      call solver%advance()
+      cfl = solver%get_last_advance_cfl()
+      maximum_cfl = max(maximum_cfl, cfl)
+
+      ! Each row is the mean over the steps of one solar day, stamped with the day's start time.
+      if (mod(completed_step, daily_interval_steps) == 0) then
+        call solver%take_radiation_daily_means(diagnostic_time, mean_atmospheric_temperature, &
+          mean_surface_temperature, mean_deep_temperature, mean_kinetic_energy, mean_surface_pressure, &
+          mean_incoming_shortwave, mean_reflected_shortwave, mean_outgoing_longwave)
+        call append_radiation_daily_output(case_directory, diagnostic_time, mean_atmospheric_temperature, &
+          mean_surface_temperature, mean_deep_temperature, mean_kinetic_energy, mean_surface_pressure, &
+          mean_incoming_shortwave, mean_reflected_shortwave, mean_outgoing_longwave)
+      end if
+
+      if (completed_step == month_boundary_step) then
+        call solver%take_radiation_monthly_means(monthly_surface_temperature, monthly_surface_pressure, &
+          zonal_temperature, zonal_u, zonal_v, eddy_uv, eddy_vt)
+        call write_radiation_monthly_output(case_directory, month, nlon, monthly_surface_temperature, &
+          monthly_surface_pressure, zonal_temperature, zonal_u, zonal_v, eddy_uv, eddy_vt)
+        month = month + 1
+        if (month <= radiation_number_of_years*months_per_year) then
+          month_boundary_step = month*days_per_month*daily_interval_steps
+        end if
+      end if
+
+      if (completed_step == year_boundary_step) then
+        call write_current_radiation_snapshot(solver, case_directory, year, nlon)
+        year = year + 1
+        if (year <= radiation_number_of_years + 1) then
+          year_boundary_step = (year - 1)*days_per_year*daily_interval_steps
+        end if
+      end if
+
+      if (mod(completed_step, daily_interval_steps) == 0 .or. completed_step == number_of_steps) then
+        call write_progress(completed_step, number_of_steps, completed_step, &
+                            'advective CFL', cfl, start_count, radiation_time_step)
+      end if
+    end do
+
+    elapsed_wall_seconds = elapsed_seconds(start_count)
+    call solver%get_reference_atmosphere(pressure_half, delta_pressure, layer_l, alpha, &
+                                         reference_temperature, a_half, b_half)
+    call write_radiation_metadata(case_directory, T, radiation_time_step, radiation_duration, number_of_steps, &
+                                  maximum_cfl, elapsed_wall_seconds, nlon, transform%mu, pressure_half, &
+                                  delta_pressure, layer_l, alpha, reference_temperature, a_half, b_half)
+  end subroutine run_radiation_case
+
+  subroutine write_current_radiation_snapshot(solver, case_directory, year, ring_nlon)
+    type(dry_atmosphere_solver), intent(inout) :: solver
+    character(*), intent(in) :: case_directory
+    integer, intent(in) :: year, ring_nlon(:)
+    complex(real64), allocatable :: zeta_spectral(:, :, :), delta_spectral(:, :, :)
+    complex(real64), allocatable :: temperature_spectral(:, :, :), log_ps_spectral(:, :)
+    real(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
+    real(real64), allocatable :: surface_pressure(:, :), log_surface_pressure(:, :)
+    real(real64), allocatable :: u(:, :, :), v(:, :, :)
+    real(real64), allocatable :: surface_temperature(:, :), deep_temperature(:, :)
+
+    call solver%get_spectral_state(zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral)
+    call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
+                           surface_temperature=surface_temperature, deep_temperature=deep_temperature)
+    log_surface_pressure = log(surface_pressure)
+    call write_radiation_yearly_snapshot(case_directory, year, ring_nlon, &
+      zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
+      zeta, delta, temperature, u, v, log_surface_pressure, surface_temperature, deep_temperature)
+  end subroutine write_current_radiation_snapshot
 
   function make_initial_condition_json(initial_condition) result(json)
     integer, intent(in) :: initial_condition
@@ -313,12 +426,12 @@ contains
   end function make_shallow_water_initial_condition_json
 
   !> Printed once when a case starts.
-  subroutine write_case_header(case_name, case_duration)
+  subroutine write_case_header(case_name, case_duration, time_step)
     character(*), intent(in) :: case_name
-    real(real64), intent(in) :: case_duration
+    real(real64), intent(in) :: case_duration, time_step
 
     write (*, '(3a,f0.1,a,i0,a,f0.1,a)') '== ', trim(case_name), ': ', case_duration/86400.0_real64, &
-      ' days, ', nint(case_duration/dt), ' steps, dt = ', dt, ' s'
+      ' days, ', nint(case_duration/time_step), ' steps, dt = ', time_step, ' s'
   end subroutine write_case_header
 
   logical function is_log_step(step, number_of_steps)
@@ -329,10 +442,11 @@ contains
 
   !> One progress line: simulated day, CFL, wall time so far and a linear estimate of the
   !> remaining wall time (elapsed per completed step times the steps still to go).
-  subroutine write_progress(step, number_of_steps, completed_steps, cfl_label, cfl, start_count)
+  subroutine write_progress(step, number_of_steps, completed_steps, cfl_label, cfl, start_count, time_step)
     integer, intent(in) :: step, number_of_steps, completed_steps
     character(*), intent(in) :: cfl_label
     real(real64), intent(in) :: cfl
+    real(real64), intent(in) :: time_step
     integer(int64), intent(in) :: start_count
     character(len=:), allocatable :: remaining_text
     real(real64) :: elapsed
@@ -347,7 +461,7 @@ contains
     else
       remaining_text = 'remaining --'
     end if
-    write (*, '(a,f5.1,3a,f5.3,4a)') '  day ', real(step, real64)*dt/86400.0_real64, &
+    write (*, '(a,f7.1,3a,f5.3,4a)') '  day ', real(step, real64)*time_step/86400.0_real64, &
       '  ', cfl_label, ' = ', cfl, '  elapsed ', format_duration(elapsed), '  ', remaining_text
   end subroutine write_progress
 
@@ -383,12 +497,13 @@ contains
   end function elapsed_seconds
 
   subroutine print_usage()
-    write (*, '(a)') 'Usage: core [shallow-water|barotropic|dry|held-suarez|all]'
+    write (*, '(a)') 'Usage: core [shallow-water|barotropic|dry|held-suarez|radiation|all]'
     write (*, '(a)') '  shallow-water:           run the mountain and single-harmonic height cases'
     write (*, '(a)') '  barotropic:             run the three barotropic-vorticity cases'
     write (*, '(a)') '  dry (default):          run the 10-day Jablonowski-Williamson dry-atmosphere cases'
     write (*, '(a)') '                          (steady base state and localized wind perturbation)'
     write (*, '(a)') '  held-suarez:            run the 200-day forced dry-atmosphere case (output every 5 days)'
+    write (*, '(a)') '  radiation:              run the 5-year diurnal/seasonal radiation case'
     write (*, '(a)') '  all:                    run every case'
   end subroutine print_usage
 

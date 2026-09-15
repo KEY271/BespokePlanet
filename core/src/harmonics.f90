@@ -38,6 +38,7 @@ module harmonics
     procedure, public :: curl_divergence
     procedure, public :: wind_to_grid
     procedure, public :: get_nlon
+    procedure, public :: get_gaussian_weights
   end type harmonic_transform
 
 contains
@@ -522,6 +523,16 @@ contains
 
     nlon = this%nlon
   end function get_nlon
+
+  function get_gaussian_weights(this) result(weights)
+    class(harmonic_transform), intent(in) :: this
+    real(real64), allocatable :: weights(:)
+
+    if (.not. allocated(this%w)) then
+      error stop "harmonics: call init(T) before accessing Gaussian weights"
+    end if
+    weights = this%w
+  end function get_gaussian_weights
 
   subroutine check_field_shape(this, field)
     class(harmonic_transform), intent(in) :: this

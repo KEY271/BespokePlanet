@@ -10,6 +10,8 @@ module dry_atmosphere
   use dry_nonlinear, only: compute_dry_nonlinear_tendency
   use dry_initial_conditions, only: jablonowski_williamson_initial_state
   use dry_held_suarez, only: held_suarez_initial_state
+  use dry_radiation, only: radiation_diagnostics, radiation_daily_accumulator, radiation_monthly_accumulator, &
+                           planetary_rotation_rate
   implicit none
   private
 
@@ -27,12 +29,18 @@ module dry_atmosphere
     integer :: step_number = -1
     real(real64) :: dt = 0.0_real64
     logical :: held_suarez_forcing_enabled = .false.
+    logical :: radiation_enabled = .false.
+    type(radiation_diagnostics) :: latest_radiation_diagnostics
+    type(radiation_daily_accumulator) :: daily_radiation
+    type(radiation_monthly_accumulator) :: monthly_radiation
     !> Advective CFL of the state that the most recent advance started from.
     real(real64) :: last_advance_cfl = 0.0_real64
     complex(real64), allocatable :: previous_zeta(:, :, :), previous_delta(:, :, :)
     complex(real64), allocatable :: previous_temperature(:, :, :), previous_log_ps(:, :)
     complex(real64), allocatable :: current_zeta(:, :, :), current_delta(:, :, :)
     complex(real64), allocatable :: current_temperature(:, :, :), current_log_ps(:, :)
+    complex(real64), allocatable :: previous_surface_temperature(:, :), previous_deep_temperature(:, :)
+    complex(real64), allocatable :: current_surface_temperature(:, :), current_deep_temperature(:, :)
     ! Time-independent lower boundary condition; it is never advanced or filtered.
     complex(real64), allocatable :: surface_geopotential(:, :)
   contains
@@ -40,12 +48,15 @@ module dry_atmosphere
     procedure, public :: set_initial_state
     procedure, public :: set_jablonowski_williamson_state
     procedure, public :: set_held_suarez_state
+    procedure, public :: set_radiation_state
     procedure, public :: advance
     procedure, public :: get_fields
     procedure, public :: get_spectral_state
     procedure, public :: get_reference_atmosphere
     procedure, public :: get_step
     procedure, public :: get_last_advance_cfl
+    procedure, public :: take_radiation_daily_means
+    procedure, public :: take_radiation_monthly_means
   end type dry_atmosphere_solver
 
 contains
@@ -66,6 +77,9 @@ contains
     this%step_number = -1
     this%last_advance_cfl = 0.0_real64
     this%held_suarez_forcing_enabled = .false.
+    this%radiation_enabled = .false.
+    call this%daily_radiation%reset()
+    call this%monthly_radiation%reset()
     call this%transform%init(truncation)
     if (present(a_half)) then
       call this%coordinate%init(a_half, b_half)
@@ -86,6 +100,14 @@ contains
     this%current_delta = 0.0_real64
     this%current_temperature = 0.0_real64
     this%current_log_ps = 0.0_real64
+    allocate (this%previous_surface_temperature(0:truncation + 1, 0:truncation))
+    allocate (this%previous_deep_temperature(0:truncation + 1, 0:truncation))
+    allocate (this%current_surface_temperature(0:truncation + 1, 0:truncation))
+    allocate (this%current_deep_temperature(0:truncation + 1, 0:truncation))
+    this%previous_surface_temperature = 0.0_real64
+    this%previous_deep_temperature = 0.0_real64
+    this%current_surface_temperature = 0.0_real64
+    this%current_deep_temperature = 0.0_real64
     if (allocated(this%surface_geopotential)) deallocate (this%surface_geopotential)
     allocate (this%surface_geopotential(0:truncation + 1, 0:truncation))
     this%surface_geopotential = 0.0_real64
@@ -125,7 +147,14 @@ contains
     this%previous_delta = this%current_delta
     this%previous_temperature = this%current_temperature
     this%previous_log_ps = this%current_log_ps
+    this%previous_surface_temperature = 0.0_real64
+    this%previous_deep_temperature = 0.0_real64
+    this%current_surface_temperature = 0.0_real64
+    this%current_deep_temperature = 0.0_real64
     this%held_suarez_forcing_enabled = .false.
+    this%radiation_enabled = .false.
+    call this%daily_radiation%reset()
+    call this%monthly_radiation%reset()
     this%step_number = 0
   end subroutine set_initial_state
 
@@ -157,6 +186,24 @@ contains
     this%held_suarez_forcing_enabled = .true.
   end subroutine set_held_suarez_state
 
+  subroutine set_radiation_state(this)
+    class(dry_atmosphere_solver), intent(inout) :: this
+    complex(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :), log_ps(:, :)
+    complex(real64), allocatable :: unused_surface_geopotential(:, :)
+
+    call check_initialized(this)
+    call jablonowski_williamson_initial_state(this%transform, this%truncation, this%coordinate, &
+                                              .true., zeta, delta, temperature, log_ps, &
+                                              unused_surface_geopotential, planetary_rotation_rate)
+    ! This case deliberately uses the Jablonowski-Williamson atmosphere over flat terrain.
+    call this%set_initial_state(zeta, delta, temperature, log_ps)
+    this%current_surface_temperature = this%current_temperature(:, :, this%number_of_levels)
+    this%current_deep_temperature = this%current_surface_temperature
+    this%previous_surface_temperature = this%current_surface_temperature
+    this%previous_deep_temperature = this%current_deep_temperature
+    this%radiation_enabled = .true.
+  end subroutine set_radiation_state
+
   subroutine advance(this)
     class(dry_atmosphere_solver), intent(inout) :: this
     complex(real64), allocatable :: next_zeta(:, :, :), next_delta(:, :, :), next_temperature(:, :, :)
@@ -165,37 +212,59 @@ contains
     complex(real64), allocatable :: filtered_temperature(:, :, :), filtered_log_ps(:, :)
     complex(real64), allocatable :: half_zeta(:, :, :), half_delta(:, :, :), half_temperature(:, :, :)
     complex(real64), allocatable :: half_log_ps(:, :)
+    complex(real64), allocatable :: next_surface_temperature(:, :), next_deep_temperature(:, :)
+    complex(real64), allocatable :: filtered_surface_temperature(:, :), filtered_deep_temperature(:, :)
+    complex(real64), allocatable :: half_surface_temperature(:, :), half_deep_temperature(:, :)
     real(real64) :: maximum_speed, half_step_maximum_speed
 
     call check_ready(this)
     if (this%step_number == 0) then
       call integration_step(this, 0.25_real64*this%dt, &
                             this%current_zeta, this%current_delta, this%current_temperature, this%current_log_ps, &
+                            this%current_surface_temperature, this%current_deep_temperature, &
                             this%current_zeta, this%current_delta, this%current_temperature, this%current_log_ps, &
-                            .false., half_zeta, half_delta, half_temperature, half_log_ps, &
+                            this%current_surface_temperature, this%current_deep_temperature, &
+                            0.0_real64, this%radiation_enabled, .false., &
+                            half_zeta, half_delta, half_temperature, half_log_ps, &
+                            half_surface_temperature, half_deep_temperature, &
                             filtered_zeta, filtered_delta, filtered_temperature, filtered_log_ps, &
+                            filtered_surface_temperature, filtered_deep_temperature, &
                             maximum_speed)
       call integration_step(this, 0.5_real64*this%dt, &
                             this%current_zeta, this%current_delta, this%current_temperature, this%current_log_ps, &
-                            half_zeta, half_delta, half_temperature, half_log_ps, .true., &
+                            this%current_surface_temperature, this%current_deep_temperature, &
+                            half_zeta, half_delta, half_temperature, half_log_ps, &
+                            half_surface_temperature, half_deep_temperature, &
+                            0.5_real64*this%dt, .false., .true., &
                             next_zeta, next_delta, next_temperature, next_log_ps, &
+                            next_surface_temperature, next_deep_temperature, &
                             filtered_zeta, filtered_delta, filtered_temperature, filtered_log_ps, &
+                            filtered_surface_temperature, filtered_deep_temperature, &
                             half_step_maximum_speed)
       this%previous_zeta = this%current_zeta
       this%previous_delta = this%current_delta
       this%previous_temperature = this%current_temperature
       this%previous_log_ps = this%current_log_ps
+      this%previous_surface_temperature = this%current_surface_temperature
+      this%previous_deep_temperature = this%current_deep_temperature
     else
       call integration_step(this, this%dt, &
                             this%previous_zeta, this%previous_delta, this%previous_temperature, this%previous_log_ps, &
+                            this%previous_surface_temperature, this%previous_deep_temperature, &
                             this%current_zeta, this%current_delta, this%current_temperature, this%current_log_ps, &
-                            .true., next_zeta, next_delta, next_temperature, next_log_ps, &
+                            this%current_surface_temperature, this%current_deep_temperature, &
+                            real(this%step_number, real64)*this%dt, this%radiation_enabled, .true., &
+                            next_zeta, next_delta, next_temperature, next_log_ps, &
+                            next_surface_temperature, next_deep_temperature, &
                             filtered_zeta, filtered_delta, filtered_temperature, filtered_log_ps, &
+                            filtered_surface_temperature, filtered_deep_temperature, &
                             maximum_speed)
       this%previous_zeta = filtered_zeta
       this%previous_delta = filtered_delta
       this%previous_temperature = filtered_temperature
       this%previous_log_ps = filtered_log_ps
+      this%previous_surface_temperature = filtered_surface_temperature
+      this%previous_deep_temperature = filtered_deep_temperature
     end if
     ! Both branches evaluated the first tendency at the state this step started from.
     this%last_advance_cfl = advective_cfl(this, maximum_speed)
@@ -203,42 +272,72 @@ contains
     this%current_delta = next_delta
     this%current_temperature = next_temperature
     this%current_log_ps = next_log_ps
+    this%current_surface_temperature = next_surface_temperature
+    this%current_deep_temperature = next_deep_temperature
     this%step_number = this%step_number + 1
   end subroutine advance
 
   subroutine integration_step(this, interval, previous_zeta, previous_delta, previous_temperature, previous_log_ps, &
-                              current_zeta, current_delta, current_temperature, current_log_ps, apply_raw, &
+                              previous_surface_temperature, previous_deep_temperature, &
+                              current_zeta, current_delta, current_temperature, current_log_ps, &
+                              current_surface_temperature, current_deep_temperature, &
+                              evaluation_time, collect_radiation_diagnostics, apply_raw, &
                               next_zeta, next_delta, next_temperature, next_log_ps, &
+                              next_surface_temperature, next_deep_temperature, &
                               filtered_zeta, filtered_delta, filtered_temperature, filtered_log_ps, &
+                              filtered_surface_temperature, filtered_deep_temperature, &
                               maximum_speed)
     class(dry_atmosphere_solver), intent(inout) :: this
     real(real64), intent(in) :: interval
     complex(real64), intent(in) :: previous_zeta(0:, 0:, :), previous_delta(0:, 0:, :)
     complex(real64), intent(in) :: previous_temperature(0:, 0:, :), previous_log_ps(0:, 0:)
+    complex(real64), intent(in) :: previous_surface_temperature(0:, 0:), previous_deep_temperature(0:, 0:)
     complex(real64), intent(in) :: current_zeta(0:, 0:, :), current_delta(0:, 0:, :)
     complex(real64), intent(in) :: current_temperature(0:, 0:, :), current_log_ps(0:, 0:)
-    logical, intent(in) :: apply_raw
+    complex(real64), intent(in) :: current_surface_temperature(0:, 0:), current_deep_temperature(0:, 0:)
+    real(real64), intent(in) :: evaluation_time
+    logical, intent(in) :: collect_radiation_diagnostics, apply_raw
     complex(real64), allocatable, intent(out) :: next_zeta(:, :, :), next_delta(:, :, :)
     complex(real64), allocatable, intent(out) :: next_temperature(:, :, :), next_log_ps(:, :)
+    complex(real64), allocatable, intent(out) :: next_surface_temperature(:, :), next_deep_temperature(:, :)
     complex(real64), allocatable, intent(out) :: filtered_zeta(:, :, :), filtered_delta(:, :, :)
     complex(real64), allocatable, intent(out) :: filtered_temperature(:, :, :), filtered_log_ps(:, :)
+    complex(real64), allocatable, intent(out) :: filtered_surface_temperature(:, :), filtered_deep_temperature(:, :)
     !> Largest wind speed (m/s) of the current state used for the tendency.
     real(real64), intent(out) :: maximum_speed
     complex(real64), allocatable :: rhs_zeta(:, :, :), rhs_delta(:, :, :), rhs_temperature(:, :, :), rhs_log_ps(:, :)
+    complex(real64), allocatable :: rhs_surface_temperature(:, :), rhs_deep_temperature(:, :)
     complex(real64), allocatable :: candidate_zeta(:, :, :), candidate_delta(:, :, :)
     complex(real64), allocatable :: candidate_temperature(:, :, :), candidate_log_ps(:, :)
+    complex(real64), allocatable :: candidate_surface_temperature(:, :), candidate_deep_temperature(:, :)
     complex(real64), allocatable :: filtered_level(:, :), next_level(:, :)
     real(real64) :: centered_interval
     integer :: k
 
     centered_interval = 2.0_real64*interval
-    call compute_dry_nonlinear_tendency(this%transform, this%truncation, this%coordinate, &
-                                        current_zeta, current_delta, current_temperature, current_log_ps, &
-                                        this%surface_geopotential, &
-                                        rhs_zeta, rhs_delta, rhs_temperature, rhs_log_ps, maximum_speed, &
-                                        this%held_suarez_forcing_enabled)
+    if (collect_radiation_diagnostics) then
+      call compute_dry_nonlinear_tendency(this%transform, this%truncation, this%coordinate, &
+                                          current_zeta, current_delta, current_temperature, current_log_ps, &
+                                          this%surface_geopotential, current_surface_temperature, &
+                                          current_deep_temperature, rhs_zeta, rhs_delta, rhs_temperature, &
+                                          rhs_log_ps, rhs_surface_temperature, rhs_deep_temperature, maximum_speed, &
+                                          this%held_suarez_forcing_enabled, this%radiation_enabled, &
+                                          evaluation_time, this%latest_radiation_diagnostics)
+      call this%daily_radiation%add(this%latest_radiation_diagnostics)
+      call this%monthly_radiation%add(this%latest_radiation_diagnostics)
+    else
+      call compute_dry_nonlinear_tendency(this%transform, this%truncation, this%coordinate, &
+                                          current_zeta, current_delta, current_temperature, current_log_ps, &
+                                          this%surface_geopotential, current_surface_temperature, &
+                                          current_deep_temperature, rhs_zeta, rhs_delta, rhs_temperature, &
+                                          rhs_log_ps, rhs_surface_temperature, rhs_deep_temperature, maximum_speed, &
+                                          this%held_suarez_forcing_enabled, this%radiation_enabled, &
+                                          evaluation_time)
+    end if
     call allocate_state(this, candidate_zeta, candidate_delta, candidate_temperature, candidate_log_ps)
     candidate_zeta = previous_zeta + centered_interval*rhs_zeta
+    candidate_surface_temperature = previous_surface_temperature + centered_interval*rhs_surface_temperature
+    candidate_deep_temperature = previous_deep_temperature + centered_interval*rhs_deep_temperature
     call this%gravity_wave%solve(centered_interval, &
       previous_log_ps, previous_delta, previous_temperature, &
       current_log_ps, current_delta, current_temperature, &
@@ -269,6 +368,10 @@ contains
         next_temperature(:, :, k) = next_level
       end do
       call apply_raw_filter(previous_log_ps, current_log_ps, candidate_log_ps, filtered_log_ps, next_log_ps)
+      call apply_raw_filter(previous_surface_temperature, current_surface_temperature, &
+                            candidate_surface_temperature, filtered_surface_temperature, next_surface_temperature)
+      call apply_raw_filter(previous_deep_temperature, current_deep_temperature, candidate_deep_temperature, &
+                            filtered_deep_temperature, next_deep_temperature)
     else
       filtered_zeta = current_zeta
       filtered_delta = current_delta
@@ -278,16 +381,26 @@ contains
       next_delta = candidate_delta
       next_temperature = candidate_temperature
       next_log_ps = candidate_log_ps
+      filtered_surface_temperature = current_surface_temperature
+      filtered_deep_temperature = current_deep_temperature
+      next_surface_temperature = candidate_surface_temperature
+      next_deep_temperature = candidate_deep_temperature
     end if
     call enforce_state_constraints(this, filtered_zeta, filtered_delta, filtered_temperature, filtered_log_ps)
     call enforce_state_constraints(this, next_zeta, next_delta, next_temperature, next_log_ps)
+    call enforce_spectral_field(this%truncation, filtered_surface_temperature, .false.)
+    call enforce_spectral_field(this%truncation, filtered_deep_temperature, .false.)
+    call enforce_spectral_field(this%truncation, next_surface_temperature, .false.)
+    call enforce_spectral_field(this%truncation, next_deep_temperature, .false.)
   end subroutine integration_step
 
-  subroutine get_fields(this, zeta, delta, temperature, surface_pressure, u, v, cfl)
+  subroutine get_fields(this, zeta, delta, temperature, surface_pressure, u, v, cfl, &
+                        surface_temperature, deep_temperature)
     class(dry_atmosphere_solver), intent(inout) :: this
     real(real64), allocatable, intent(out) :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     real(real64), allocatable, intent(out) :: surface_pressure(:, :), u(:, :, :), v(:, :, :)
     real(real64), intent(out), optional :: cfl
+    real(real64), allocatable, intent(out), optional :: surface_temperature(:, :), deep_temperature(:, :)
     real(real64), allocatable :: temporary(:, :), temporary_u(:, :), temporary_v(:, :), log_ps(:, :)
     integer, allocatable :: nlon(:)
     integer :: nx, ny, j, k
@@ -314,6 +427,14 @@ contains
     end do
     call this%transform%spectral_to_grid(this%current_log_ps, log_ps)
     surface_pressure = exp(log_ps)
+    if (present(surface_temperature)) then
+      if (.not. this%radiation_enabled) error stop 'surface temperature is not enabled for this case'
+      call this%transform%spectral_to_grid(this%current_surface_temperature, surface_temperature)
+    end if
+    if (present(deep_temperature)) then
+      if (.not. this%radiation_enabled) error stop 'deep temperature is not enabled for this case'
+      call this%transform%spectral_to_grid(this%current_deep_temperature, deep_temperature)
+    end if
     if (present(cfl)) then
       nlon = this%transform%get_nlon()
       maximum_speed = 0.0_real64
@@ -367,6 +488,48 @@ contains
     if (this%step_number < 1) error stop 'dry atmosphere solver: advance before requesting its CFL'
     cfl = this%last_advance_cfl
   end function get_last_advance_cfl
+
+  !> Means of the global diagnostics over every step since the previous call (start time returned).
+  subroutine take_radiation_daily_means(this, time_seconds, mean_atmospheric_temperature, &
+                                        mean_surface_temperature, mean_deep_temperature, &
+                                        mean_kinetic_energy, mean_surface_pressure, &
+                                        mean_incoming_shortwave, mean_reflected_shortwave, &
+                                        mean_outgoing_longwave)
+    class(dry_atmosphere_solver), intent(inout) :: this
+    real(real64), intent(out) :: time_seconds, mean_atmospheric_temperature
+    real(real64), intent(out) :: mean_surface_temperature, mean_deep_temperature
+    real(real64), intent(out) :: mean_kinetic_energy, mean_surface_pressure
+    real(real64), intent(out) :: mean_incoming_shortwave, mean_reflected_shortwave, mean_outgoing_longwave
+    type(radiation_diagnostics) :: means
+
+    if (.not. this%radiation_enabled) then
+      error stop 'dry atmosphere solver: daily radiation diagnostics are not enabled'
+    end if
+    call this%daily_radiation%take(means)
+    time_seconds = means%time_seconds
+    mean_atmospheric_temperature = means%mean_atmospheric_temperature
+    mean_surface_temperature = means%mean_surface_temperature
+    mean_deep_temperature = means%mean_deep_temperature
+    mean_kinetic_energy = means%mean_kinetic_energy
+    mean_surface_pressure = means%mean_surface_pressure
+    mean_incoming_shortwave = means%mean_incoming_shortwave
+    mean_reflected_shortwave = means%mean_reflected_shortwave
+    mean_outgoing_longwave = means%mean_outgoing_longwave
+  end subroutine take_radiation_daily_means
+
+  subroutine take_radiation_monthly_means(this, surface_temperature, surface_pressure, zonal_temperature, &
+                                          zonal_u, zonal_v, eddy_uv, eddy_vt)
+    class(dry_atmosphere_solver), intent(inout) :: this
+    real(real64), allocatable, intent(out) :: surface_temperature(:, :), surface_pressure(:, :)
+    real(real64), allocatable, intent(out) :: zonal_temperature(:, :), zonal_u(:, :), zonal_v(:, :)
+    real(real64), allocatable, intent(out) :: eddy_uv(:, :), eddy_vt(:, :)
+
+    if (.not. this%radiation_enabled) then
+      error stop 'dry atmosphere solver: monthly radiation diagnostics are not enabled'
+    end if
+    call this%monthly_radiation%take(surface_temperature, surface_pressure, zonal_temperature, &
+                                     zonal_u, zonal_v, eddy_uv, eddy_vt)
+  end subroutine take_radiation_monthly_means
 
   pure real(real64) function advective_cfl(this, maximum_speed) result(cfl)
     class(dry_atmosphere_solver), intent(in) :: this

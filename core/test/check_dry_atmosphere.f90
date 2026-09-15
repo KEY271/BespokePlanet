@@ -11,6 +11,12 @@ program check_dry_atmosphere
                               held_suarez_friction_rate, held_suarez_minimum_equilibrium_temperature, &
                               held_suarez_equatorial_temperature, held_suarez_equator_to_pole_difference, &
                               held_suarez_vertical_difference
+  use dry_radiation, only: radiation_tendency, shortwave_downward_flux, stefan_boltzmann_constant, &
+                           longwave_surface_optical_depth, dry_air_specific_heat, &
+                           dry_gravity_acceleration, solar_constant, surface_shortwave_albedo, &
+                           surface_heat_capacity, deep_ground_heat_capacity, axial_tilt, orbital_period, &
+                           solar_day, days_per_month, months_per_year, days_per_year, planetary_rotation_rate, &
+                           radiation_calendar_date, radiation_diagnostics, radiation_daily_accumulator
   implicit none
 
   integer, parameter :: truncation = 5
@@ -21,10 +27,221 @@ program check_dry_atmosphere
   call check_resting_atmosphere()
   call check_held_suarez_forcing()
   call check_held_suarez_state()
+  call check_solar_geometry()
+  call check_radiation_column()
+  call check_radiation_daily_accumulator()
+  call check_radiation_state()
   call check_jablonowski_state()
   call check_jablonowski_steady_state()
 
 contains
+
+  subroutine check_solar_geometry()
+    type(harmonic_transform) :: transform
+    integer, allocatable :: nlon(:)
+    real(real64), allocatable :: weights(:)
+    real(real64) :: global_mean, longitude, seconds_of_day
+    integer :: i, j, calendar_year, calendar_month, calendar_day
+
+    if (abs(solar_day - 86400.0_real64) > 1.0e-12_real64 .or. days_per_month /= 30 .or. &
+        months_per_year /= 12 .or. days_per_year /= 360 .or. &
+        abs(orbital_period - real(days_per_year, real64)*solar_day) > 1.0e-12_real64 .or. &
+        abs(planetary_rotation_rate - 2.0_real64*acos(-1.0_real64)* &
+          (1.0_real64/solar_day + 1.0_real64/(360.0_real64*solar_day))) > 1.0e-18_real64) then
+      error stop 'radiation 360-day calendar constants are incorrect'
+    end if
+    call radiation_calendar_date(0.0_real64, calendar_year, calendar_month, calendar_day, seconds_of_day)
+    if (calendar_year /= 1 .or. calendar_month /= 4 .or. calendar_day /= 1 .or. &
+        abs(seconds_of_day) > 1.0e-12_real64) error stop 'radiation calendar does not start on year 1 April 1'
+    call radiation_calendar_date(30.0_real64*solar_day, calendar_year, calendar_month, &
+                                 calendar_day, seconds_of_day)
+    if (calendar_year /= 1 .or. calendar_month /= 5 .or. calendar_day /= 1 .or. &
+        abs(seconds_of_day) > 1.0e-12_real64) error stop 'radiation 30-day month boundary is incorrect'
+    call radiation_calendar_date(270.0_real64*solar_day, calendar_year, calendar_month, &
+                                 calendar_day, seconds_of_day)
+    if (calendar_year /= 2 .or. calendar_month /= 1 .or. calendar_day /= 1) then
+      error stop 'radiation 30-day month rollover is incorrect'
+    end if
+    call radiation_calendar_date(360.0_real64*solar_day, calendar_year, calendar_month, &
+                                 calendar_day, seconds_of_day)
+    if (calendar_year /= 2 .or. calendar_month /= 4 .or. calendar_day /= 1) then
+      error stop 'radiation 360-day year rollover is incorrect'
+    end if
+
+    if (abs(shortwave_downward_flux(0.0_real64, 0.0_real64, 0.0_real64) - solar_constant) > 1.0e-12_real64 .or. &
+        abs(shortwave_downward_flux(0.0_real64, acos(-1.0_real64), 0.0_real64)) > 1.0e-12_real64 .or. &
+        abs(shortwave_downward_flux(0.0_real64, 0.0_real64, orbital_period) - solar_constant) > 1.0e-12_real64) then
+      error stop 'radiation equinox day/night geometry is incorrect'
+    end if
+    if (abs(shortwave_downward_flux(1.0_real64, 0.0_real64, 0.25_real64*orbital_period) - &
+            solar_constant*sin(axial_tilt)) > 1.0e-10_real64) then
+      error stop 'radiation solstice declination is incorrect'
+    end if
+
+    call transform%init(31)
+    nlon = transform%get_nlon()
+    weights = transform%get_gaussian_weights()
+    global_mean = 0.0_real64
+    do j = 1, size(nlon)
+      do i = 1, nlon(j)
+        longitude = 2.0_real64*acos(-1.0_real64)*real(i - 1, real64)/real(nlon(j), real64)
+        global_mean = global_mean + 0.5_real64*weights(j)/real(nlon(j), real64)* &
+          shortwave_downward_flux(transform%mu(j), longitude, 0.137_real64*orbital_period)
+      end do
+    end do
+    if (abs(global_mean - solar_constant/4.0_real64) > 5.0_real64) then
+      error stop 'discrete global shortwave input is inconsistent with S0/4'
+    end if
+  end subroutine check_solar_geometry
+
+  subroutine check_radiation_column()
+    real(real64), parameter :: pressure_half(0:2) = [1000.0_real64, 40000.0_real64, 100000.0_real64]
+    real(real64), parameter :: temperature(2) = [250.0_real64, 280.0_real64]
+    real(real64), parameter :: surface_temperature = 290.0_real64
+    real(real64) :: temperature_tendency(2), surface_tendency, deep_tendency
+    real(real64) :: transmission(2), emission(2), upward_longwave, total_energy_tendency
+    real(real64) :: incoming_shortwave, reflected_shortwave, outgoing_longwave
+    integer :: k
+
+    call radiation_tendency(pressure_half, temperature, surface_temperature, 285.0_real64, &
+                            3.0_real64, 4.0_real64, 0.0_real64, 0.0_real64, 0.0_real64, &
+                            temperature_tendency, surface_tendency, deep_tendency, &
+                            incoming_shortwave, reflected_shortwave, outgoing_longwave)
+    if (maxval(abs(temperature_tendency - &
+        [-5.3667836077628645e-6_real64, -6.1944435312519194e-6_real64])) > 1.0e-16_real64 .or. &
+        abs(deep_tendency - 5.0e-7_real64) > 1.0e-18_real64) then
+      error stop 'radiation column tendencies are incorrect'
+    end if
+    if (abs(incoming_shortwave - solar_constant) > 1.0e-12_real64 .or. &
+        abs(reflected_shortwave - surface_shortwave_albedo*solar_constant) > 1.0e-12_real64) then
+      error stop 'radiation column shortwave fluxes are incorrect'
+    end if
+    do k = 1, 2
+      transmission(k) = exp(-longwave_surface_optical_depth* &
+        (pressure_half(k) - pressure_half(k - 1))/(pressure_half(2) - pressure_half(0)))
+      emission(k) = (1.0_real64 - transmission(k))*stefan_boltzmann_constant*temperature(k)**4
+    end do
+    upward_longwave = stefan_boltzmann_constant*surface_temperature**4
+    do k = 2, 1, -1
+      upward_longwave = transmission(k)*upward_longwave + emission(k)
+    end do
+    total_energy_tendency = sum(dry_air_specific_heat* &
+      (pressure_half(1:2) - pressure_half(0:1))/dry_gravity_acceleration*temperature_tendency) + &
+      surface_heat_capacity*surface_tendency + deep_ground_heat_capacity*deep_tendency
+    if (abs(total_energy_tendency - &
+        (incoming_shortwave - reflected_shortwave - upward_longwave)) > 1.0e-10_real64 .or. &
+        abs(outgoing_longwave - upward_longwave) > 1.0e-12_real64) then
+      error stop 'radiation column does not conserve energy'
+    end if
+  end subroutine check_radiation_column
+
+  subroutine check_radiation_daily_accumulator()
+    type(radiation_daily_accumulator) :: accumulator
+    type(radiation_diagnostics) :: sample, means
+
+    sample%time_seconds = 86400.0_real64
+    sample%mean_atmospheric_temperature = 250.0_real64
+    sample%mean_surface_temperature = 280.0_real64
+    sample%mean_deep_temperature = 281.0_real64
+    sample%mean_kinetic_energy = 100.0_real64
+    sample%mean_surface_pressure = 1.0e5_real64
+    sample%mean_incoming_shortwave = 300.0_real64
+    sample%mean_reflected_shortwave = 90.0_real64
+    sample%mean_outgoing_longwave = 240.0_real64
+    call accumulator%add(sample)
+    sample%time_seconds = 87600.0_real64
+    sample%mean_atmospheric_temperature = 254.0_real64
+    sample%mean_surface_temperature = 290.0_real64
+    sample%mean_deep_temperature = 283.0_real64
+    sample%mean_kinetic_energy = 120.0_real64
+    sample%mean_surface_pressure = 1.0002e5_real64
+    sample%mean_incoming_shortwave = 400.0_real64
+    sample%mean_reflected_shortwave = 120.0_real64
+    sample%mean_outgoing_longwave = 250.0_real64
+    call accumulator%add(sample)
+    call accumulator%take(means)
+    if (abs(means%time_seconds - 86400.0_real64) > 0.0_real64 .or. &
+        abs(means%mean_atmospheric_temperature - 252.0_real64) > 1.0e-12_real64 .or. &
+        abs(means%mean_surface_temperature - 285.0_real64) > 1.0e-12_real64 .or. &
+        abs(means%mean_deep_temperature - 282.0_real64) > 1.0e-12_real64 .or. &
+        abs(means%mean_kinetic_energy - 110.0_real64) > 1.0e-12_real64 .or. &
+        abs(means%mean_surface_pressure - 1.0001e5_real64) > 1.0e-9_real64 .or. &
+        abs(means%mean_incoming_shortwave - 350.0_real64) > 1.0e-12_real64 .or. &
+        abs(means%mean_reflected_shortwave - 105.0_real64) > 1.0e-12_real64 .or. &
+        abs(means%mean_outgoing_longwave - 245.0_real64) > 1.0e-12_real64) then
+      error stop 'radiation daily accumulator does not return equal-weight interval means'
+    end if
+    if (accumulator%count() /= 0) error stop 'radiation daily accumulator was not reset after take'
+  end subroutine check_radiation_daily_accumulator
+
+  subroutine check_radiation_state()
+    type(dry_atmosphere_solver) :: solver
+    real(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
+    real(real64), allocatable :: surface_pressure(:, :), u(:, :, :), v(:, :, :)
+    real(real64), allocatable :: surface_temperature(:, :), deep_temperature(:, :)
+    real(real64), allocatable :: monthly_surface_temperature(:, :), monthly_surface_pressure(:, :)
+    real(real64), allocatable :: zonal_temperature(:, :), zonal_u(:, :), zonal_v(:, :), eddy_uv(:, :), eddy_vt(:, :)
+    complex(real64), allocatable :: snapshot_zeta_spectral(:, :, :), snapshot_delta_spectral(:, :, :)
+    complex(real64), allocatable :: snapshot_temperature_spectral(:, :, :), snapshot_log_ps_spectral(:, :)
+    integer, allocatable :: nlon(:)
+    type(harmonic_transform) :: transform
+    integer :: j, step
+    real(real64) :: maximum_initial_difference
+    real(real64) :: diagnostic_time, mean_atmospheric_temperature, mean_surface_temperature
+    real(real64) :: mean_deep_temperature, mean_kinetic_energy, mean_surface_pressure
+    real(real64) :: mean_incoming_shortwave, mean_reflected_shortwave, mean_outgoing_longwave
+
+    call transform%init(truncation)
+    nlon = transform%get_nlon()
+    call solver%init(truncation, 1200.0_real64)
+    call solver%set_radiation_state()
+    call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
+                           surface_temperature=surface_temperature, deep_temperature=deep_temperature)
+    maximum_initial_difference = 0.0_real64
+    do j = 1, size(nlon)
+      maximum_initial_difference = max(maximum_initial_difference, &
+        maxval(abs(surface_temperature(1:nlon(j), j) - temperature(1:nlon(j), j, size(temperature, 3)))), &
+        maxval(abs(deep_temperature(1:nlon(j), j) - temperature(1:nlon(j), j, size(temperature, 3)))))
+    end do
+    if (maximum_initial_difference > 1.0e-10_real64) then
+      error stop 'radiation ground temperatures do not match the initial lowest atmospheric level'
+    end if
+
+    do step = 1, 4
+      call solver%advance()
+    end do
+    ! Four advances collect samples at t = 0, 1200, 2400 and 3600 s; the mean is stamped with t = 0.
+    call solver%take_radiation_daily_means(diagnostic_time, mean_atmospheric_temperature, &
+      mean_surface_temperature, mean_deep_temperature, mean_kinetic_energy, mean_surface_pressure, &
+      mean_incoming_shortwave, mean_reflected_shortwave, mean_outgoing_longwave)
+    if (abs(diagnostic_time) > 1.0e-12_real64 .or. &
+        abs(mean_incoming_shortwave - solar_constant/4.0_real64) > 5.0_real64 .or. &
+        abs(mean_reflected_shortwave - surface_shortwave_albedo*mean_incoming_shortwave) > 1.0e-10_real64 .or. &
+        min(mean_atmospheric_temperature, mean_surface_temperature, mean_deep_temperature, &
+            mean_surface_pressure, mean_outgoing_longwave) <= 0.0_real64 .or. mean_kinetic_energy < 0.0_real64) then
+      error stop 'radiation daily diagnostics are incorrect'
+    end if
+    call solver%take_radiation_monthly_means(monthly_surface_temperature, monthly_surface_pressure, &
+                                             zonal_temperature, zonal_u, zonal_v, eddy_uv, eddy_vt)
+    call solver%get_spectral_state(snapshot_zeta_spectral, snapshot_delta_spectral, &
+                                   snapshot_temperature_spectral, snapshot_log_ps_spectral)
+    if (.not. all(ieee_is_finite(real(snapshot_temperature_spectral, real64))) .or. &
+        .not. all(ieee_is_finite(real(snapshot_log_ps_spectral, real64)))) then
+      error stop 'radiation instantaneous snapshot produced a non-finite value'
+    end if
+    call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
+                           surface_temperature=surface_temperature, deep_temperature=deep_temperature)
+    if (.not. all(ieee_is_finite(temperature)) .or. .not. all(ieee_is_finite(surface_temperature)) .or. &
+        .not. all(ieee_is_finite(deep_temperature))) then
+      error stop 'radiation state produced a non-finite temperature'
+    end if
+    if (.not. all(ieee_is_finite(monthly_surface_temperature)) .or. &
+        .not. all(ieee_is_finite(monthly_surface_pressure)) .or. &
+        .not. all(ieee_is_finite(zonal_temperature)) .or. .not. all(ieee_is_finite(eddy_uv)) .or. &
+        .not. all(ieee_is_finite(eddy_vt))) then
+      error stop 'radiation monthly diagnostics produced a non-finite value'
+    end if
+  end subroutine check_radiation_state
 
   subroutine check_reference_atmosphere()
     type(hybrid_sigma_coordinate) :: coordinate

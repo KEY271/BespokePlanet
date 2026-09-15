@@ -4,7 +4,8 @@ root := justfile_directory()
 test:
     cd "{{ root }}/core" && fpm test --profile release --link-flag "$(pkg-config --libs-only-L fftw3)"
 
-# Run the model in release mode (equation: shallow-water, barotropic, dry, held-suarez, or all).
+# Run the model in release mode (equation: shallow-water, barotropic, dry, held-suarez,
+# radiation, or all).
 run equation="dry":
     cd "{{ root }}/core" && fpm run --profile release --link-flag "$(pkg-config --libs-only-L fftw3)" -- "{{ equation }}"
 

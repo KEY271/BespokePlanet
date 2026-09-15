@@ -18,7 +18,8 @@ contains
 
   subroutine jablonowski_williamson_initial_state(transform, truncation, coordinate, &
                                                   include_perturbation, zeta, delta, temperature, &
-                                                  log_surface_pressure, surface_geopotential)
+                                                  log_surface_pressure, surface_geopotential, &
+                                                  planetary_rotation_rate)
     type(harmonic_transform), intent(inout) :: transform
     integer, intent(in) :: truncation
     type(hybrid_sigma_coordinate), intent(in) :: coordinate
@@ -26,6 +27,7 @@ contains
     complex(real64), allocatable, intent(out) :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     complex(real64), allocatable, intent(out) :: log_surface_pressure(:, :)
     complex(real64), allocatable, intent(out) :: surface_geopotential(:, :)
+    real(real64), intent(in), optional :: planetary_rotation_rate
     real(real64), allocatable :: u(:, :), v(:, :), temperature_grid(:, :), log_ps_grid(:, :)
     real(real64), allocatable :: surface_geopotential_grid(:, :)
     complex(real64), allocatable :: level_spectral(:, :)
@@ -34,13 +36,15 @@ contains
     logical :: perturb
     real(real64) :: pi, longitude, latitude, eta, eta_v, vertical_shape, surface_shape
     real(real64) :: sinphi, cosphi, angular_cosine, distance, wind_perturbation
-    real(real64) :: temperature_correction
+    real(real64) :: temperature_correction, active_rotation_rate
     real(real64), parameter :: centre_longitude = 20.0_real64*acos(-1.0_real64)/180.0_real64
     real(real64), parameter :: centre_latitude = 40.0_real64*acos(-1.0_real64)/180.0_real64
     real(real64), parameter :: perturbation_radius = earth_radius/10.0_real64
 
     perturb = .true.
     if (present(include_perturbation)) perturb = include_perturbation
+    active_rotation_rate = rotation_rate
+    if (present(planetary_rotation_rate)) active_rotation_rate = planetary_rotation_rate
     number_of_levels = coordinate%number_of_levels
     if (number_of_levels < 1) error stop 'Jablonowski-Williamson coordinate is not initialized'
     pi = acos(-1.0_real64)
@@ -66,7 +70,7 @@ contains
       cosphi = sqrt(max(0.0_real64, 1.0_real64 - sinphi*sinphi))
       surface_geopotential_grid(1:nlon(j), j) = jablonowski_maximum_wind*surface_shape*( &
         jablonowski_maximum_wind*surface_shape*latitude_function_a(sinphi, cosphi) + &
-        earth_radius*rotation_rate*latitude_function_b(sinphi, cosphi))
+        earth_radius*active_rotation_rate*latitude_function_b(sinphi, cosphi))
     end do
     call transform%grid_to_spectral(surface_geopotential_grid, surface_geopotential)
 
@@ -85,7 +89,7 @@ contains
           dry_air_gas_constant*sin(eta_v)*sqrt(vertical_shape)*( &
           2.0_real64*jablonowski_maximum_wind*vertical_shape**1.5_real64* &
           latitude_function_a(sinphi, cosphi) + &
-          earth_radius*rotation_rate*latitude_function_b(sinphi, cosphi))
+          earth_radius*active_rotation_rate*latitude_function_b(sinphi, cosphi))
         do i = 1, nlon(j)
           longitude = 2.0_real64*pi*real(i - 1, real64)/real(nlon(j), real64)
           wind_perturbation = 0.0_real64
