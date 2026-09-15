@@ -51,6 +51,7 @@ just viz
 - [Jablonowski–Williamson の初期状態](./docs/Jablonowski-Williamson.md)
 - [Held–Suarez 強制](./docs/Held-Suarez.md)
 - [日変化・季節変化を含む放射](./docs/radiation.md)
+- [Betts–Miller 型の乾燥対流調節](./docs/dry-convective-adjustment.md)
 
 ## ライセンス
 

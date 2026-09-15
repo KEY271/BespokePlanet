@@ -11,6 +11,7 @@ program check_time_filters
   call check_raw_formula()
   call check_hyperdiffusion_formula()
   call check_custom_hyperdiffusion_timescale()
+  call check_custom_hyperdiffusion_order()
 
 contains
 
@@ -75,6 +76,23 @@ contains
       error stop 'shared hyperdiffusion ignored a custom e-folding timescale'
     end if
   end subroutine check_custom_hyperdiffusion_timescale
+
+  subroutine check_custom_hyperdiffusion_order()
+    complex(real64), allocatable :: field(:, :)
+    real(real64), parameter :: custom_order = 2.5_real64
+    real(real64) :: ratio, expected
+
+    call allocate_test_field(field)
+    field = cmplx(0.0_real64, 0.0_real64, kind=real64)
+    field(2, 1) = cmplx(1.0_real64, 0.0_real64, kind=real64)
+    call apply_spectral_hyperdiffusion(T, hyperdiffusion_timescale_seconds, field, &
+                                       hyperdiffusion_timescale_seconds, custom_order)
+    ratio = real(2*3, real64)/real(T*(T + 1), real64)
+    expected = 1.0_real64/(1.0_real64 + ratio**custom_order)
+    if (abs(real(field(2, 1), real64) - expected) > 1.0e-15_real64) then
+      error stop 'shared hyperdiffusion ignored a custom order'
+    end if
+  end subroutine check_custom_hyperdiffusion_order
 
   subroutine allocate_test_field(field)
     complex(real64), allocatable, intent(out) :: field(:, :)

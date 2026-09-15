@@ -11,6 +11,7 @@ module field_output
                            surface_heat_capacity, deep_ground_heat_capacity, ground_exchange_coefficient, &
                            surface_exchange_coefficient, gustiness_speed, solar_day, days_per_month, &
                            months_per_year, days_per_year, radiation_calendar_date
+  use dry_convection, only: dry_convective_adjustment_time
   implicit none
   private
 
@@ -389,6 +390,11 @@ contains
     write (unit, '(a)') '    "shortwave_atmosphere": "transparent",'
     write (unit, '(a)') '    "shortwave_forcing": "instantaneous local solar zenith angle",'
     write (unit, '(a)') '    "orbit_eccentricity": 0'
+    write (unit, '(a)') '  },'
+    write (unit, '(a)') '  "dry_convective_adjustment": {'
+    write (unit, '(a)') '    "method": "enthalpy-conserving pool adjacent violators",'
+    write (unit, '(a,es24.16e3)') &
+      '    "relaxation_time_seconds": ', dry_convective_adjustment_time
     write (unit, '(a)') '  },'
     write (unit, '(a)') '  "ground": {'
     write (unit, '(a,es24.16e3,a)') '    "surface_heat_capacity_j_m-2_k-1": ', surface_heat_capacity, ','

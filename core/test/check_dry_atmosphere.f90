@@ -4,7 +4,10 @@ program check_dry_atmosphere
   use harmonics, only: harmonic_transform
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate, reference_surface_pressure, dry_air_kappa
   use dry_gravity_wave, only: dry_gravity_wave_solver, dry_gravity_wave_implicitness
-  use dry_atmosphere, only: dry_atmosphere_solver
+  use dry_atmosphere, only: dry_atmosphere_solver, radiation_divergence_diffusion_order, &
+                            radiation_sponge_taper_eta, radiation_sponge_tropospheric_order, &
+                            radiation_sponge_top_order
+  use dry_convection, only: dry_convective_adjustment_tendency, dry_convective_adjustment_time
   use dry_held_suarez, only: held_suarez_forcing, held_suarez_initial_temperature, &
                               held_suarez_temperature_perturbation, held_suarez_sigma_boundary, &
                               held_suarez_upper_thermal_rate, held_suarez_lower_thermal_rate, &
@@ -27,6 +30,8 @@ program check_dry_atmosphere
   call check_resting_atmosphere()
   call check_held_suarez_forcing()
   call check_held_suarez_state()
+  call check_dry_convective_adjustment()
+  call check_radiation_divergence_sponge()
   call check_solar_geometry()
   call check_radiation_column()
   call check_radiation_daily_accumulator()
@@ -35,6 +40,64 @@ program check_dry_atmosphere
   call check_jablonowski_steady_state()
 
 contains
+
+  subroutine check_radiation_divergence_sponge()
+    real(real64) :: midpoint_order
+
+    midpoint_order = radiation_divergence_diffusion_order(0.5_real64*radiation_sponge_taper_eta)
+    if (abs(radiation_divergence_diffusion_order(0.0_real64) - &
+            radiation_sponge_top_order) > 1.0e-15_real64 .or. &
+        abs(midpoint_order - 0.5_real64*(radiation_sponge_top_order + &
+            radiation_sponge_tropospheric_order)) > 1.0e-15_real64 .or. &
+        abs(radiation_divergence_diffusion_order(radiation_sponge_taper_eta) - &
+            radiation_sponge_tropospheric_order) > 1.0e-15_real64 .or. &
+        abs(radiation_divergence_diffusion_order(1.0_real64) - &
+            radiation_sponge_tropospheric_order) > 1.0e-15_real64) then
+      error stop 'radiation divergence sponge has the wrong vertical taper'
+    end if
+  end subroutine check_radiation_divergence_sponge
+
+  subroutine check_dry_convective_adjustment()
+    real(real64), parameter :: pressure_half(0:4) = [ &
+      1000.0_real64, 20000.0_real64, 50000.0_real64, 80000.0_real64, 100000.0_real64]
+    real(real64), parameter :: unstable_potential_temperature(4) = [ &
+      340.0_real64, 280.0_real64, 300.0_real64, 250.0_real64]
+    real(real64), parameter :: stable_potential_temperature(4) = [ &
+      340.0_real64, 300.0_real64, 280.0_real64, 250.0_real64]
+    real(real64) :: exner(4), delta_p(4), temperature(4), tendency(4)
+    real(real64) :: reference_temperature(4), reference_potential_temperature(4)
+    real(real64) :: layer_log_pressure, alpha
+    integer :: k
+
+    do k = 1, 4
+      delta_p(k) = pressure_half(k) - pressure_half(k - 1)
+      layer_log_pressure = log(pressure_half(k)/pressure_half(k - 1))
+      alpha = 1.0_real64 - pressure_half(k - 1)*layer_log_pressure/delta_p(k)
+      exner(k) = (pressure_half(k)*exp(-alpha)/reference_surface_pressure)**dry_air_kappa
+    end do
+
+    temperature = exner*stable_potential_temperature
+    call dry_convective_adjustment_tendency(pressure_half, temperature, tendency)
+    if (maxval(abs(tendency)) > 1.0e-15_real64) then
+      error stop 'dry convective adjustment changed a stable column'
+    end if
+
+    temperature = exner*unstable_potential_temperature
+    call dry_convective_adjustment_tendency(pressure_half, temperature, tendency)
+    reference_temperature = temperature + dry_convective_adjustment_time*tendency
+    reference_potential_temperature = reference_temperature/exner
+    if (any(reference_potential_temperature(1:3) < &
+            reference_potential_temperature(2:4) - 1.0e-12_real64)) then
+      error stop 'dry convective adjustment reference profile is unstable'
+    end if
+    if (abs(reference_potential_temperature(2) - reference_potential_temperature(3)) > 1.0e-12_real64 .or. &
+        abs(tendency(1)) > 1.0e-15_real64 .or. abs(tendency(4)) > 1.0e-15_real64) then
+      error stop 'dry convective adjustment pooled the wrong layers'
+    end if
+    if (abs(sum(tendency*delta_p)) > 1.0e-10_real64) then
+      error stop 'dry convective adjustment does not conserve column enthalpy'
+    end if
+  end subroutine check_dry_convective_adjustment
 
   subroutine check_solar_geometry()
     type(harmonic_transform) :: transform
@@ -193,7 +256,7 @@ contains
 
     call transform%init(truncation)
     nlon = transform%get_nlon()
-    call solver%init(truncation, 1200.0_real64)
+    call solver%init(truncation, 900.0_real64)
     call solver%set_radiation_state()
     call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
                            surface_temperature=surface_temperature, deep_temperature=deep_temperature)
@@ -210,7 +273,7 @@ contains
     do step = 1, 4
       call solver%advance()
     end do
-    ! Four advances collect samples at t = 0, 1200, 2400 and 3600 s; the mean is stamped with t = 0.
+    ! Four advances collect samples at t = 0, 900, 1800 and 2700 s; the mean is stamped with t = 0.
     call solver%take_radiation_daily_means(diagnostic_time, mean_atmospheric_temperature, &
       mean_surface_temperature, mean_deep_temperature, mean_kinetic_energy, mean_surface_pressure, &
       mean_incoming_shortwave, mean_reflected_shortwave, mean_outgoing_longwave)
