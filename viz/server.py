@@ -383,6 +383,7 @@ class Repository:
         metadata["available_steps"] = list(run.steps)
         metadata["available_frame_count"] = len(run.steps)
         metadata["data_generation"] = run.data_generation
+        metadata["supports_streamlines"] = "speed" in run.fields
         metadata["available_fields"] = [
             {
                 "id": field,
@@ -475,6 +476,27 @@ class Repository:
     def speed_frame(self, run: Run, step: int) -> tuple[bytes, dict[str, float]]:
         """Backward-compatible alias for clients using the original speed API."""
         return self.field_frame(run, "speed", step)
+
+    def wind_frame(
+        self, run: Run, step: int, level: int | None = None
+    ) -> tuple[bytes, float]:
+        """Return u followed by v as two contiguous float32 grid arrays."""
+        if step not in run.steps:
+            raise KeyError(step)
+        if "speed" not in run.fields:
+            raise KeyError("wind")
+        eastward = self._field_values(run, "u", step, level)
+        northward = self._field_values(run, "v", step, level)
+        maximum_speed = 0.0
+        for east, north in zip(eastward, northward):
+            speed = math.hypot(east, north)
+            if not math.isfinite(speed):
+                raise DataError(f"Frame {step} contains non-finite wind values")
+            maximum_speed = max(maximum_speed, speed)
+        if sys.byteorder != "little":
+            eastward.byteswap()
+            northward.byteswap()
+        return eastward.tobytes() + northward.tobytes(), maximum_speed
 
     def field_statistics(
         self, run: Run, field: str, level: int | None = None
@@ -686,6 +708,14 @@ class AppHandler(BaseHTTPRequestHandler):
                 payload, stats = self.repository.speed_frame(run, step)
                 self._send_field(payload, stats, legacy_speed_headers=True)
                 return
+            if len(parts) == 5 and parts[3] == "wind":
+                try:
+                    step = int(parts[4])
+                except ValueError as exc:
+                    raise KeyError(parts[4]) from exc
+                payload, maximum_speed = self.repository.wind_frame(run, step, level)
+                self._send_wind(payload, maximum_speed, level)
+                return
         if path.startswith("/vendor/"):
             vendor_name = path.removeprefix("/vendor/")
             vendor_path = (self.three_build_root / vendor_name).resolve()
@@ -737,6 +767,20 @@ class AppHandler(BaseHTTPRequestHandler):
             self.send_header("X-Speed-Max", f"{stats['maximum']:.9g}")
             self.send_header("X-Speed-P98", f"{stats['p98']:.9g}")
             self.send_header("X-Speed-Mean", f"{stats['mean']:.9g}")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _send_wind(
+        self, payload: bytes, maximum_speed: float, level: int | None
+    ) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Wind-Layout", "u-then-v-float32-le")
+        self.send_header("X-Wind-Maximum-Speed", f"{maximum_speed:.9g}")
+        if level is not None:
+            self.send_header("X-Field-Level", str(level))
         self.end_headers()
         self.wfile.write(payload)
 

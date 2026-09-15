@@ -35,10 +35,15 @@
           <div><span>GRID POINTS</span><strong id="point-count">—</strong></div>
           <div><span id="max-value-label">MAX VALUE</span><strong id="max-value">—</strong></div>
         </div>
+        <div class="view-mode" role="group" aria-label="表示方法">
+          <span>VIEW</span>
+          <button type="button" data-view-mode="globe" class="active" aria-pressed="true">3D GLOBE</button>
+          <button type="button" data-view-mode="map" aria-pressed="false">2D MAP</button>
+        </div>
       </section>
 
       <section class="visual-grid">
-        <article class="panel globe-panel">
+        <article class="panel globe-panel" id="globe-panel">
           <div class="panel-heading">
             <div><span class="index">01</span><h2>Spherical field</h2></div>
             <p>DRAG TO ROTATE · SCROLL TO ZOOM</p>
@@ -47,14 +52,15 @@
           <div class="coordinate-chip" id="globe-coordinate">λ 000.0° · φ 00.0°</div>
         </article>
 
-        <article class="panel map-panel">
+        <article class="panel map-panel" id="map-panel" hidden>
           <div class="panel-heading">
             <div><span class="index">02</span><h2>Equirectangular projection</h2></div>
-            <p>INTERPOLATED GRID SURFACE</p>
+            <p id="flow-state">STREAMLINES · TRACING…</p>
           </div>
           <div class="map-frame">
             <div id="map" class="viewport" aria-label="流速の二次元正距円筒図法表示"></div>
             <span class="axis-label north">90°N</span><span class="axis-label equator">EQ</span><span class="axis-label south">90°S</span>
+            <span class="flow-key" id="flow-key"><i></i> BRIGHTER · FASTER = STRONGER WIND</span>
           </div>
         </article>
       </section>
@@ -68,6 +74,8 @@
         <label class="rate">RATE<select id="rate"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select></label>
         <label class="rate">SCALE<select id="scale-mode"><option value="auto">AUTO · P99.5</option><option value="global">GLOBAL</option><option value="lock">LOCK CURRENT</option></select></label>
         <label class="grid-toggle"><input id="grid-points" type="checkbox" /><span>GRID POINTS</span></label>
+        <label class="grid-toggle"><input id="streamlines" type="checkbox" checked /><span>STREAMLINES</span></label>
+        <label class="rate flow-density">DENSITY<select id="streamline-density"><option value="low">LOW</option><option value="medium" selected>MEDIUM</option><option value="high">HIGH</option></select></label>
         <div class="legend">
           <span id="legend-min">0</span><div class="legend-gradient"></div><span id="legend-max">—</span>
         </div>

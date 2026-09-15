@@ -52,6 +52,14 @@ class RepositoryTest(unittest.TestCase):
         self.assertEqual(len(payload), 4 * 4)
         self.assertAlmostEqual(stats["maximum"], 5.0)
 
+    def test_wind_frame_packs_u_then_v(self):
+        run = self.repository.get_run("tiny")
+        payload, maximum_speed = self.repository.wind_frame(run, 0)
+        values = list(array("f", payload))
+        self.assertEqual(values[:4], [3.0] * 4)
+        self.assertEqual(values[4:], [4.0] * 4)
+        self.assertAlmostEqual(maximum_speed, 5.0)
+
     def test_exposes_and_encodes_all_supported_fields(self):
         run = self.repository.get_run("tiny")
         self.assertEqual(run.fields, ("zeta", "delta", "eta", "speed"))
@@ -127,6 +135,12 @@ class RepositoryTest(unittest.TestCase):
         speed_payload, _ = self.repository.field_frame(run, "speed", 0, 2)
         for value in array("f", speed_payload):
             self.assertAlmostEqual(value, 5.0, places=5)
+
+        wind_payload, maximum_speed = self.repository.wind_frame(run, 0, 2)
+        wind = list(array("f", wind_payload))
+        self.assertEqual(wind[:4], [3.0] * 4)
+        self.assertEqual(wind[4:], [4.0] * 4)
+        self.assertAlmostEqual(maximum_speed, 5.0)
 
     def test_dry_field_rejects_layer_outside_run(self):
         run = self.repository.get_run(self._write_dry_run().name)

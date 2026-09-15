@@ -3,6 +3,10 @@
   "private": true,
   "version": "1.0.0",
   "description": "Three.js frontend for the BespokePlanet atmospheric solvers",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test_streamlines.mjs"
+  },
   "dependencies": {
     "three": "0.179.1"
   }

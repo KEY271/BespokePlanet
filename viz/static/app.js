@@ -1,4 +1,5 @@
 import * as THREE from "/vendor/three.module.js";
+import { buildStreamlines, wrapLongitude } from "/streamlines.js";
 
 const $ = (selector) => document.querySelector(selector);
 const state = {
@@ -9,6 +10,9 @@ const state = {
   frameCache: new Map(), conservation: null, metricIndex: 0,
   globalScaleCache: new Map(), scaleRequestId: 0,
   cacheGeneration: 0, frameRequestId: 0, frameAbortController: null, playbackLoadPending: false,
+  streamlinesEnabled: true, streamlineDensity: "medium", windCache: new Map(), windRecord: null,
+  windRequestId: 0, windAbortController: null,
+  viewMode: "globe",
 };
 
 const ui = {
@@ -17,10 +21,14 @@ const ui = {
   play: $("#play"), timeline: $("#timeline"), frame: $("#frame-number"), time: $("#time-label"),
   rate: $("#rate"), legendMin: $("#legend-min"), legendMax: $("#legend-max"), coordinate: $("#globe-coordinate"),
   scaleMode: $("#scale-mode"), gridPoints: $("#grid-points"),
+  streamlines: $("#streamlines"), streamlineDensity: $("#streamline-density"),
+  flowState: $("#flow-state"), flowKey: $("#flow-key"),
   levelPicker: $("#level-picker"), level: $("#level-select"),
   tabs: $("#metric-tabs"), chart: $("#chart"), metricCurrent: $("#metric-current"),
   metricDrift: $("#metric-drift"), diagnosticsState: $("#diagnostics-state"),
   diagnostics: $("#diagnostics"), fatal: $("#fatal"),
+  globePanel: $("#globe-panel"), mapPanel: $("#map-panel"),
+  viewButtons: [...document.querySelectorAll("[data-view-mode]")],
 };
 
 const views = { globe: null, map: null };
@@ -259,6 +267,134 @@ function createPointOverlay(positions, isMap) {
   return points;
 }
 
+function clearStreamlineLayers() {
+  for (const view of Object.values(views)) {
+    if (!view?.streamlineGroup) continue;
+    for (const object of [...view.streamlineGroup.children]) {
+      view.streamlineGroup.remove(object);
+      object.geometry?.dispose();
+      object.material?.dispose();
+    }
+    view.tracer = null;
+  }
+}
+
+function flowColor(speed, maximumSpeed, target) {
+  const amount = Math.sqrt(THREE.MathUtils.clamp(speed / Math.max(maximumSpeed, Number.EPSILON), 0, 1));
+  target.push(
+    THREE.MathUtils.lerp(0.20, 0.78, amount),
+    THREE.MathUtils.lerp(0.60, 0.95, amount),
+    THREE.MathUtils.lerp(0.92, 0.44, amount),
+  );
+}
+
+function appendFlowPosition(target, point, isMap) {
+  if (isMap) {
+    target.push(wrapLongitude(point.longitude) / Math.PI, point.latitude / (Math.PI / 2), 0.055);
+    return;
+  }
+  const radius = 1.022;
+  const cosLatitude = Math.cos(point.latitude);
+  target.push(
+    radius * cosLatitude * Math.cos(point.longitude),
+    radius * Math.sin(point.latitude),
+    -radius * cosLatitude * Math.sin(point.longitude),
+  );
+}
+
+function renderStreamlines(result) {
+  clearStreamlineLayers();
+  if (!state.streamlinesEnabled || !result?.lines.length) {
+    ui.flowKey.hidden = true;
+    ui.flowState.textContent = state.streamlinesEnabled ? "STREAMLINES · NO FLOW" : "STREAMLINES · OFF";
+    return;
+  }
+  ui.flowKey.hidden = false;
+
+  for (const [key, view] of Object.entries(views)) {
+    const isMap = key === "map";
+    const positions = [];
+    const colors = [];
+    for (const line of result.lines) {
+      for (let index = 1; index < line.length; index += 1) {
+        const previous = line[index - 1];
+        const current = line[index];
+        if (isMap && Math.abs(wrapLongitude(current.longitude) - wrapLongitude(previous.longitude)) > Math.PI) continue;
+        appendFlowPosition(positions, previous, isMap);
+        appendFlowPosition(positions, current, isMap);
+        flowColor(previous.speed, result.maximumSpeed, colors);
+        flowColor(current.speed, result.maximumSpeed, colors);
+      }
+    }
+    const lineGeometry = new THREE.BufferGeometry();
+    lineGeometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    lineGeometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+    const lineObject = new THREE.LineSegments(lineGeometry, new THREE.LineBasicMaterial({
+      vertexColors: true, transparent: true, opacity: 0.82,
+      depthTest: !isMap, depthWrite: false,
+    }));
+    lineObject.renderOrder = 6;
+    view.streamlineGroup.add(lineObject);
+
+    const tracerPositions = new Float32Array(result.lines.length * 3);
+    const tracerGeometry = new THREE.BufferGeometry();
+    tracerGeometry.setAttribute("position", new THREE.BufferAttribute(tracerPositions, 3));
+    const tracerObject = new THREE.Points(tracerGeometry, new THREE.PointsMaterial({
+      color: 0xe8ff9b, size: isMap ? 3.2 : 0.024, sizeAttenuation: !isMap,
+      transparent: true, opacity: 0.96, depthTest: !isMap, depthWrite: false,
+    }));
+    tracerObject.renderOrder = 7;
+    view.streamlineGroup.add(tracerObject);
+    const speedFactors = result.lines.map((line) => {
+      const meanSpeed = line.reduce((sum, point) => sum + point.speed, 0) / line.length;
+      return 0.25 + 0.85 * meanSpeed / Math.max(result.maximumSpeed, Number.EPSILON);
+    });
+    view.tracer = { object: tracerObject, lines: result.lines, speedFactors, isMap };
+  }
+  const levelLabel = state.metadata?.vertical_coordinate && Number.isInteger(state.level)
+    ? ` · L${String(state.level).padStart(2, "0")}`
+    : "";
+  ui.flowState.textContent = `STREAMLINES${levelLabel} · ${result.lines.length} PATHS`;
+}
+
+function updateFlowTracers(timestamp) {
+  for (const view of Object.values(views)) {
+    const tracer = view?.tracer;
+    if (!tracer) continue;
+    const positions = tracer.object.geometry.getAttribute("position");
+    tracer.lines.forEach((line, lineIndex) => {
+      const phase = (timestamp * 0.00004 * tracer.speedFactors[lineIndex] + lineIndex * 0.61803398875) % 1;
+      const point = line[Math.min(line.length - 1, Math.floor(phase * line.length))];
+      const offset = lineIndex * 3;
+      if (tracer.isMap) {
+        positions.array[offset] = wrapLongitude(point.longitude) / Math.PI;
+        positions.array[offset + 1] = point.latitude / (Math.PI / 2);
+        positions.array[offset + 2] = 0.055;
+      } else {
+        const radius = 1.022;
+        const cosLatitude = Math.cos(point.latitude);
+        positions.array[offset] = radius * cosLatitude * Math.cos(point.longitude);
+        positions.array[offset + 1] = radius * Math.sin(point.latitude);
+        positions.array[offset + 2] = -radius * cosLatitude * Math.sin(point.longitude);
+      }
+    });
+    positions.needsUpdate = true;
+  }
+}
+
+function setViewMode(mode) {
+  if (!Object.hasOwn(views, mode)) throw new Error(`Unknown view mode: ${mode}`);
+  state.viewMode = mode;
+  ui.globePanel.hidden = mode !== "globe";
+  ui.mapPanel.hidden = mode !== "map";
+  for (const button of ui.viewButtons) {
+    const selected = button.dataset.viewMode === mode;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  }
+  requestAnimationFrame(() => views[mode]?.resize?.());
+}
+
 function setupViews(metadata) {
   for (const key of ["globe", "map"]) {
     if (views[key]) {
@@ -282,11 +418,13 @@ function setupViews(metadata) {
   addGlobeGraticule(globeScene);
   const globeSurface = createGlobeSurface(coordinates.globe, triangles);
   const globePoints = createPointOverlay(coordinates.globe, false);
-  globeScene.add(globeSurface.mesh, globePoints);
+  const globeStreamlines = new THREE.Group();
+  globeScene.add(globeSurface.mesh, globePoints, globeStreamlines);
   views.globe = {
     renderer: globeRenderer, scene: globeScene, camera: globeCamera,
     surface: globeSurface.mesh, colorSources: globeSurface.colorSources,
-    pointOverlay: globePoints, yaw: Math.PI / 2, pitch: 0.28, distance: 3.25,
+    pointOverlay: globePoints, streamlineGroup: globeStreamlines, tracer: null,
+    yaw: Math.PI / 2, pitch: 0.28, distance: 3.25,
   };
   installGlobeControls(views.globe);
 
@@ -297,11 +435,12 @@ function setupViews(metadata) {
   addMapGraticule(mapScene);
   const mapSurface = createMapSurface(coordinates.map, triangles);
   const mapPoints = createPointOverlay(coordinates.map, true);
-  mapScene.add(mapSurface.mesh, mapPoints);
+  const mapStreamlines = new THREE.Group();
+  mapScene.add(mapSurface.mesh, mapPoints, mapStreamlines);
   views.map = {
     renderer: mapRenderer, scene: mapScene, camera: mapCamera,
     surface: mapSurface.mesh, colorSources: mapSurface.colorSources,
-    pointOverlay: mapPoints,
+    pointOverlay: mapPoints, streamlineGroup: mapStreamlines, tracer: null,
   };
 
   for (const key of ["globe", "map"]) {
@@ -309,22 +448,25 @@ function setupViews(metadata) {
     const resize = () => {
       const width = ui[key].clientWidth;
       const height = ui[key].clientHeight;
-      view.renderer.setSize(width, height, false);
+      view.renderer.setSize(Math.max(1, width), Math.max(1, height), false);
       if (key === "globe") {
         view.camera.aspect = width / Math.max(1, height);
       } else {
-        const aspect = width / Math.max(1, height);
-        view.camera.left = -1.08 * aspect;
-        view.camera.right = 1.08 * aspect;
+        // Both axes fill the viewport; the CSS viewport itself is exactly 2:1,
+        // so 360 degrees of longitude occupy twice the pixels of 180 degrees latitude.
+        view.camera.left = -1.08;
+        view.camera.right = 1.08;
         view.camera.top = 1.08;
         view.camera.bottom = -1.08;
       }
       view.camera.updateProjectionMatrix();
     };
+    view.resize = resize;
     view.observer = new ResizeObserver(resize);
     view.observer.observe(ui[key]);
     resize();
   }
+  setViewMode(state.viewMode);
 }
 
 function installGlobeControls(view) {
@@ -470,6 +612,90 @@ async function setScaleMode(mode) {
   renderFieldRecord(state.frameRecord);
 }
 
+function renderWindRecord(record) {
+  if (!record || !state.metadata) return;
+  renderStreamlines(buildStreamlines(
+    state.metadata.grid,
+    record.eastward,
+    record.northward,
+    state.streamlineDensity,
+  ));
+}
+
+async function loadWindFrame(frameIndex) {
+  if (!state.streamlinesEnabled || !state.metadata?.supports_streamlines) {
+    clearStreamlineLayers();
+    ui.flowKey.hidden = true;
+    ui.flowState.textContent = state.metadata?.supports_streamlines === false
+      ? "STREAMLINES · UNAVAILABLE"
+      : "STREAMLINES · OFF";
+    return false;
+  }
+  const runAtStart = state.run;
+  const metadataAtStart = state.metadata;
+  const levelAtStart = state.level;
+  const generationAtStart = state.cacheGeneration;
+  const step = metadataAtStart.available_steps[frameIndex];
+  const levelKey = metadataAtStart.vertical_coordinate ? levelAtStart : "surface";
+  const cacheKey = `${generationAtStart}:${runAtStart}:${levelKey}:${step}`;
+  const requestId = ++state.windRequestId;
+  if (state.windAbortController) state.windAbortController.abort();
+  state.windAbortController = null;
+  ui.flowState.textContent = "STREAMLINES · TRACING…";
+
+  let record = state.windCache.get(cacheKey);
+  if (!record) {
+    const controller = new AbortController();
+    state.windAbortController = controller;
+    try {
+      const params = new URLSearchParams({ generation: String(generationAtStart) });
+      if (metadataAtStart.vertical_coordinate && Number.isInteger(levelAtStart)) {
+        params.set("level", String(levelAtStart));
+      }
+      const response = await fetch(
+        `/api/runs/${encodeURIComponent(runAtStart)}/wind/${step}?${params}`,
+        { signal: controller.signal, cache: "no-store" },
+      );
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Could not load wind components");
+      }
+      const values = new Float32Array(await response.arrayBuffer());
+      const count = metadataAtStart.grid.point_count;
+      if (values.length !== count * 2) throw new Error("Wind component point count does not match metadata");
+      record = {
+        eastward: values.subarray(0, count),
+        northward: values.subarray(count),
+      };
+      state.windCache.set(cacheKey, record);
+      while (state.windCache.size > 8) state.windCache.delete(state.windCache.keys().next().value);
+    } catch (error) {
+      if (error.name === "AbortError") return false;
+      if (requestId === state.windRequestId) {
+        clearStreamlineLayers();
+        ui.flowKey.hidden = true;
+        ui.flowState.textContent = "STREAMLINES · ERROR";
+      }
+      console.error(error);
+      return false;
+    } finally {
+      if (state.windAbortController === controller) state.windAbortController = null;
+    }
+  }
+  if (
+    requestId !== state.windRequestId
+    || state.run !== runAtStart
+    || state.metadata !== metadataAtStart
+    || state.level !== levelAtStart
+    || state.frameIndex !== frameIndex
+    || state.cacheGeneration !== generationAtStart
+    || !state.streamlinesEnabled
+  ) return false;
+  state.windRecord = record;
+  renderWindRecord(record);
+  return true;
+}
+
 async function loadFrame(frameIndex) {
   const runAtStart = state.run;
   const fieldAtStart = state.field;
@@ -548,6 +774,7 @@ async function loadFrame(frameIndex) {
   ui.elapsed.textContent = formatDuration(seconds);
   updateChartReadout();
   drawChart();
+  await loadWindFrame(frameIndex);
   return true;
 }
 
@@ -573,7 +800,7 @@ async function setField(fieldId, frameIndex = state.frameIndex) {
   ui.maxValueLabel.textContent = field.signed ? `MAX |${field.symbol}|` : `MAX ${field.symbol}`;
   ui.globe.setAttribute("aria-label", `${field.label} の三次元地球表示`);
   ui.map.setAttribute("aria-label", `${field.label} の二次元正距円筒図法表示`);
-  ui.level.disabled = !field.uses_level;
+  ui.level.disabled = !field.uses_level && !state.streamlinesEnabled;
 
   await loadFrame(frameIndex);
   if (state.field === fieldId && state.scaleMode === "global") await setScaleMode("global");
@@ -594,8 +821,11 @@ async function setLevelFromInput() {
   ui.level.value = String(level);
   if (level === state.level) return;
   state.level = level;
-  if (!selectedFieldUsesLevel()) return;
   stopPlayback();
+  if (!selectedFieldUsesLevel()) {
+    await loadWindFrame(state.frameIndex);
+    return;
+  }
   state.frameRecord = null;
   state.scaleMin = 0;
   state.scaleMax = 0;
@@ -612,10 +842,15 @@ async function selectRun(name) {
   stopPlayback();
   state.cacheGeneration += 1;
   state.frameCache.clear();
+  state.windCache.clear();
+  state.windRecord = null;
   state.globalScaleCache.clear();
   state.frameRequestId += 1;
   if (state.frameAbortController) state.frameAbortController.abort();
   state.frameAbortController = null;
+  state.windRequestId += 1;
+  if (state.windAbortController) state.windAbortController.abort();
+  state.windAbortController = null;
   state.playbackLoadPending = false;
   state.run = name;
   state.field = null;
@@ -630,6 +865,8 @@ async function selectRun(name) {
   const metadata = await fetchJSON(`/api/runs/${encodeURIComponent(name)}/metadata`);
   if (state.run !== name) return;
   state.metadata = metadata;
+  ui.streamlines.disabled = !metadata.supports_streamlines;
+  ui.streamlineDensity.disabled = !metadata.supports_streamlines || !state.streamlinesEnabled;
   const vertical = metadata.vertical_coordinate;
   ui.levelPicker.hidden = !vertical;
   if (vertical) {
@@ -786,8 +1023,9 @@ function animate(timestamp) {
       view.distance * Math.cos(view.yaw) * Math.cos(view.pitch),
     );
     view.camera.lookAt(0, 0, 0);
-    view.renderer.render(view.scene, view.camera);
-    views.map.renderer.render(views.map.scene, views.map.camera);
+    updateFlowTracers(timestamp);
+    const activeView = views[state.viewMode];
+    activeView.renderer.render(activeView.scene, activeView.camera);
   }
   if (state.playing && state.metadata) {
     const delta = timestamp - state.lastTick;
@@ -832,6 +1070,28 @@ async function init() {
       if (view) view.pointOverlay.visible = ui.gridPoints.checked;
     }
   });
+  ui.streamlines.addEventListener("change", () => {
+    state.streamlinesEnabled = ui.streamlines.checked;
+    ui.streamlineDensity.disabled = !state.streamlinesEnabled || !state.metadata?.supports_streamlines;
+    ui.level.disabled = !selectedFieldUsesLevel() && !state.streamlinesEnabled;
+    state.windRequestId += 1;
+    if (state.windAbortController) state.windAbortController.abort();
+    state.windAbortController = null;
+    if (state.streamlinesEnabled) {
+      loadWindFrame(state.frameIndex).catch(showFatal);
+    } else {
+      clearStreamlineLayers();
+      ui.flowKey.hidden = true;
+      ui.flowState.textContent = "STREAMLINES · OFF";
+    }
+  });
+  ui.streamlineDensity.addEventListener("change", () => {
+    state.streamlineDensity = ui.streamlineDensity.value;
+    if (state.windRecord && state.streamlinesEnabled) renderWindRecord(state.windRecord);
+  });
+  for (const button of ui.viewButtons) {
+    button.addEventListener("click", () => setViewMode(button.dataset.viewMode));
+  }
   window.addEventListener("resize", drawChart);
   await selectRun(state.runs[0].name);
 }
