@@ -30,8 +30,92 @@ program check_harmonics
   call check_analytic_gradient(2, 'cos(latitude) cos(longitude)')
   call check_analytic_gradient(3, 'cos(latitude) sin(longitude)')
   call check_analytic_gradient(4, 'cos(latitude)^2 cos(2 longitude)')
+  call check_wind_curl_divergence(1, 0, 2, 1)
+  call check_wind_curl_divergence(8, 3, 5, 0)
+  call check_wind_curl_divergence(T, mmax_all, T - 1, 2)
+  call check_wind_curl_divergence(T, T, T, 0)
+  call check_solid_body_rotation()
 
 contains
+
+  !> wind_to_grid must agree with the explicit gradients of psi and chi, and
+  !> curl_divergence of that wind must return the Laplacians -n(n+1) psi and -n(n+1) chi.
+  subroutine check_wind_curl_divergence(n_psi, m_psi, n_chi, m_chi)
+    integer, intent(in) :: n_psi, m_psi, n_chi, m_chi
+    complex(real64), allocatable :: psi(:, :), chi(:, :), curl(:, :), divergence(:, :)
+    complex(real64), allocatable :: expected_curl(:, :), expected_divergence(:, :)
+    real(real64), allocatable :: u(:, :), v(:, :), dpsi_dlambda(:, :), dpsi_dphi(:, :)
+    real(real64), allocatable :: dchi_dlambda(:, :), dchi_dphi(:, :)
+    real(real64) :: cosphi, wind_scale, wind_err, curl_err, divergence_err
+    integer :: j, nl
+
+    allocate (psi(0:T + 1, 0:T), chi(0:T + 1, 0:T))
+    psi = cmplx(0.0_real64, 0.0_real64, kind=real64)
+    chi = cmplx(0.0_real64, 0.0_real64, kind=real64)
+    ! A real grid field has real zonal-mean (m = 0) coefficients.
+    psi(n_psi, m_psi) = cmplx(0.75_real64, merge(0.0_real64, -0.5_real64, m_psi == 0), kind=real64)
+    chi(n_chi, m_chi) = cmplx(-0.25_real64, merge(0.0_real64, 0.5_real64, m_chi == 0), kind=real64)
+    expected_curl = -real(n_psi*(n_psi + 1), real64)*psi
+    expected_divergence = -real(n_chi*(n_chi + 1), real64)*chi
+
+    call transform%wind_to_grid(psi, chi, u, v)
+    call transform%gradient_to_grid(psi, dpsi_dlambda, dpsi_dphi)
+    call transform%gradient_to_grid(chi, dchi_dlambda, dchi_dphi)
+    wind_err = 0.0_real64
+    wind_scale = 0.0_real64
+    do j = 1, size(nlon)
+      nl = nlon(j)
+      cosphi = sqrt(1.0_real64 - transform%mu(j)**2)
+      wind_err = max(wind_err, maxval(abs(u(1:nl, j) - &
+        (dchi_dlambda(1:nl, j)/cosphi - dpsi_dphi(1:nl, j)))))
+      wind_err = max(wind_err, maxval(abs(v(1:nl, j) - &
+        (dpsi_dlambda(1:nl, j)/cosphi + dchi_dphi(1:nl, j)))))
+      wind_scale = max(wind_scale, maxval(abs(u(1:nl, j))), maxval(abs(v(1:nl, j))))
+    end do
+    wind_err = wind_err/wind_scale
+
+    call transform%curl_divergence(u, v, curl, divergence)
+    curl_err = maxval(abs(curl - expected_curl))/maxval(abs(expected_curl))
+    divergence_err = maxval(abs(divergence - expected_divergence))/maxval(abs(expected_divergence))
+
+    write (*, '(4(a,i0),a,3(a,es12.4))') 'wind/curl/divergence psi(n=', n_psi, ', m=', m_psi, &
+      ') chi(n=', n_chi, ', m=', m_chi, '):', ' relative wind error = ', wind_err, &
+      ' curl error = ', curl_err, ' divergence error = ', divergence_err
+    if (wind_err > tolerance .or. curl_err > tolerance .or. divergence_err > tolerance) then
+      error stop 'wind_to_grid / curl_divergence test failed'
+    end if
+  end subroutine check_wind_curl_divergence
+
+  !> Solid-body rotation u = cos(latitude), v = 0 on the unit sphere has
+  !> curl = 2 sin(latitude) and zero divergence.
+  subroutine check_solid_body_rotation()
+    real(real64), allocatable :: u(:, :), v(:, :), sin_latitude(:, :)
+    complex(real64), allocatable :: curl(:, :), divergence(:, :), expected_curl(:, :)
+    real(real64) :: curl_err, divergence_err
+    integer :: j
+
+    call transform%allocate_field(u)
+    call transform%allocate_field(v)
+    call transform%allocate_field(sin_latitude)
+    u = 0.0_real64
+    v = 0.0_real64
+    sin_latitude = 0.0_real64
+    do j = 1, size(nlon)
+      u(1:nlon(j), j) = sqrt(1.0_real64 - transform%mu(j)**2)
+      sin_latitude(1:nlon(j), j) = transform%mu(j)
+    end do
+    call transform%grid_to_spectral(sin_latitude, expected_curl)
+    expected_curl = 2.0_real64*expected_curl
+    call transform%curl_divergence(u, v, curl, divergence)
+    curl_err = maxval(abs(curl - expected_curl))
+    divergence_err = maxval(abs(divergence))
+
+    write (*, '(a,2(a,es12.4))') 'solid-body rotation:', ' curl error = ', curl_err, &
+      ' divergence error = ', divergence_err
+    if (curl_err > tolerance .or. divergence_err > tolerance) then
+      error stop 'solid-body rotation curl/divergence test failed'
+    end if
+  end subroutine check_solid_body_rotation
 
   subroutine check_constant()
     real(real64), allocatable :: field(:, :), field2(:, :)

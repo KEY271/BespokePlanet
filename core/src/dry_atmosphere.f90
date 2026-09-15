@@ -25,6 +25,8 @@ module dry_atmosphere
     integer :: number_of_levels = 0
     integer :: step_number = -1
     real(real64) :: dt = 0.0_real64
+    !> Advective CFL of the state that the most recent advance started from.
+    real(real64) :: last_advance_cfl = 0.0_real64
     complex(real64), allocatable :: previous_zeta(:, :, :), previous_delta(:, :, :)
     complex(real64), allocatable :: previous_temperature(:, :, :), previous_log_ps(:, :)
     complex(real64), allocatable :: current_zeta(:, :, :), current_delta(:, :, :)
@@ -40,6 +42,7 @@ module dry_atmosphere
     procedure, public :: get_spectral_state
     procedure, public :: get_reference_atmosphere
     procedure, public :: get_step
+    procedure, public :: get_last_advance_cfl
   end type dry_atmosphere_solver
 
 contains
@@ -58,6 +61,7 @@ contains
     this%truncation = truncation
     this%dt = dt
     this%step_number = -1
+    this%last_advance_cfl = 0.0_real64
     call this%transform%init(truncation)
     if (present(a_half)) then
       call this%coordinate%init(a_half, b_half)
@@ -144,6 +148,7 @@ contains
     complex(real64), allocatable :: filtered_temperature(:, :, :), filtered_log_ps(:, :)
     complex(real64), allocatable :: half_zeta(:, :, :), half_delta(:, :, :), half_temperature(:, :, :)
     complex(real64), allocatable :: half_log_ps(:, :)
+    real(real64) :: maximum_speed, half_step_maximum_speed
 
     call check_ready(this)
     if (this%step_number == 0) then
@@ -151,12 +156,14 @@ contains
                             this%current_zeta, this%current_delta, this%current_temperature, this%current_log_ps, &
                             this%current_zeta, this%current_delta, this%current_temperature, this%current_log_ps, &
                             .false., half_zeta, half_delta, half_temperature, half_log_ps, &
-                            filtered_zeta, filtered_delta, filtered_temperature, filtered_log_ps)
+                            filtered_zeta, filtered_delta, filtered_temperature, filtered_log_ps, &
+                            maximum_speed)
       call integration_step(this, 0.5_real64*this%dt, &
                             this%current_zeta, this%current_delta, this%current_temperature, this%current_log_ps, &
                             half_zeta, half_delta, half_temperature, half_log_ps, .true., &
                             next_zeta, next_delta, next_temperature, next_log_ps, &
-                            filtered_zeta, filtered_delta, filtered_temperature, filtered_log_ps)
+                            filtered_zeta, filtered_delta, filtered_temperature, filtered_log_ps, &
+                            half_step_maximum_speed)
       this%previous_zeta = this%current_zeta
       this%previous_delta = this%current_delta
       this%previous_temperature = this%current_temperature
@@ -166,12 +173,15 @@ contains
                             this%previous_zeta, this%previous_delta, this%previous_temperature, this%previous_log_ps, &
                             this%current_zeta, this%current_delta, this%current_temperature, this%current_log_ps, &
                             .true., next_zeta, next_delta, next_temperature, next_log_ps, &
-                            filtered_zeta, filtered_delta, filtered_temperature, filtered_log_ps)
+                            filtered_zeta, filtered_delta, filtered_temperature, filtered_log_ps, &
+                            maximum_speed)
       this%previous_zeta = filtered_zeta
       this%previous_delta = filtered_delta
       this%previous_temperature = filtered_temperature
       this%previous_log_ps = filtered_log_ps
     end if
+    ! Both branches evaluated the first tendency at the state this step started from.
+    this%last_advance_cfl = advective_cfl(this, maximum_speed)
     this%current_zeta = next_zeta
     this%current_delta = next_delta
     this%current_temperature = next_temperature
@@ -182,7 +192,8 @@ contains
   subroutine integration_step(this, interval, previous_zeta, previous_delta, previous_temperature, previous_log_ps, &
                               current_zeta, current_delta, current_temperature, current_log_ps, apply_raw, &
                               next_zeta, next_delta, next_temperature, next_log_ps, &
-                              filtered_zeta, filtered_delta, filtered_temperature, filtered_log_ps)
+                              filtered_zeta, filtered_delta, filtered_temperature, filtered_log_ps, &
+                              maximum_speed)
     class(dry_atmosphere_solver), intent(inout) :: this
     real(real64), intent(in) :: interval
     complex(real64), intent(in) :: previous_zeta(0:, 0:, :), previous_delta(0:, 0:, :)
@@ -194,6 +205,8 @@ contains
     complex(real64), allocatable, intent(out) :: next_temperature(:, :, :), next_log_ps(:, :)
     complex(real64), allocatable, intent(out) :: filtered_zeta(:, :, :), filtered_delta(:, :, :)
     complex(real64), allocatable, intent(out) :: filtered_temperature(:, :, :), filtered_log_ps(:, :)
+    !> Largest wind speed (m/s) of the current state used for the tendency.
+    real(real64), intent(out) :: maximum_speed
     complex(real64), allocatable :: rhs_zeta(:, :, :), rhs_delta(:, :, :), rhs_temperature(:, :, :), rhs_log_ps(:, :)
     complex(real64), allocatable :: candidate_zeta(:, :, :), candidate_delta(:, :, :)
     complex(real64), allocatable :: candidate_temperature(:, :, :), candidate_log_ps(:, :)
@@ -205,7 +218,7 @@ contains
     call compute_dry_nonlinear_tendency(this%transform, this%truncation, this%coordinate, &
                                         current_zeta, current_delta, current_temperature, current_log_ps, &
                                         this%surface_geopotential, &
-                                        rhs_zeta, rhs_delta, rhs_temperature, rhs_log_ps)
+                                        rhs_zeta, rhs_delta, rhs_temperature, rhs_log_ps, maximum_speed)
     call allocate_state(this, candidate_zeta, candidate_delta, candidate_temperature, candidate_log_ps)
     candidate_zeta = previous_zeta + centered_interval*rhs_zeta
     call this%gravity_wave%solve(centered_interval, &
@@ -292,8 +305,7 @@ contains
             u(1:nlon(j), j, k)**2 + v(1:nlon(j), j, k)**2)))
         end do
       end do
-      cfl = maximum_speed*this%dt/earth_radius* &
-            sqrt(real(this%truncation*(this%truncation + 1), real64))
+      cfl = advective_cfl(this, maximum_speed)
     end if
   end subroutine get_fields
 
@@ -329,6 +341,21 @@ contains
     class(dry_atmosphere_solver), intent(in) :: this
     step = this%step_number
   end function get_step
+
+  !> Advective CFL of the state the most recent advance started from.  It is a
+  !> by-product of the tendency evaluation, so no extra transforms are needed.
+  real(real64) function get_last_advance_cfl(this) result(cfl)
+    class(dry_atmosphere_solver), intent(in) :: this
+    if (this%step_number < 1) error stop 'dry atmosphere solver: advance before requesting its CFL'
+    cfl = this%last_advance_cfl
+  end function get_last_advance_cfl
+
+  pure real(real64) function advective_cfl(this, maximum_speed) result(cfl)
+    class(dry_atmosphere_solver), intent(in) :: this
+    real(real64), intent(in) :: maximum_speed
+    cfl = maximum_speed*this%dt/earth_radius* &
+          sqrt(real(this%truncation*(this%truncation + 1), real64))
+  end function advective_cfl
 
   subroutine allocate_state(this, zeta, delta, temperature, log_ps)
     class(dry_atmosphere_solver), intent(in) :: this

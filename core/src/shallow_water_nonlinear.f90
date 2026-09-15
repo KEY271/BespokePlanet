@@ -9,6 +9,7 @@ module shallow_water_nonlinear
   public :: diagnose_shallow_water_velocity
   public :: flux_divergence
   public :: flux_curl
+  public :: flux_curl_divergence
 
 contains
 
@@ -44,15 +45,9 @@ contains
       flux_v(1:nlon(j), j) = q(1:nlon(j), j)*v(1:nlon(j), j)
     end do
     call allocate_spectral_state(truncation, rhs_zeta, rhs_delta, rhs_eta)
-    call flux_divergence(transform, flux_u, flux_v, flux_term)
+    ! Both come from the same two analyses: d(zeta)/dt = -div(q u), d(delta)/dt = curl(q u) - ...
+    call flux_curl_divergence(transform, flux_u, flux_v, rhs_delta, flux_term)
     rhs_zeta = -flux_term
-
-    do j = 1, size(nlon)
-      flux_u(1:nlon(j), j) = -q(1:nlon(j), j)*v(1:nlon(j), j)
-      flux_v(1:nlon(j), j) = q(1:nlon(j), j)*u(1:nlon(j), j)
-    end do
-    call flux_divergence(transform, flux_u, flux_v, flux_term)
-    rhs_delta = -flux_term
     call transform%grid_to_spectral(kinetic_energy, kinetic_energy_spec)
     do m = 0, truncation
       do n = m, truncation
@@ -72,49 +67,34 @@ contains
     call enforce_tendency_constraints(truncation, rhs_eta)
   end subroutine compute_shallow_water_nonlinear_tendency
 
+  !> Spectral curl and divergence (1/m and 1/s scaling by the Earth radius) of a grid
+  !> vector field, using two grid-to-spectral transforms in total.
+  subroutine flux_curl_divergence(transform, vector_u, vector_v, curl, divergence)
+    type(harmonic_transform), intent(inout) :: transform
+    real(real64), intent(in) :: vector_u(:, :), vector_v(:, :)
+    complex(real64), allocatable, intent(out) :: curl(:, :), divergence(:, :)
+
+    call transform%curl_divergence(vector_u, vector_v, curl, divergence)
+    curl = curl/earth_radius
+    divergence = divergence/earth_radius
+  end subroutine flux_curl_divergence
+
   subroutine flux_divergence(transform, flux_u, flux_v, divergence)
     type(harmonic_transform), intent(inout) :: transform
     real(real64), intent(in) :: flux_u(:, :), flux_v(:, :)
     complex(real64), allocatable, intent(out) :: divergence(:, :)
-    complex(real64), allocatable :: flux_u_spec(:, :), flux_v_cos_spec(:, :)
-    real(real64), allocatable :: flux_v_cos(:, :), du_dlambda(:, :), dvcos_dphi(:, :)
-    real(real64), allocatable :: unused_one(:, :), unused_two(:, :), divergence_grid(:, :)
-    integer, allocatable :: nlon(:)
-    integer :: j
-    real(real64) :: cosphi
+    complex(real64), allocatable :: unused_curl(:, :)
 
-    call transform%allocate_field(flux_v_cos)
-    call transform%allocate_field(divergence_grid)
-    flux_v_cos = 0.0_real64
-    divergence_grid = 0.0_real64
-    nlon = transform%get_nlon()
-    do j = 1, size(nlon)
-      cosphi = sqrt(max(0.0_real64, 1.0_real64 - transform%mu(j)**2))
-      flux_v_cos(1:nlon(j), j) = flux_v(1:nlon(j), j)*cosphi
-    end do
-    call transform%grid_to_spectral(flux_u, flux_u_spec)
-    call transform%grid_to_spectral(flux_v_cos, flux_v_cos_spec)
-    call transform%gradient_to_grid(flux_u_spec, du_dlambda, unused_one)
-    call transform%gradient_to_grid(flux_v_cos_spec, unused_two, dvcos_dphi)
-    do j = 1, size(nlon)
-      cosphi = sqrt(max(0.0_real64, 1.0_real64 - transform%mu(j)**2))
-      divergence_grid(1:nlon(j), j) = &
-        (du_dlambda(1:nlon(j), j) + dvcos_dphi(1:nlon(j), j))/(earth_radius*cosphi)
-    end do
-    call transform%grid_to_spectral(divergence_grid, divergence)
+    call flux_curl_divergence(transform, flux_u, flux_v, unused_curl, divergence)
   end subroutine flux_divergence
 
   subroutine flux_curl(transform, vector_u, vector_v, curl)
     type(harmonic_transform), intent(inout) :: transform
     real(real64), intent(in) :: vector_u(:, :), vector_v(:, :)
     complex(real64), allocatable, intent(out) :: curl(:, :)
-    real(real64), allocatable :: rotated_u(:, :), rotated_v(:, :)
+    complex(real64), allocatable :: unused_divergence(:, :)
 
-    call transform%allocate_field(rotated_u)
-    call transform%allocate_field(rotated_v)
-    rotated_u = vector_v
-    rotated_v = -vector_u
-    call flux_divergence(transform, rotated_u, rotated_v, curl)
+    call flux_curl_divergence(transform, vector_u, vector_v, curl, unused_divergence)
   end subroutine flux_curl
 
   subroutine diagnose_shallow_water_velocity(transform, truncation, zeta, delta, u, v)
@@ -123,35 +103,20 @@ contains
     complex(real64), intent(in) :: zeta(0:, 0:), delta(0:, 0:)
     real(real64), allocatable, intent(out) :: u(:, :), v(:, :)
     complex(real64), allocatable :: psi(:, :), chi(:, :)
-    real(real64), allocatable :: dpsi_dlambda(:, :), dpsi_dphi(:, :)
-    real(real64), allocatable :: dchi_dlambda(:, :), dchi_dphi(:, :)
-    integer, allocatable :: nlon(:)
-    integer :: j, n, m
-    real(real64) :: cosphi
+    integer :: n, m
 
     allocate (psi(0:truncation + 1, 0:truncation), chi(0:truncation + 1, 0:truncation))
     psi = cmplx(0.0_real64, 0.0_real64, kind=real64)
     chi = cmplx(0.0_real64, 0.0_real64, kind=real64)
+    ! Unit-sphere streamfunction and velocity potential, scaled by the Earth radius so
+    ! that the unit-sphere wind operator returns metres per second.
     do m = 0, truncation
       do n = max(1, m), truncation
-        psi(n, m) = -earth_radius**2*zeta(n, m)/real(n*(n + 1), real64)
-        chi(n, m) = -earth_radius**2*delta(n, m)/real(n*(n + 1), real64)
+        psi(n, m) = -earth_radius*zeta(n, m)/real(n*(n + 1), real64)
+        chi(n, m) = -earth_radius*delta(n, m)/real(n*(n + 1), real64)
       end do
     end do
-    call transform%gradient_to_grid(psi, dpsi_dlambda, dpsi_dphi)
-    call transform%gradient_to_grid(chi, dchi_dlambda, dchi_dphi)
-    call transform%allocate_field(u)
-    call transform%allocate_field(v)
-    u = 0.0_real64
-    v = 0.0_real64
-    nlon = transform%get_nlon()
-    do j = 1, size(nlon)
-      cosphi = sqrt(max(0.0_real64, 1.0_real64 - transform%mu(j)**2))
-      u(1:nlon(j), j) = -dpsi_dphi(1:nlon(j), j)/earth_radius + &
-                         dchi_dlambda(1:nlon(j), j)/(earth_radius*cosphi)
-      v(1:nlon(j), j) = dpsi_dlambda(1:nlon(j), j)/(earth_radius*cosphi) + &
-                         dchi_dphi(1:nlon(j), j)/earth_radius
-    end do
+    call transform%wind_to_grid(psi, chi, u, v)
   end subroutine diagnose_shallow_water_velocity
 
   subroutine allocate_spectral_state(truncation, zeta, delta, eta)

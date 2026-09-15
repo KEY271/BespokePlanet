@@ -220,15 +220,21 @@ contains
     number_of_steps = nint(duration/dt)
     maximum_cfl = 0.0_real64
     do step = 0, number_of_steps
-      call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, cfl)
-      maximum_cfl = max(maximum_cfl, cfl)
+      ! Grid fields are synthesized only for snapshots.  On every other step the CFL of
+      ! the current state comes from the grid winds that advance already builds.
       if (mod(step, output_interval_steps) == 0 .or. step == number_of_steps) then
+        call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, cfl)
+        maximum_cfl = max(maximum_cfl, cfl)
         call write_dry_snapshot(case_directory, step, nlon, zeta, delta, temperature, surface_pressure, u, v)
+      end if
+      if (step < number_of_steps) then
+        call solver%advance()
+        cfl = solver%get_last_advance_cfl()
+        maximum_cfl = max(maximum_cfl, cfl)
       end if
       if (mod(step, 24) == 0 .or. step == number_of_steps) then
         write (*, '(2a,i0,a,f6.3)') trim(case_name), ': step ', step, ', advective CFL = ', cfl
       end if
-      if (step < number_of_steps) call solver%advance()
     end do
     call system_clock(end_count)
     if (end_count >= start_count) then

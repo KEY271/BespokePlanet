@@ -2,7 +2,7 @@ module dry_nonlinear
   use iso_fortran_env, only: real64
   use harmonics, only: harmonic_transform
   use barotropic_vorticity, only: earth_radius, rotation_rate
-  use shallow_water_nonlinear, only: diagnose_shallow_water_velocity, flux_divergence, flux_curl
+  use shallow_water_nonlinear, only: diagnose_shallow_water_velocity, flux_curl_divergence
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate, dry_air_gas_constant, dry_air_kappa
   implicit none
   private
@@ -15,7 +15,7 @@ contains
                                             zeta, delta, temperature, log_surface_pressure, &
                                             surface_geopotential, &
                                             rhs_zeta, rhs_delta, rhs_temperature, &
-                                            rhs_log_surface_pressure)
+                                            rhs_log_surface_pressure, maximum_speed)
     type(harmonic_transform), intent(inout) :: transform
     integer, intent(in) :: truncation
     type(hybrid_sigma_coordinate), intent(in) :: coordinate
@@ -24,6 +24,8 @@ contains
     complex(real64), allocatable, intent(out) :: rhs_zeta(:, :, :), rhs_delta(:, :, :)
     complex(real64), allocatable, intent(out) :: rhs_temperature(:, :, :)
     complex(real64), allocatable, intent(out) :: rhs_log_surface_pressure(:, :)
+    !> Largest horizontal wind speed (m/s) of the input state, a by-product of the grid winds.
+    real(real64), intent(out), optional :: maximum_speed
     real(real64), allocatable :: zeta_grid(:, :, :), delta_grid(:, :, :), temperature_grid(:, :, :)
     real(real64), allocatable :: u(:, :, :), v(:, :, :), log_ps(:, :), ps(:, :)
     real(real64), allocatable :: surface_geopotential_grid(:, :)
@@ -33,13 +35,14 @@ contains
     real(real64), allocatable :: mass_divergence(:, :, :), cumulative(:, :, :), mass_flux(:, :, :)
     real(real64), allocatable :: pressure_gradient_u(:, :, :), pressure_gradient_v(:, :, :)
     real(real64), allocatable :: vertical_u(:, :, :), vertical_v(:, :, :), vertical_t(:, :, :)
-    real(real64), allocatable :: q(:, :), kinetic(:, :), vector_u(:, :), vector_v(:, :)
+    real(real64), allocatable :: vector_u(:, :), vector_v(:, :)
     real(real64), allocatable :: tendency_grid(:, :), dtdlambda(:, :), dtdphi(:, :)
     real(real64), allocatable :: temporary_grid(:, :), temporary_u(:, :), temporary_v(:, :)
-    complex(real64), allocatable :: temporary_spectral(:, :), rotational_curl(:, :)
+    complex(real64), allocatable :: temporary_spectral(:, :), curl_spectral(:, :), divergence_spectral(:, :)
     integer, allocatable :: nlon(:)
     integer :: number_of_levels, nx, ny, i, j, k, n, m
     real(real64) :: cosphi, gradient_u, gradient_v, coefficient, thermodynamic_q
+    real(real64) :: absolute_vorticity, kinetic, maximum_speed_squared
 
     number_of_levels = coordinate%number_of_levels
     if (size(zeta, 3) /= number_of_levels .or. size(delta, 3) /= number_of_levels .or. &
@@ -170,30 +173,35 @@ contains
       end do
     end do
 
-    call transform%allocate_field(q)
-    call transform%allocate_field(kinetic)
     call transform%allocate_field(vector_u)
     call transform%allocate_field(vector_v)
     call transform%allocate_field(tendency_grid)
+    maximum_speed_squared = 0.0_real64
     do k = 1, number_of_levels
-      q = 0.0_real64
-      kinetic = 0.0_real64
       vector_u = 0.0_real64
       vector_v = 0.0_real64
+      tendency_grid = 0.0_real64
+      ! With the momentum forcing F = -(vertical advection) - R T (pressure-gradient term),
+      !   d(zeta)/dt = -div((zeta+f) u) + curl F,   d(delta)/dt = curl((zeta+f) u) + div F - lap(K+Phi).
+      ! Since -div(A u, A v) = curl(A v, -A u) and curl(A u, A v) = div(A v, -A u), both
+      ! tendencies are the curl and divergence of the single vector G = ((zeta+f) v + F_u,
+      ! -(zeta+f) u + F_v), which costs two grid-to-spectral transforms.
       do j = 1, ny
         do i = 1, nlon(j)
-          q(i, j) = zeta_grid(i, j, k) + 2.0_real64*rotation_rate*transform%mu(j)
-          kinetic(i, j) = 0.5_real64*(u(i, j, k)**2 + v(i, j, k)**2)
-          vector_u(i, j) = q(i, j)*u(i, j, k)
-          vector_v(i, j) = q(i, j)*v(i, j, k)
+          absolute_vorticity = zeta_grid(i, j, k) + 2.0_real64*rotation_rate*transform%mu(j)
+          kinetic = 0.5_real64*(u(i, j, k)**2 + v(i, j, k)**2)
+          maximum_speed_squared = max(maximum_speed_squared, 2.0_real64*kinetic)
+          vector_u(i, j) = absolute_vorticity*v(i, j, k) - vertical_u(i, j, k) - &
+            dry_air_gas_constant*temperature_grid(i, j, k)*pressure_gradient_u(i, j, k)
+          vector_v(i, j) = -absolute_vorticity*u(i, j, k) - vertical_v(i, j, k) - &
+            dry_air_gas_constant*temperature_grid(i, j, k)*pressure_gradient_v(i, j, k)
+          tendency_grid(i, j) = kinetic + geopotential(i, j, k)
         end do
       end do
-      call flux_divergence(transform, vector_u, vector_v, temporary_spectral)
-      rhs_zeta(:, :, k) = -temporary_spectral
-      call flux_curl(transform, vector_u, vector_v, rotational_curl)
-      rhs_delta(:, :, k) = rotational_curl
+      call flux_curl_divergence(transform, vector_u, vector_v, curl_spectral, divergence_spectral)
+      rhs_zeta(:, :, k) = curl_spectral
+      rhs_delta(:, :, k) = divergence_spectral
 
-      tendency_grid = kinetic + geopotential(:, :, k)
       call transform%grid_to_spectral(tendency_grid, temporary_spectral)
       do m = 0, truncation
         do n = m, truncation
@@ -201,15 +209,6 @@ contains
             real(n*(n + 1), real64)*temporary_spectral(n, m)/earth_radius**2
         end do
       end do
-
-      vector_u = -vertical_u(:, :, k) - dry_air_gas_constant*temperature_grid(:, :, k)* &
-                                      pressure_gradient_u(:, :, k)
-      vector_v = -vertical_v(:, :, k) - dry_air_gas_constant*temperature_grid(:, :, k)* &
-                                      pressure_gradient_v(:, :, k)
-      call flux_curl(transform, vector_u, vector_v, temporary_spectral)
-      rhs_zeta(:, :, k) = rhs_zeta(:, :, k) + temporary_spectral
-      call flux_divergence(transform, vector_u, vector_v, temporary_spectral)
-      rhs_delta(:, :, k) = rhs_delta(:, :, k) + temporary_spectral
 
       call transform%gradient_to_grid(temperature(:, :, k), dtdlambda, dtdphi)
       tendency_grid = 0.0_real64
@@ -231,6 +230,7 @@ contains
       call enforce_tendency(truncation, rhs_delta(:, :, k), .true.)
       call enforce_tendency(truncation, rhs_temperature(:, :, k), .false.)
     end do
+    if (present(maximum_speed)) maximum_speed = sqrt(maximum_speed_squared)
 
     tendency_grid = 0.0_real64
     do j = 1, ny

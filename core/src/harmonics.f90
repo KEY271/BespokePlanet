@@ -19,6 +19,8 @@ module harmonics
   type, public :: harmonic_transform
     private
     integer, allocatable :: nlon(:)
+    !> Normalized associated Legendre functions pnm(n, m, j) at Gaussian latitude j.
+    !> Latitude is the last index so that each ring reads one contiguous block.
     real(real64), allocatable :: w(:), pnm(:, :, :)
     type(fft_plan), allocatable :: fft_plans(:)
     integer :: current_T = -1
@@ -30,6 +32,8 @@ module harmonics
     procedure, public :: spectral_to_grid
     procedure, public :: gradient
     procedure, public :: gradient_to_grid
+    procedure, public :: curl_divergence
+    procedure, public :: wind_to_grid
     procedure, public :: get_nlon
   end type harmonic_transform
 
@@ -129,24 +133,24 @@ contains
     integer :: T, j, n, m
 
     T = this%current_T
-    allocate (this%pnm(2*(T + 1), 0:T + 1, 0:T))
+    allocate (this%pnm(0:T + 1, 0:T, 2*(T + 1)))
 
     this%pnm = 0.0_real64
     do j = 1, 2*(T + 1)
-      this%pnm(j, 0, 0) = 1.0_real64
+      this%pnm(0, 0, j) = 1.0_real64
       x = this%mu(j)
       s = sqrt(max(0.0_real64, 1.0_real64 - x*x))
       do m = 1, T
-        this%pnm(j, m, m) = sqrt(real(2*m + 1, real64)/real(2*m, real64))*s*this%pnm(j, m - 1, m - 1)
+        this%pnm(m, m, j) = sqrt(real(2*m + 1, real64)/real(2*m, real64))*s*this%pnm(m - 1, m - 1, j)
       end do
       do m = 0, T
-        this%pnm(j, m + 1, m) = sqrt(real(2*m + 3, real64))*x*this%pnm(j, m, m)
+        this%pnm(m + 1, m, j) = sqrt(real(2*m + 3, real64))*x*this%pnm(m, m, j)
       end do
       do m = 0, T
         do n = m + 2, T + 1
           anm = sqrt(real(4*n*n - 1, real64)/real(n*n - m*m, real64))
           bnm = sqrt(real((2*n + 1)*((n - 1)*(n - 1) - m*m), real64)/real((2*n - 3)*(n*n - m*m), real64))
-          this%pnm(j, n, m) = anm*x*this%pnm(j, n - 1, m) - bnm*this%pnm(j, n - 2, m)
+          this%pnm(n, m, j) = anm*x*this%pnm(n - 1, m, j) - bnm*this%pnm(n - 2, m, j)
         end do
       end do
     end do
@@ -195,23 +199,35 @@ contains
     real(real64), intent(in) :: field(:, :)
     complex(real64), allocatable, intent(out) :: a(:, :)
 
-    integer :: T, nlat, nlon_j, mmax_j, plan_index
-    integer :: j, n, m
-    real(real64), allocatable :: samples(:)
-    complex(real64), allocatable :: fourier(:, :), spectrum(:)
-
     call check_transform_state(this)
     call check_field_shape(this, field)
+
+    call analyze(this, field, this%current_T, a)
+  end subroutine grid_to_spectral
+
+  !> Gaussian-quadrature projection of a grid field onto P_n^m for n = m..maximum_degree.
+  !> maximum_degree is T for ordinary analysis, or T+1 when the extension row is needed
+  !> by the curl/divergence recurrences.
+  subroutine analyze(this, field, maximum_degree, a)
+    class(harmonic_transform), intent(in) :: this
+    real(real64), intent(in) :: field(:, :)
+    integer, intent(in) :: maximum_degree
+    complex(real64), allocatable, intent(out) :: a(:, :)
+
+    integer :: T, nlat, nlon_j, mmax_j, plan_index
+    integer :: j, n, m
+    real(real64) :: weight
+    complex(real64) :: fourier
+    real(real64), allocatable :: samples(:)
+    complex(real64), allocatable :: spectrum(:)
 
     T = this%current_T
     nlat = 2*(T + 1)
 
     allocate (a(0:T + 1, 0:T))
-    allocate (fourier(0:T, nlat))
     allocate (samples(maxval(this%nlon)))
     allocate (spectrum(maxval(this%nlon)/2 + 1))
     a = cmplx(0.0_real64, 0.0_real64, kind=real64)
-    fourier = cmplx(0.0_real64, 0.0_real64, kind=real64)
 
     do j = 1, nlat
       nlon_j = this%nlon(j)
@@ -219,17 +235,15 @@ contains
       samples(1:nlon_j) = field(1:nlon_j, j)
       call execute_fft_forward(this%fft_plans(plan_index), samples(1:nlon_j), spectrum(1:nlon_j/2 + 1))
       mmax_j = min(T, nlon_j/2 - 1)
-      fourier(0:mmax_j, j) = spectrum(1:mmax_j + 1)/real(nlon_j, real64)
-    end do
-
-    do m = 0, T
-      do n = m, T
-        do j = 1, nlat
-          a(n, m) = a(n, m) + 0.5_real64*this%w(j)*this%pnm(j, n, m)*fourier(m, j)
+      weight = 0.5_real64*this%w(j)/real(nlon_j, real64)
+      do m = 0, mmax_j
+        fourier = weight*spectrum(m + 1)
+        do n = m, maximum_degree
+          a(n, m) = a(n, m) + this%pnm(n, m, j)*fourier
         end do
       end do
     end do
-  end subroutine grid_to_spectral
+  end subroutine analyze
 
   subroutine spectral_to_grid(this, a, field)
     class(harmonic_transform), intent(in) :: this
@@ -260,7 +274,7 @@ contains
       do m = 0, mmax_j
         coefficient = cmplx(0.0_real64, 0.0_real64, kind=real64)
         do n = m, T + 1
-          coefficient = coefficient + a(n, m)*this%pnm(j, n, m)
+          coefficient = coefficient + a(n, m)*this%pnm(n, m, j)
         end do
         spectrum(m + 1) = coefficient
       end do
@@ -318,6 +332,110 @@ contains
       dfdphi(1:this%nlon(j), j) = dfdphi(1:this%nlon(j), j)/sqrt(1.0_real64 - this%mu(j)**2)
     end do
   end subroutine
+
+  !> Curl and divergence on the unit sphere of the grid vector field (u, v):
+  !>   divergence = (1/cos phi) [du/dlambda + d(v cos phi)/dphi]
+  !>   curl       = (1/cos phi) [dv/dlambda - d(u cos phi)/dphi]
+  !> Both follow from only two analyses, of u/cos(phi) and v/cos(phi).  The meridional
+  !> derivative is moved onto the Legendre functions by integration by parts, using
+  !>   (1 - mu^2) dP_n^m/dmu = (n+1) eps_n^m P_{n-1}^m - n eps_{n+1}^m P_{n+1}^m,
+  !> so the analyses are carried to degree T+1 (the spectral extension row).
+  subroutine curl_divergence(this, u, v, curl, divergence)
+    class(harmonic_transform), intent(in) :: this
+    real(real64), intent(in) :: u(:, :), v(:, :)
+    complex(real64), allocatable, intent(out) :: curl(:, :), divergence(:, :)
+    real(real64), allocatable :: u_over_cos(:, :), v_over_cos(:, :)
+    complex(real64), allocatable :: a(:, :), b(:, :)
+    complex(real64) :: zonal, meridional_a, meridional_b
+    real(real64) :: inverse_cosphi, upward, downward
+    integer :: T, j, n, m, nlon_j
+
+    call check_transform_state(this)
+    call check_field_shape(this, u)
+    call check_field_shape(this, v)
+
+    T = this%current_T
+    call this%allocate_field(u_over_cos)
+    call this%allocate_field(v_over_cos)
+    do j = 1, size(this%mu)
+      nlon_j = this%nlon(j)
+      inverse_cosphi = 1.0_real64/sqrt(1.0_real64 - this%mu(j)**2)
+      u_over_cos(1:nlon_j, j) = u(1:nlon_j, j)*inverse_cosphi
+      v_over_cos(1:nlon_j, j) = v(1:nlon_j, j)*inverse_cosphi
+    end do
+    call analyze(this, u_over_cos, T + 1, a)
+    call analyze(this, v_over_cos, T + 1, b)
+
+    allocate (curl(0:T + 1, 0:T), divergence(0:T + 1, 0:T))
+    curl = cmplx(0.0_real64, 0.0_real64, kind=real64)
+    divergence = cmplx(0.0_real64, 0.0_real64, kind=real64)
+    do m = 0, T
+      zonal = cmplx(0.0_real64, real(m, real64), kind=real64)
+      do n = m, T
+        ! Projection of d(f cos^2 phi)/dmu onto P_n^m, with f = u/cos(phi) or v/cos(phi).
+        upward = real(n, real64)*legendre_epsilon(n + 1, m)
+        meridional_a = upward*a(n + 1, m)
+        meridional_b = upward*b(n + 1, m)
+        if (n > m) then
+          downward = real(n + 1, real64)*legendre_epsilon(n, m)
+          meridional_a = meridional_a - downward*a(n - 1, m)
+          meridional_b = meridional_b - downward*b(n - 1, m)
+        end if
+        divergence(n, m) = zonal*a(n, m) + meridional_b
+        curl(n, m) = zonal*b(n, m) - meridional_a
+      end do
+    end do
+  end subroutine curl_divergence
+
+  !> Wind on the unit sphere from streamfunction psi and velocity potential chi:
+  !>   u = (1/cos phi) dchi/dlambda - dpsi/dphi,
+  !>   v = (1/cos phi) dpsi/dlambda + dchi/dphi.
+  !> u cos(phi) and v cos(phi) are assembled in spectral space (degrees up to T+1), so
+  !> only two synthesis transforms are needed.
+  subroutine wind_to_grid(this, streamfunction, velocity_potential, u, v)
+    class(harmonic_transform), intent(in) :: this
+    complex(real64), intent(in) :: streamfunction(0:, 0:), velocity_potential(0:, 0:)
+    real(real64), allocatable, intent(out) :: u(:, :), v(:, :)
+    complex(real64), allocatable :: u_cos(:, :), v_cos(:, :)
+    complex(real64) :: zonal
+    real(real64) :: inverse_cosphi, upward, downward
+    integer :: T, j, n, m, nlon_j
+
+    call check_transform_state(this)
+    call check_spectral_shape(this, streamfunction, "wind_to_grid")
+    call check_spectral_shape(this, velocity_potential, "wind_to_grid")
+
+    T = this%current_T
+    allocate (u_cos(0:T + 1, 0:T), v_cos(0:T + 1, 0:T))
+    u_cos = cmplx(0.0_real64, 0.0_real64, kind=real64)
+    v_cos = cmplx(0.0_real64, 0.0_real64, kind=real64)
+    do m = 0, T
+      zonal = cmplx(0.0_real64, real(m, real64), kind=real64)
+      do n = m, T
+        ! u cos(phi) = dchi/dlambda - (1 - mu^2) dpsi/dmu
+        ! v cos(phi) = dpsi/dlambda + (1 - mu^2) dchi/dmu
+        u_cos(n, m) = u_cos(n, m) + zonal*velocity_potential(n, m)
+        v_cos(n, m) = v_cos(n, m) + zonal*streamfunction(n, m)
+        if (n > m) then
+          downward = real(n + 1, real64)*legendre_epsilon(n, m)
+          u_cos(n - 1, m) = u_cos(n - 1, m) - downward*streamfunction(n, m)
+          v_cos(n - 1, m) = v_cos(n - 1, m) + downward*velocity_potential(n, m)
+        end if
+        upward = real(n, real64)*legendre_epsilon(n + 1, m)
+        u_cos(n + 1, m) = u_cos(n + 1, m) + upward*streamfunction(n, m)
+        v_cos(n + 1, m) = v_cos(n + 1, m) - upward*velocity_potential(n, m)
+      end do
+    end do
+
+    call this%spectral_to_grid(u_cos, u)
+    call this%spectral_to_grid(v_cos, v)
+    do j = 1, size(this%mu)
+      nlon_j = this%nlon(j)
+      inverse_cosphi = 1.0_real64/sqrt(1.0_real64 - this%mu(j)**2)
+      u(1:nlon_j, j) = u(1:nlon_j, j)*inverse_cosphi
+      v(1:nlon_j, j) = v(1:nlon_j, j)*inverse_cosphi
+    end do
+  end subroutine wind_to_grid
 
   subroutine check_transform_state(this)
     class(harmonic_transform), intent(in) :: this
