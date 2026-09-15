@@ -31,6 +31,8 @@ program main
   real(real64), parameter :: dt = 900.0_real64
   real(real64), parameter :: duration = 10.0_real64*24.0_real64*3600.0_real64
   integer, parameter :: output_interval_steps = 16
+  !> Progress is logged once per simulated day (and at the final step).
+  integer, parameter :: log_interval_steps = max(1, nint(86400.0_real64/dt))
   integer(int64), parameter :: random_seed_value = 20260913_int64
   type(harmonic_transform) :: transform
   integer, allocatable :: nlon(:)
@@ -89,10 +91,11 @@ contains
     real(real64), allocatable :: zeta(:, :), u(:, :), v(:, :)
     character(len=:), allocatable :: case_directory, initial_condition_json
     integer :: step, number_of_steps
-    integer(int64) :: start_count, end_count, clock_rate, clock_max
+    integer(int64) :: start_count
     real(real64) :: cfl, maximum_cfl, elapsed_wall_seconds
 
-    call system_clock(start_count, clock_rate, clock_max)
+    call system_clock(start_count)
+    call write_case_header(case_name)
     select case (initial_condition)
     case (1)
       call single_harmonic_vorticity(transform, T, initial_zeta)
@@ -117,18 +120,12 @@ contains
       if (mod(step, output_interval_steps) == 0 .or. step == number_of_steps) then
         call write_snapshot(case_directory, step, nlon, zeta, u, v)
       end if
-      if (mod(step, 24) == 0 .or. step == number_of_steps) then
-        write (*, '(2a,i0,a,f6.3)') trim(case_name), ': step ', step, ', CFL = ', cfl
+      if (is_log_step(step, number_of_steps)) then
+        call write_progress(step, number_of_steps, step, 'CFL', cfl, start_count)
       end if
       if (step < number_of_steps) call solver%advance()
     end do
-    call system_clock(end_count)
-    if (end_count >= start_count) then
-      elapsed_wall_seconds = real(end_count - start_count, real64)/real(clock_rate, real64)
-    else
-      elapsed_wall_seconds = real(clock_max - start_count + end_count + 1_int64, real64)/ &
-                             real(clock_rate, real64)
-    end if
+    elapsed_wall_seconds = elapsed_seconds(start_count)
     initial_condition_json = make_initial_condition_json(initial_condition)
     call write_run_metadata(case_directory, case_name, initial_condition_json, T, dt, &
                             duration, number_of_steps, output_interval_steps, maximum_cfl, &
@@ -144,10 +141,11 @@ contains
     real(real64), allocatable :: zeta(:, :), delta(:, :), eta(:, :), u(:, :), v(:, :)
     character(len=:), allocatable :: case_directory, initial_condition_json
     integer :: step, number_of_steps
-    integer(int64) :: start_count, end_count, clock_rate, clock_max
+    integer(int64) :: start_count
     real(real64) :: cfl, maximum_cfl, elapsed_wall_seconds
 
-    call system_clock(start_count, clock_rate, clock_max)
+    call system_clock(start_count)
+    call write_case_header(case_name)
     select case (initial_condition)
     case (1)
       call isolated_height_mountain(transform, T, initial_zeta, initial_delta, initial_eta)
@@ -173,18 +171,12 @@ contains
                                           zeta_spectral, delta_spectral, eta_spectral, &
                                           zeta, delta, eta, u, v)
       end if
-      if (mod(step, 24) == 0 .or. step == number_of_steps) then
-        write (*, '(2a,i0,a,f6.3)') trim(case_name), ': step ', step, ', advective CFL = ', cfl
+      if (is_log_step(step, number_of_steps)) then
+        call write_progress(step, number_of_steps, step, 'advective CFL', cfl, start_count)
       end if
       if (step < number_of_steps) call solver%advance()
     end do
-    call system_clock(end_count)
-    if (end_count >= start_count) then
-      elapsed_wall_seconds = real(end_count - start_count, real64)/real(clock_rate, real64)
-    else
-      elapsed_wall_seconds = real(clock_max - start_count + end_count + 1_int64, real64)/ &
-                             real(clock_rate, real64)
-    end if
+    elapsed_wall_seconds = elapsed_seconds(start_count)
     initial_condition_json = make_shallow_water_initial_condition_json(initial_condition)
     call write_shallow_water_metadata(case_directory, case_name, initial_condition_json, &
                                       T, dt, duration, number_of_steps, output_interval_steps, &
@@ -204,10 +196,11 @@ contains
     real(real64), allocatable :: a_half(:), b_half(:)
     character(len=:), allocatable :: case_directory, initial_condition
     integer :: step, number_of_steps
-    integer(int64) :: start_count, end_count, clock_rate, clock_max
+    integer(int64) :: start_count
     real(real64) :: cfl, maximum_cfl, elapsed_wall_seconds
 
-    call system_clock(start_count, clock_rate, clock_max)
+    call system_clock(start_count)
+    call write_case_header(case_name)
     if (include_perturbation) then
       initial_condition = 'Jablonowski-Williamson with localized wind perturbation'
     else
@@ -232,17 +225,13 @@ contains
         cfl = solver%get_last_advance_cfl()
         maximum_cfl = max(maximum_cfl, cfl)
       end if
-      if (mod(step, 24) == 0 .or. step == number_of_steps) then
-        write (*, '(2a,i0,a,f6.3)') trim(case_name), ': step ', step, ', advective CFL = ', cfl
+      ! Logged after advance, so the elapsed time already covers step + 1 completed steps.
+      if (is_log_step(step, number_of_steps)) then
+        call write_progress(step, number_of_steps, min(step + 1, number_of_steps), &
+                            'advective CFL', cfl, start_count)
       end if
     end do
-    call system_clock(end_count)
-    if (end_count >= start_count) then
-      elapsed_wall_seconds = real(end_count - start_count, real64)/real(clock_rate, real64)
-    else
-      elapsed_wall_seconds = real(clock_max - start_count + end_count + 1_int64, real64)/ &
-                             real(clock_rate, real64)
-    end if
+    elapsed_wall_seconds = elapsed_seconds(start_count)
     call solver%get_reference_atmosphere(pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
                                          a_half, b_half)
     call write_dry_metadata(case_directory, initial_condition, T, dt, duration, number_of_steps, &
@@ -301,6 +290,75 @@ contains
     end select
     json = trim(buffer)
   end function make_shallow_water_initial_condition_json
+
+  !> Printed once when a case starts.
+  subroutine write_case_header(case_name)
+    character(*), intent(in) :: case_name
+
+    write (*, '(3a,f0.1,a,i0,a,f0.1,a)') '== ', trim(case_name), ': ', duration/86400.0_real64, &
+      ' days, ', nint(duration/dt), ' steps, dt = ', dt, ' s'
+  end subroutine write_case_header
+
+  logical function is_log_step(step, number_of_steps)
+    integer, intent(in) :: step, number_of_steps
+
+    is_log_step = mod(step, log_interval_steps) == 0 .or. step == number_of_steps
+  end function is_log_step
+
+  !> One progress line: simulated day, CFL, wall time so far and a linear estimate of the
+  !> remaining wall time (elapsed per completed step times the steps still to go).
+  subroutine write_progress(step, number_of_steps, completed_steps, cfl_label, cfl, start_count)
+    integer, intent(in) :: step, number_of_steps, completed_steps
+    character(*), intent(in) :: cfl_label
+    real(real64), intent(in) :: cfl
+    integer(int64), intent(in) :: start_count
+    character(len=:), allocatable :: remaining_text
+    real(real64) :: elapsed
+
+    elapsed = elapsed_seconds(start_count)
+    if (completed_steps >= number_of_steps) then
+      remaining_text = 'done'
+    else if (step > 0) then
+      ! The first step also carries the setup cost, so no estimate is made before day 1.
+      remaining_text = 'remaining ~'//format_duration(elapsed/real(completed_steps, real64)* &
+                                                      real(number_of_steps - completed_steps, real64))
+    else
+      remaining_text = 'remaining --'
+    end if
+    write (*, '(a,f5.1,3a,f5.3,4a)') '  day ', real(step, real64)*dt/86400.0_real64, &
+      '  ', cfl_label, ' = ', cfl, '  elapsed ', format_duration(elapsed), '  ', remaining_text
+  end subroutine write_progress
+
+  function format_duration(seconds) result(text)
+    real(real64), intent(in) :: seconds
+    character(len=:), allocatable :: text
+    character(len=32) :: buffer
+    integer :: total
+
+    if (seconds < 59.95_real64) then
+      write (buffer, '(f4.1,a)') seconds, ' s'
+    else
+      total = nint(seconds)
+      if (total >= 3600) then
+        write (buffer, '(i0,a,i2.2,a,i2.2,a)') total/3600, 'h', mod(total, 3600)/60, 'm', mod(total, 60), 's'
+      else
+        write (buffer, '(i0,a,i2.2,a)') total/60, 'm', mod(total, 60), 's'
+      end if
+    end if
+    text = trim(adjustl(buffer))
+  end function format_duration
+
+  real(real64) function elapsed_seconds(start_count) result(seconds)
+    integer(int64), intent(in) :: start_count
+    integer(int64) :: now, rate, maximum
+
+    call system_clock(now, rate, maximum)
+    if (now >= start_count) then
+      seconds = real(now - start_count, real64)/real(rate, real64)
+    else
+      seconds = real(maximum - start_count + now + 1_int64, real64)/real(rate, real64)
+    end if
+  end function elapsed_seconds
 
   subroutine print_usage()
     write (*, '(a)') 'Usage: core [shallow-water|barotropic|dry|all]'

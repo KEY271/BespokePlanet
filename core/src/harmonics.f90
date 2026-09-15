@@ -19,7 +19,10 @@ module harmonics
   type, public :: harmonic_transform
     private
     integer, allocatable :: nlon(:)
-    !> Normalized associated Legendre functions pnm(n, m, j) at Gaussian latitude j.
+    !> Normalized associated Legendre functions pnm(n, m, j) at the southern-hemisphere
+    !> Gaussian latitudes j = 1..T+1.  The mirror ring 2(T+1)+1-j follows from
+    !> P_n^m(-mu) = (-1)^(n+m) P_n^m(mu), so only half the table is stored and every
+    !> transform evaluates its Legendre sums once per north/south ring pair.
     !> Latitude is the last index so that each ring reads one contiguous block.
     real(real64), allocatable :: w(:), pnm(:, :, :)
     type(fft_plan), allocatable :: fft_plans(:)
@@ -106,6 +109,7 @@ contains
     class(harmonic_transform), intent(inout) :: this
     real(real64), allocatable :: e(:), z(:, :), work(:)
     integer :: T, n, k, info
+    real(real64) :: half
 
     T = this%current_T
     n = 2*(T + 1)
@@ -125,6 +129,18 @@ contains
     if (info /= 0) error stop "DSTEV failed"
 
     this%w(:) = 2.0_real64*z(1, :)**2
+
+    ! The eigen-solver returns mu in ascending order (south first) but is mirror-symmetric
+    ! only to rounding.  The paired Legendre sums rely on mu(n+1-k) = -mu(k) and
+    ! w(n+1-k) = w(k) exactly, so symmetrize both.
+    do k = 1, n/2
+      half = 0.5_real64*(this%mu(n + 1 - k) - this%mu(k))
+      this%mu(k) = -half
+      this%mu(n + 1 - k) = half
+      half = 0.5_real64*(this%w(k) + this%w(n + 1 - k))
+      this%w(k) = half
+      this%w(n + 1 - k) = half
+    end do
   end subroutine gauss_legendre
 
   subroutine associated_legendre(this)
@@ -133,10 +149,10 @@ contains
     integer :: T, j, n, m
 
     T = this%current_T
-    allocate (this%pnm(0:T + 1, 0:T, 2*(T + 1)))
+    allocate (this%pnm(0:T + 1, 0:T, T + 1))
 
     this%pnm = 0.0_real64
-    do j = 1, 2*(T + 1)
+    do j = 1, T + 1
       this%pnm(0, 0, j) = 1.0_real64
       x = this%mu(j)
       s = sqrt(max(0.0_real64, 1.0_real64 - x*x))
@@ -214,32 +230,41 @@ contains
     integer, intent(in) :: maximum_degree
     complex(real64), allocatable, intent(out) :: a(:, :)
 
-    integer :: T, nlat, nlon_j, mmax_j, plan_index
+    integer :: T, nlat, nlon_j, mmax_j, north
     integer :: j, n, m
     real(real64) :: weight
-    complex(real64) :: fourier
+    complex(real64) :: symmetric, antisymmetric
     real(real64), allocatable :: samples(:)
-    complex(real64), allocatable :: spectrum(:)
+    complex(real64), allocatable :: south_spectrum(:), north_spectrum(:)
 
     T = this%current_T
     nlat = 2*(T + 1)
 
     allocate (a(0:T + 1, 0:T))
     allocate (samples(maxval(this%nlon)))
-    allocate (spectrum(maxval(this%nlon)/2 + 1))
+    allocate (south_spectrum(maxval(this%nlon)/2 + 1), north_spectrum(maxval(this%nlon)/2 + 1))
     a = cmplx(0.0_real64, 0.0_real64, kind=real64)
 
-    do j = 1, nlat
+    ! Mirror rings j (south) and north = nlat+1-j share nlon, weight and |mu|.  With
+    ! P_n^m(-mu) = (-1)^(n+m) P_n^m(mu) the pair contributes the sum of its Fourier
+    ! coefficients to n+m even and their difference to n+m odd.
+    do j = 1, T + 1
+      north = nlat + 1 - j
       nlon_j = this%nlon(j)
-      plan_index = min(j, nlat + 1 - j)
       samples(1:nlon_j) = field(1:nlon_j, j)
-      call execute_fft_forward(this%fft_plans(plan_index), samples(1:nlon_j), spectrum(1:nlon_j/2 + 1))
+      call execute_fft_forward(this%fft_plans(j), samples(1:nlon_j), south_spectrum(1:nlon_j/2 + 1))
+      samples(1:nlon_j) = field(1:nlon_j, north)
+      call execute_fft_forward(this%fft_plans(j), samples(1:nlon_j), north_spectrum(1:nlon_j/2 + 1))
       mmax_j = min(T, nlon_j/2 - 1)
       weight = 0.5_real64*this%w(j)/real(nlon_j, real64)
       do m = 0, mmax_j
-        fourier = weight*spectrum(m + 1)
-        do n = m, maximum_degree
-          a(n, m) = a(n, m) + this%pnm(n, m, j)*fourier
+        symmetric = weight*(south_spectrum(m + 1) + north_spectrum(m + 1))
+        antisymmetric = weight*(south_spectrum(m + 1) - north_spectrum(m + 1))
+        do n = m, maximum_degree, 2
+          a(n, m) = a(n, m) + this%pnm(n, m, j)*symmetric
+        end do
+        do n = m + 1, maximum_degree, 2
+          a(n, m) = a(n, m) + this%pnm(n, m, j)*antisymmetric
         end do
       end do
     end do
@@ -250,11 +275,11 @@ contains
     complex(real64), intent(in) :: a(0:, 0:)
     real(real64), allocatable, intent(out) :: field(:, :)
 
-    integer :: T, nlat, nlon_j, mmax_j, plan_index
+    integer :: T, nlat, nlon_j, mmax_j, north
     integer :: j, n, m
-    complex(real64) :: coefficient
+    complex(real64) :: symmetric, antisymmetric
     real(real64), allocatable :: samples(:)
-    complex(real64), allocatable :: spectrum(:)
+    complex(real64), allocatable :: south_spectrum(:), north_spectrum(:)
 
     call check_transform_state(this)
     call check_spectral_shape(this, a, "spectral_to_grid")
@@ -265,23 +290,34 @@ contains
     call this%allocate_field(field)
     field = 0.0_real64
     allocate (samples(maxval(this%nlon)))
-    allocate (spectrum(maxval(this%nlon)/2 + 1))
+    allocate (south_spectrum(maxval(this%nlon)/2 + 1), north_spectrum(maxval(this%nlon)/2 + 1))
 
-    do j = 1, nlat
+    ! Mirror rings j (south) and north = nlat+1-j: the n+m even part of the Legendre sum
+    ! is identical on both rings and the n+m odd part flips sign, so each part is
+    ! evaluated once per pair.
+    do j = 1, T + 1
+      north = nlat + 1 - j
       nlon_j = this%nlon(j)
       mmax_j = min(T, nlon_j/2 - 1)
-      spectrum(1:nlon_j/2 + 1) = cmplx(0.0_real64, 0.0_real64, kind=real64)
+      south_spectrum(1:nlon_j/2 + 1) = cmplx(0.0_real64, 0.0_real64, kind=real64)
+      north_spectrum(1:nlon_j/2 + 1) = cmplx(0.0_real64, 0.0_real64, kind=real64)
       do m = 0, mmax_j
-        coefficient = cmplx(0.0_real64, 0.0_real64, kind=real64)
-        do n = m, T + 1
-          coefficient = coefficient + a(n, m)*this%pnm(n, m, j)
+        symmetric = cmplx(0.0_real64, 0.0_real64, kind=real64)
+        antisymmetric = cmplx(0.0_real64, 0.0_real64, kind=real64)
+        do n = m, T + 1, 2
+          symmetric = symmetric + a(n, m)*this%pnm(n, m, j)
         end do
-        spectrum(m + 1) = coefficient
+        do n = m + 1, T + 1, 2
+          antisymmetric = antisymmetric + a(n, m)*this%pnm(n, m, j)
+        end do
+        south_spectrum(m + 1) = symmetric + antisymmetric
+        north_spectrum(m + 1) = symmetric - antisymmetric
       end do
 
-      plan_index = min(j, nlat + 1 - j)
-      call execute_fft_backward(this%fft_plans(plan_index), spectrum(1:nlon_j/2 + 1), samples(1:nlon_j))
+      call execute_fft_backward(this%fft_plans(j), south_spectrum(1:nlon_j/2 + 1), samples(1:nlon_j))
       field(1:nlon_j, j) = samples(1:nlon_j)
+      call execute_fft_backward(this%fft_plans(j), north_spectrum(1:nlon_j/2 + 1), samples(1:nlon_j))
+      field(1:nlon_j, north) = samples(1:nlon_j)
     end do
   end subroutine spectral_to_grid
 
