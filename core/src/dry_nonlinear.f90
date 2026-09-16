@@ -17,7 +17,8 @@ contains
 
   subroutine compute_dry_nonlinear_tendency(transform, truncation, coordinate, &
                                             zeta, delta, temperature, log_surface_pressure, &
-                                            adjustment_temperature, adjustment_log_surface_pressure, &
+                                            filtered_temperature, filtered_log_surface_pressure, &
+                                            filtered_surface_temperature, &
                                             surface_geopotential, surface_temperature, deep_temperature, &
                                             rhs_zeta, rhs_delta, rhs_temperature, &
                                             rhs_log_surface_pressure, rhs_surface_temperature, &
@@ -28,8 +29,10 @@ contains
     type(hybrid_sigma_coordinate), intent(in) :: coordinate
     complex(real64), intent(in) :: zeta(0:, 0:, :), delta(0:, 0:, :), temperature(0:, 0:, :)
     complex(real64), intent(in) :: log_surface_pressure(0:, 0:), surface_geopotential(0:, 0:)
-    complex(real64), intent(in) :: adjustment_temperature(0:, 0:, :)
-    complex(real64), intent(in) :: adjustment_log_surface_pressure(0:, 0:)
+    !> RAW-filtered previous time level, used by the convective adjustment and the longwave sources.
+    complex(real64), intent(in) :: filtered_temperature(0:, 0:, :)
+    complex(real64), intent(in) :: filtered_log_surface_pressure(0:, 0:)
+    complex(real64), intent(in) :: filtered_surface_temperature(0:, 0:)
     complex(real64), intent(in) :: surface_temperature(0:, 0:), deep_temperature(0:, 0:)
     complex(real64), allocatable, intent(out) :: rhs_zeta(:, :, :), rhs_delta(:, :, :)
     complex(real64), allocatable, intent(out) :: rhs_temperature(:, :, :)
@@ -54,8 +57,9 @@ contains
     real(real64), allocatable :: held_temperature_tendency(:, :)
     real(real64), allocatable :: radiative_temperature_tendency(:, :, :)
     real(real64), allocatable :: convective_temperature_tendency(:, :, :)
-    real(real64), allocatable :: adjustment_temperature_grid(:, :, :), adjustment_log_ps(:, :)
-    real(real64), allocatable :: adjustment_ps(:, :), adjustment_pressure_half(:, :, :)
+    real(real64), allocatable :: filtered_temperature_grid(:, :, :), filtered_log_ps(:, :)
+    real(real64), allocatable :: filtered_ps(:, :), filtered_pressure_half(:, :, :)
+    real(real64), allocatable :: filtered_surface_temperature_grid(:, :)
     real(real64), allocatable :: surface_temperature_grid(:, :), deep_temperature_grid(:, :)
     real(real64), allocatable :: surface_temperature_tendency(:, :), deep_temperature_tendency(:, :)
     real(real64), allocatable :: tendency_grid(:, :), dtdlambda(:, :), dtdphi(:, :)
@@ -85,7 +89,7 @@ contains
     end if
     if (size(zeta, 3) /= number_of_levels .or. size(delta, 3) /= number_of_levels .or. &
         size(temperature, 3) /= number_of_levels .or. &
-        size(adjustment_temperature, 3) /= number_of_levels) then
+        size(filtered_temperature, 3) /= number_of_levels) then
       error stop 'dry nonlinear state has the wrong number of vertical levels'
     end if
     call transform%allocate_field(temporary_grid)
@@ -107,9 +111,9 @@ contains
     allocate (vertical_u(nx, ny, number_of_levels), vertical_v(nx, ny, number_of_levels))
     allocate (vertical_t(nx, ny, number_of_levels))
     if (use_radiation) then
-      allocate (adjustment_temperature_grid(nx, ny, number_of_levels))
-      allocate (adjustment_log_ps(nx, ny), adjustment_ps(nx, ny))
-      allocate (adjustment_pressure_half(nx, ny, 0:number_of_levels))
+      allocate (filtered_temperature_grid(nx, ny, number_of_levels))
+      allocate (filtered_log_ps(nx, ny), filtered_ps(nx, ny))
+      allocate (filtered_pressure_half(nx, ny, 0:number_of_levels))
     end if
     allocate (rhs_zeta(0:truncation + 1, 0:truncation, number_of_levels))
     allocate (rhs_delta(0:truncation + 1, 0:truncation, number_of_levels))
@@ -131,8 +135,8 @@ contains
       call transform%spectral_to_grid(temperature(:, :, k), temporary_grid)
       temperature_grid(:, :, k) = temporary_grid
       if (use_radiation) then
-        call transform%spectral_to_grid(adjustment_temperature(:, :, k), temporary_grid)
-        adjustment_temperature_grid(:, :, k) = temporary_grid
+        call transform%spectral_to_grid(filtered_temperature(:, :, k), temporary_grid)
+        filtered_temperature_grid(:, :, k) = temporary_grid
       end if
       call diagnose_shallow_water_velocity(transform, truncation, zeta(:, :, k), delta(:, :, k), &
                                             temporary_u, temporary_v)
@@ -142,10 +146,11 @@ contains
     call transform%spectral_to_grid(log_surface_pressure, log_ps)
     ps = exp(log_ps)
     if (use_radiation) then
-      call transform%spectral_to_grid(adjustment_log_surface_pressure, adjustment_log_ps)
-      adjustment_ps = exp(adjustment_log_ps)
+      call transform%spectral_to_grid(filtered_log_surface_pressure, filtered_log_ps)
+      filtered_ps = exp(filtered_log_ps)
       call transform%spectral_to_grid(surface_temperature, surface_temperature_grid)
       call transform%spectral_to_grid(deep_temperature, deep_temperature_grid)
+      call transform%spectral_to_grid(filtered_surface_temperature, filtered_surface_temperature_grid)
     end if
     call transform%gradient_to_grid(log_surface_pressure, dlogps_dlambda, dlogps_dphi)
 
@@ -238,12 +243,12 @@ contains
     convective_temperature_tendency = 0.0_real64
     if (use_radiation) then
       do k = 0, number_of_levels
-        adjustment_pressure_half(:, :, k) = coordinate%a_half(k) + coordinate%b_half(k)*adjustment_ps
+        filtered_pressure_half(:, :, k) = coordinate%a_half(k) + coordinate%b_half(k)*filtered_ps
       end do
       do j = 1, ny
         do i = 1, nlon(j)
-          call dry_convective_adjustment_tendency(adjustment_pressure_half(i, j, :), &
-            adjustment_temperature_grid(i, j, :), convective_temperature_tendency(i, j, :))
+          call dry_convective_adjustment_tendency(filtered_pressure_half(i, j, :), &
+            filtered_temperature_grid(i, j, :), convective_temperature_tendency(i, j, :))
         end do
       end do
       call transform%allocate_field(surface_temperature_tendency)
@@ -277,8 +282,11 @@ contains
       do j = 1, ny
         do i = 1, nlon(j)
           longitude = 2.0_real64*acos(-1.0_real64)*real(i - 1, real64)/real(nlon(j), real64)
+          ! The longwave sources come from the RAW-filtered previous time level; everything else
+          ! in the column is evaluated at the current state.
           call radiation_tendency(pressure_half(i, j, :), temperature_grid(i, j, :), &
             surface_temperature_grid(i, j), deep_temperature_grid(i, j), &
+            filtered_temperature_grid(i, j, :), filtered_surface_temperature_grid(i, j), &
             u(i, j, number_of_levels), v(i, j, number_of_levels), transform%mu(j), &
             longitude, current_time, &
             radiative_temperature_tendency(i, j, :), surface_temperature_tendency(i, j), &

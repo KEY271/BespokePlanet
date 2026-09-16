@@ -7,6 +7,9 @@ module field_output
                                        hyperdiffusion_timescale_seconds
   use dry_radiation, only: solar_constant, surface_shortwave_albedo, axial_tilt, orbital_period, &
                            planetary_rotation_rate, longwave_surface_optical_depth, &
+                           ultraviolet_shortwave_fraction, ozone_shortwave_optical_depth, &
+                           ozone_longwave_optical_depth, ozone_pressure_lower_bound, &
+                           ozone_pressure_upper_bound, ozone_peak_pressure, ozone_log_pressure_width, &
                            stefan_boltzmann_constant, dry_air_specific_heat, dry_gravity_acceleration, &
                            surface_heat_capacity, deep_ground_heat_capacity, ground_exchange_coefficient, &
                            surface_exchange_coefficient, gustiness_speed, solar_day, days_per_month, &
@@ -387,7 +390,20 @@ contains
       '    "stefan_boltzmann_constant_w_m-2_k-4": ', stefan_boltzmann_constant, ','
     write (unit, '(a,es24.16e3,a)') '    "dry_air_specific_heat_j_kg-1_k-1": ', dry_air_specific_heat, ','
     write (unit, '(a,es24.16e3,a)') '    "gravity_acceleration_m_s-2": ', dry_gravity_acceleration, ','
-    write (unit, '(a)') '    "shortwave_atmosphere": "transparent",'
+    write (unit, '(a)') '    "shortwave_atmosphere": "prescribed ozone absorption; no scattering",'
+    write (unit, '(a,es24.16e3,a)') &
+      '    "ultraviolet_shortwave_fraction": ', ultraviolet_shortwave_fraction, ','
+    write (unit, '(a,es24.16e3,a)') &
+      '    "ozone_shortwave_optical_depth": ', ozone_shortwave_optical_depth, ','
+    write (unit, '(a,es24.16e3,a)') &
+      '    "ozone_longwave_optical_depth": ', ozone_longwave_optical_depth, ','
+    write (unit, '(a,es24.16e3,a)') &
+      '    "ozone_pressure_lower_bound_pa": ', ozone_pressure_lower_bound, ','
+    write (unit, '(a,es24.16e3,a)') &
+      '    "ozone_pressure_upper_bound_pa": ', ozone_pressure_upper_bound, ','
+    write (unit, '(a,es24.16e3,a)') '    "ozone_peak_pressure_pa": ', ozone_peak_pressure, ','
+    write (unit, '(a,es24.16e3,a)') '    "ozone_log_pressure_width": ', ozone_log_pressure_width, ','
+    write (unit, '(a)') '    "ozone_optical_path": "vertical; no solar-zenith slant correction",'
     write (unit, '(a)') '    "shortwave_forcing": "instantaneous local solar zenith angle",'
     write (unit, '(a)') '    "orbit_eccentricity": 0'
     write (unit, '(a)') '  },'

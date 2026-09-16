@@ -11,6 +11,13 @@ module dry_radiation
   real(real64), parameter, public :: dry_gravity_acceleration = 9.80616_real64
   real(real64), parameter, public :: solar_constant = 1361.0_real64
   real(real64), parameter, public :: surface_shortwave_albedo = 0.3_real64
+  real(real64), parameter, public :: ultraviolet_shortwave_fraction = 0.02_real64
+  real(real64), parameter, public :: ozone_shortwave_optical_depth = 1.5_real64
+  real(real64), parameter, public :: ozone_longwave_optical_depth = 0.005_real64
+  real(real64), parameter, public :: ozone_pressure_lower_bound = 1.0e2_real64
+  real(real64), parameter, public :: ozone_pressure_upper_bound = 1.0e4_real64
+  real(real64), parameter, public :: ozone_peak_pressure = 1.0e3_real64
+  real(real64), parameter, public :: ozone_log_pressure_width = log(3.0_real64)
   real(real64), parameter, public :: surface_heat_capacity = 2.0e6_real64
   real(real64), parameter, public :: deep_ground_heat_capacity = 2.0e7_real64
   real(real64), parameter, public :: ground_exchange_coefficient = 2.0_real64
@@ -84,6 +91,8 @@ module dry_radiation
   end type radiation_daily_accumulator
 
   public :: shortwave_downward_flux
+  public :: ozone_layer_optical_depth
+  public :: ozone_longwave_layer_optical_depth
   public :: radiation_tendency
   public :: radiation_calendar_date
   public :: radiation_rayleigh_rate
@@ -115,6 +124,43 @@ contains
     flux = solar_constant*max(0.0_real64, cos_zenith)
   end function shortwave_downward_flux
 
+  !> Fraction of the prescribed ozone column within one pressure layer.
+  pure real(real64) function ozone_layer_fraction(pressure_top, pressure_bottom) result(fraction)
+    real(real64), intent(in) :: pressure_top, pressure_bottom
+    real(real64) :: pressure_lower, pressure_upper, x_lower, x_upper
+    real(real64) :: x_profile_lower, x_profile_upper
+
+    pressure_lower = max(pressure_top, ozone_pressure_lower_bound)
+    pressure_upper = min(pressure_bottom, ozone_pressure_upper_bound)
+    if (pressure_upper <= pressure_lower) then
+      fraction = 0.0_real64
+      return
+    end if
+
+    x_lower = log(pressure_lower/ozone_peak_pressure)/(sqrt(2.0_real64)*ozone_log_pressure_width)
+    x_upper = log(pressure_upper/ozone_peak_pressure)/(sqrt(2.0_real64)*ozone_log_pressure_width)
+    x_profile_lower = log(ozone_pressure_lower_bound/ozone_peak_pressure)/ &
+      (sqrt(2.0_real64)*ozone_log_pressure_width)
+    x_profile_upper = log(ozone_pressure_upper_bound/ozone_peak_pressure)/ &
+      (sqrt(2.0_real64)*ozone_log_pressure_width)
+    fraction = (erf(x_upper) - erf(x_lower))/ &
+      (erf(x_profile_upper) - erf(x_profile_lower))
+  end function ozone_layer_fraction
+
+  !> Vertical UV optical depth of the prescribed ozone profile within one pressure layer.
+  pure real(real64) function ozone_layer_optical_depth(pressure_top, pressure_bottom) result(optical_depth)
+    real(real64), intent(in) :: pressure_top, pressure_bottom
+
+    optical_depth = ozone_shortwave_optical_depth*ozone_layer_fraction(pressure_top, pressure_bottom)
+  end function ozone_layer_optical_depth
+
+  !> Vertical longwave optical depth added by ozone within one pressure layer.
+  pure real(real64) function ozone_longwave_layer_optical_depth(pressure_top, pressure_bottom) result(optical_depth)
+    real(real64), intent(in) :: pressure_top, pressure_bottom
+
+    optical_depth = ozone_longwave_optical_depth*ozone_layer_fraction(pressure_top, pressure_bottom)
+  end function ozone_longwave_layer_optical_depth
+
   subroutine radiation_calendar_date(time_seconds, year, month, day, seconds_of_day)
     real(real64), intent(in) :: time_seconds
     integer, intent(out) :: year, month, day
@@ -130,13 +176,24 @@ contains
     seconds_of_day = modulo(time_seconds, solar_day)
   end subroutine radiation_calendar_date
 
+  !> Column radiation, surface fluxes and ground temperatures.
+  !>
+  !> Every term is evaluated at the current state except the longwave sources
+  !> longwave_temperature and longwave_surface_temperature, which the caller takes from the
+  !> RAW-filtered previous time level so that the sigma*T**4 damping does not feed the LeapFrog
+  !> computational mode.  The layer optical depths and the pressure thicknesses that convert
+  !> flux divergence into heating still come from the current pressure_half.
   subroutine radiation_tendency(pressure_half, temperature, surface_temperature, &
-                                deep_temperature, lowest_u, lowest_v, sin_latitude, &
+                                deep_temperature, longwave_temperature, &
+                                longwave_surface_temperature, lowest_u, lowest_v, sin_latitude, &
                                 longitude, time_seconds, temperature_tendency, &
                                 surface_temperature_tendency, deep_temperature_tendency, &
                                 incoming_shortwave, reflected_shortwave, outgoing_longwave)
     real(real64), intent(in) :: pressure_half(0:), temperature(:)
-    real(real64), intent(in) :: surface_temperature, deep_temperature, lowest_u, lowest_v
+    real(real64), intent(in) :: surface_temperature, deep_temperature
+    !> Longwave source temperatures, taken from the RAW-filtered previous time level.
+    real(real64), intent(in) :: longwave_temperature(:), longwave_surface_temperature
+    real(real64), intent(in) :: lowest_u, lowest_v
     real(real64), intent(in) :: sin_latitude, longitude, time_seconds
     real(real64), intent(out) :: temperature_tendency(:)
     real(real64), intent(out) :: surface_temperature_tendency, deep_temperature_tendency
@@ -144,15 +201,19 @@ contains
     real(real64) :: upward_longwave(0:size(temperature)), downward_longwave(0:size(temperature))
     real(real64) :: transmission(size(temperature)), emission(size(temperature))
     real(real64) :: net_longwave(0:size(temperature))
-    real(real64) :: pressure_thickness, sensible_heat, surface_deep_heat
+    real(real64) :: pressure_thickness, layer_longwave_optical_depth, sensible_heat, surface_deep_heat
+    real(real64) :: layer_shortwave_optical_depth, shortwave_transmission
+    real(real64) :: shortwave_downward, ultraviolet_downward, non_ultraviolet_downward, shortwave_absorbed
     integer :: k, number_of_levels
 
     number_of_levels = size(temperature)
     if (number_of_levels < 1 .or. size(pressure_half) /= number_of_levels + 1 .or. &
+        size(longwave_temperature) /= number_of_levels .or. &
         size(temperature_tendency) /= number_of_levels) then
       error stop 'radiation column has inconsistent vertical dimensions'
     end if
     if (pressure_half(number_of_levels) <= pressure_half(0) .or. any(temperature <= 0.0_real64) .or. &
+        any(longwave_temperature <= 0.0_real64) .or. longwave_surface_temperature <= 0.0_real64 .or. &
         surface_temperature <= 0.0_real64 .or. deep_temperature <= 0.0_real64) then
       error stop 'radiation column contains a nonphysical state'
     end if
@@ -162,16 +223,18 @@ contains
       if (pressure_thickness <= 0.0_real64) then
         error stop 'radiation pressures must increase downward'
       end if
-      transmission(k) = exp(-longwave_surface_optical_depth*pressure_thickness/ &
-                            (pressure_half(number_of_levels) - pressure_half(0)))
-      emission(k) = (1.0_real64 - transmission(k))*stefan_boltzmann_constant*temperature(k)**4
+      layer_longwave_optical_depth = longwave_surface_optical_depth*pressure_thickness/ &
+        (pressure_half(number_of_levels) - pressure_half(0)) + &
+        ozone_longwave_layer_optical_depth(pressure_half(k - 1), pressure_half(k))
+      transmission(k) = exp(-layer_longwave_optical_depth)
+      emission(k) = (1.0_real64 - transmission(k))*stefan_boltzmann_constant*longwave_temperature(k)**4
     end do
 
     downward_longwave(0) = 0.0_real64
     do k = 1, number_of_levels
       downward_longwave(k) = transmission(k)*downward_longwave(k - 1) + emission(k)
     end do
-    upward_longwave(number_of_levels) = stefan_boltzmann_constant*surface_temperature**4
+    upward_longwave(number_of_levels) = stefan_boltzmann_constant*longwave_surface_temperature**4
     do k = number_of_levels, 1, -1
       upward_longwave(k - 1) = transmission(k)*upward_longwave(k) + emission(k)
     end do
@@ -183,6 +246,23 @@ contains
         (net_longwave(k) - net_longwave(k - 1))
     end do
 
+    incoming_shortwave = shortwave_downward_flux(sin_latitude, longitude, time_seconds)
+    shortwave_downward = incoming_shortwave
+    if (incoming_shortwave > 0.0_real64) then
+      non_ultraviolet_downward = (1.0_real64 - ultraviolet_shortwave_fraction)*incoming_shortwave
+      ultraviolet_downward = ultraviolet_shortwave_fraction*incoming_shortwave
+      do k = 1, number_of_levels
+        layer_shortwave_optical_depth = ozone_layer_optical_depth(pressure_half(k - 1), pressure_half(k))
+        shortwave_transmission = exp(-layer_shortwave_optical_depth)
+        shortwave_absorbed = ultraviolet_downward*(1.0_real64 - shortwave_transmission)
+        pressure_thickness = pressure_half(k) - pressure_half(k - 1)
+        temperature_tendency(k) = temperature_tendency(k) + &
+          dry_gravity_acceleration/(dry_air_specific_heat*pressure_thickness)*shortwave_absorbed
+        ultraviolet_downward = shortwave_transmission*ultraviolet_downward
+      end do
+      shortwave_downward = non_ultraviolet_downward + ultraviolet_downward
+    end if
+
     sensible_heat = pressure_half(number_of_levels)/(dry_air_gas_constant*temperature(number_of_levels))* &
       dry_air_specific_heat*surface_exchange_coefficient* &
       sqrt(lowest_u**2 + lowest_v**2 + gustiness_speed**2)* &
@@ -191,12 +271,13 @@ contains
     temperature_tendency(number_of_levels) = temperature_tendency(number_of_levels) + &
       dry_gravity_acceleration/(dry_air_specific_heat*pressure_thickness)*sensible_heat
 
-    incoming_shortwave = shortwave_downward_flux(sin_latitude, longitude, time_seconds)
-    reflected_shortwave = surface_shortwave_albedo*incoming_shortwave
+    reflected_shortwave = surface_shortwave_albedo*shortwave_downward
     outgoing_longwave = upward_longwave(0)
     surface_deep_heat = ground_exchange_coefficient*(surface_temperature - deep_temperature)
-    surface_temperature_tendency = (incoming_shortwave - reflected_shortwave + &
-      downward_longwave(number_of_levels) - stefan_boltzmann_constant*surface_temperature**4 - &
+    ! The surface loses exactly the upward longwave the lowest layer sees, so the column budget
+    ! stays closed even though both longwave terms come from the filtered previous time level.
+    surface_temperature_tendency = (shortwave_downward - reflected_shortwave + &
+      downward_longwave(number_of_levels) - upward_longwave(number_of_levels) - &
       surface_deep_heat - sensible_heat)/surface_heat_capacity
     deep_temperature_tendency = surface_deep_heat/deep_ground_heat_capacity
   end subroutine radiation_tendency

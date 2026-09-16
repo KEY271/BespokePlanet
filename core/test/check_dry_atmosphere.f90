@@ -2,7 +2,8 @@ program check_dry_atmosphere
   use iso_fortran_env, only: real64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use harmonics, only: harmonic_transform
-  use dry_vertical_coordinate, only: hybrid_sigma_coordinate, reference_surface_pressure, dry_air_kappa
+  use dry_vertical_coordinate, only: hybrid_sigma_coordinate, reference_surface_pressure, &
+                                     dry_air_gas_constant, dry_air_kappa
   use dry_gravity_wave, only: dry_gravity_wave_solver, dry_gravity_wave_implicitness
   use dry_atmosphere, only: dry_atmosphere_solver
   use dry_convection, only: dry_convective_adjustment_tendency, dry_convective_adjustment_time
@@ -15,6 +16,11 @@ program check_dry_atmosphere
   use dry_radiation, only: radiation_tendency, shortwave_downward_flux, stefan_boltzmann_constant, &
                            longwave_surface_optical_depth, dry_air_specific_heat, &
                            dry_gravity_acceleration, solar_constant, surface_shortwave_albedo, &
+                           ultraviolet_shortwave_fraction, ozone_shortwave_optical_depth, &
+                           ozone_longwave_optical_depth, ozone_pressure_lower_bound, &
+                           ozone_pressure_upper_bound, ozone_peak_pressure, ozone_log_pressure_width, &
+                           ozone_layer_optical_depth, ozone_longwave_layer_optical_depth, &
+                           surface_exchange_coefficient, gustiness_speed, &
                            surface_heat_capacity, deep_ground_heat_capacity, axial_tilt, orbital_period, &
                            solar_day, days_per_month, months_per_year, days_per_year, planetary_rotation_rate, &
                            radiation_calendar_date, radiation_diagnostics, radiation_daily_accumulator, &
@@ -32,6 +38,7 @@ program check_dry_atmosphere
   call check_dry_convective_adjustment()
   call check_radiation_top_rayleigh_friction()
   call check_solar_geometry()
+  call check_ozone_absorption()
   call check_radiation_column()
   call check_radiation_daily_accumulator()
   call check_radiation_state()
@@ -150,44 +157,136 @@ contains
     end if
   end subroutine check_solar_geometry
 
+  subroutine check_ozone_absorption()
+    real(real64) :: upper_optical_depth, lower_optical_depth, expected_optical_depth
+    real(real64) :: upper_longwave_optical_depth, lower_longwave_optical_depth
+    real(real64) :: pressure_lower, pressure_upper, x_lower, x_upper, x_profile_lower, x_profile_upper
+
+    upper_optical_depth = ozone_layer_optical_depth(ozone_pressure_lower_bound, ozone_peak_pressure)
+    lower_optical_depth = ozone_layer_optical_depth(ozone_peak_pressure, ozone_pressure_upper_bound)
+    upper_longwave_optical_depth = &
+      ozone_longwave_layer_optical_depth(ozone_pressure_lower_bound, ozone_peak_pressure)
+    lower_longwave_optical_depth = &
+      ozone_longwave_layer_optical_depth(ozone_peak_pressure, ozone_pressure_upper_bound)
+    if (abs(upper_optical_depth - 0.5_real64*ozone_shortwave_optical_depth) > 1.0e-15_real64 .or. &
+        abs(lower_optical_depth - 0.5_real64*ozone_shortwave_optical_depth) > 1.0e-15_real64 .or. &
+        abs(upper_longwave_optical_depth - 0.5_real64*ozone_longwave_optical_depth) > 1.0e-15_real64 .or. &
+        abs(lower_longwave_optical_depth - 0.5_real64*ozone_longwave_optical_depth) > 1.0e-15_real64 .or. &
+        abs(ozone_layer_optical_depth(1.0_real64, ozone_pressure_lower_bound)) > 1.0e-15_real64 .or. &
+        abs(ozone_layer_optical_depth(ozone_pressure_upper_bound, 1.0e5_real64)) > 1.0e-15_real64 .or. &
+        abs(ozone_longwave_layer_optical_depth(1.0_real64, ozone_pressure_lower_bound)) > 1.0e-15_real64 .or. &
+        abs(ozone_longwave_layer_optical_depth(ozone_pressure_upper_bound, 1.0e5_real64)) > 1.0e-15_real64) then
+      error stop 'ozone optical-depth profile has incorrect bounds or normalization'
+    end if
+
+    pressure_lower = 300.0_real64
+    pressure_upper = 1000.0_real64
+    x_lower = log(pressure_lower/ozone_peak_pressure)/(sqrt(2.0_real64)*ozone_log_pressure_width)
+    x_upper = log(pressure_upper/ozone_peak_pressure)/(sqrt(2.0_real64)*ozone_log_pressure_width)
+    x_profile_lower = log(ozone_pressure_lower_bound/ozone_peak_pressure)/ &
+      (sqrt(2.0_real64)*ozone_log_pressure_width)
+    x_profile_upper = log(ozone_pressure_upper_bound/ozone_peak_pressure)/ &
+      (sqrt(2.0_real64)*ozone_log_pressure_width)
+    expected_optical_depth = ozone_shortwave_optical_depth*(erf(x_upper) - erf(x_lower))/ &
+      (erf(x_profile_upper) - erf(x_profile_lower))
+    if (abs(ozone_layer_optical_depth(pressure_lower, pressure_upper) - expected_optical_depth) > 1.0e-15_real64) then
+      error stop 'ozone optical depth does not use the documented error-function integral'
+    end if
+  end subroutine check_ozone_absorption
+
   subroutine check_radiation_column()
     real(real64), parameter :: pressure_half(0:2) = [1000.0_real64, 40000.0_real64, 100000.0_real64]
     real(real64), parameter :: temperature(2) = [250.0_real64, 280.0_real64]
     real(real64), parameter :: surface_temperature = 290.0_real64
-    real(real64) :: temperature_tendency(2), surface_tendency, deep_tendency
-    real(real64) :: transmission(2), emission(2), upward_longwave, total_energy_tendency
+    ! The longwave sources are the RAW-filtered previous time level, so they differ from the state.
+    real(real64), parameter :: longwave_temperature(2) = [252.0_real64, 279.0_real64]
+    real(real64), parameter :: longwave_surface_temperature = 291.0_real64
+    real(real64) :: temperature_tendency(2), expected_temperature_tendency(2), surface_tendency, deep_tendency
+    real(real64) :: transmission(2), emission(2), upward_longwave(0:2), downward_longwave(0:2), net_longwave(0:2)
+    real(real64) :: surface_shortwave, absorbed_shortwave, sensible_heat, pressure_thickness
+    real(real64) :: total_energy_tendency
     real(real64) :: incoming_shortwave, reflected_shortwave, outgoing_longwave
+    real(real64) :: perturbed_temperature(2), perturbed_temperature_tendency(2)
+    real(real64) :: perturbed_surface_tendency, perturbed_deep_tendency, perturbed_outgoing_longwave
     integer :: k
 
     call radiation_tendency(pressure_half, temperature, surface_temperature, 285.0_real64, &
+                            longwave_temperature, longwave_surface_temperature, &
                             3.0_real64, 4.0_real64, 0.0_real64, 0.0_real64, 0.0_real64, &
                             temperature_tendency, surface_tendency, deep_tendency, &
                             incoming_shortwave, reflected_shortwave, outgoing_longwave)
-    if (maxval(abs(temperature_tendency - &
-        [-5.3667836077628645e-6_real64, -6.1944435312519194e-6_real64])) > 1.0e-16_real64 .or. &
+    absorbed_shortwave = ultraviolet_shortwave_fraction*solar_constant*(1.0_real64 - &
+      exp(-ozone_layer_optical_depth(pressure_half(0), pressure_half(1))))
+    surface_shortwave = solar_constant - absorbed_shortwave
+    do k = 1, 2
+      pressure_thickness = pressure_half(k) - pressure_half(k - 1)
+      transmission(k) = exp(-(longwave_surface_optical_depth*pressure_thickness/ &
+        (pressure_half(2) - pressure_half(0)) + &
+        ozone_longwave_layer_optical_depth(pressure_half(k - 1), pressure_half(k))))
+      emission(k) = (1.0_real64 - transmission(k))*stefan_boltzmann_constant*longwave_temperature(k)**4
+    end do
+    downward_longwave(0) = 0.0_real64
+    do k = 1, 2
+      downward_longwave(k) = transmission(k)*downward_longwave(k - 1) + emission(k)
+    end do
+    upward_longwave(2) = stefan_boltzmann_constant*longwave_surface_temperature**4
+    do k = 2, 1, -1
+      upward_longwave(k - 1) = transmission(k)*upward_longwave(k) + emission(k)
+    end do
+    net_longwave = upward_longwave - downward_longwave
+    do k = 1, 2
+      pressure_thickness = pressure_half(k) - pressure_half(k - 1)
+      expected_temperature_tendency(k) = dry_gravity_acceleration/ &
+        (dry_air_specific_heat*pressure_thickness)*(net_longwave(k) - net_longwave(k - 1))
+    end do
+    expected_temperature_tendency(1) = expected_temperature_tendency(1) + &
+      dry_gravity_acceleration/(dry_air_specific_heat*(pressure_half(1) - pressure_half(0)))*absorbed_shortwave
+    sensible_heat = pressure_half(2)/(dry_air_gas_constant*temperature(2))* &
+      dry_air_specific_heat*surface_exchange_coefficient*sqrt(3.0_real64**2 + 4.0_real64**2 + &
+      gustiness_speed**2)*(surface_temperature - temperature(2))
+    expected_temperature_tendency(2) = expected_temperature_tendency(2) + &
+      dry_gravity_acceleration/(dry_air_specific_heat*(pressure_half(2) - pressure_half(1)))*sensible_heat
+    if (maxval(abs(temperature_tendency - expected_temperature_tendency)) > 1.0e-16_real64 .or. &
         abs(deep_tendency - 5.0e-7_real64) > 1.0e-18_real64) then
       error stop 'radiation column tendencies are incorrect'
     end if
     if (abs(incoming_shortwave - solar_constant) > 1.0e-12_real64 .or. &
-        abs(reflected_shortwave - surface_shortwave_albedo*solar_constant) > 1.0e-12_real64) then
+        abs(reflected_shortwave - surface_shortwave_albedo*surface_shortwave) > 1.0e-12_real64) then
       error stop 'radiation column shortwave fluxes are incorrect'
     end if
-    do k = 1, 2
-      transmission(k) = exp(-longwave_surface_optical_depth* &
-        (pressure_half(k) - pressure_half(k - 1))/(pressure_half(2) - pressure_half(0)))
-      emission(k) = (1.0_real64 - transmission(k))*stefan_boltzmann_constant*temperature(k)**4
-    end do
-    upward_longwave = stefan_boltzmann_constant*surface_temperature**4
-    do k = 2, 1, -1
-      upward_longwave = transmission(k)*upward_longwave + emission(k)
-    end do
     total_energy_tendency = sum(dry_air_specific_heat* &
       (pressure_half(1:2) - pressure_half(0:1))/dry_gravity_acceleration*temperature_tendency) + &
       surface_heat_capacity*surface_tendency + deep_ground_heat_capacity*deep_tendency
     if (abs(total_energy_tendency - &
-        (incoming_shortwave - reflected_shortwave - upward_longwave)) > 1.0e-10_real64 .or. &
-        abs(outgoing_longwave - upward_longwave) > 1.0e-12_real64) then
+        (incoming_shortwave - reflected_shortwave - upward_longwave(0))) > 1.0e-10_real64 .or. &
+        abs(outgoing_longwave - upward_longwave(0)) > 1.0e-12_real64) then
       error stop 'radiation column does not conserve energy'
+    end if
+
+    ! The longwave must follow the filtered previous time level alone, so perturbing the current
+    ! temperature of a layer that feels neither sensible heat nor a temperature-dependent shortwave
+    ! may not change its heating rate or the outgoing longwave.
+    perturbed_temperature = [temperature(1) + 12.0_real64, temperature(2)]
+    call radiation_tendency(pressure_half, perturbed_temperature, surface_temperature, 285.0_real64, &
+                            longwave_temperature, longwave_surface_temperature, &
+                            3.0_real64, 4.0_real64, 0.0_real64, 0.0_real64, 0.0_real64, &
+                            perturbed_temperature_tendency, perturbed_surface_tendency, &
+                            perturbed_deep_tendency, incoming_shortwave, reflected_shortwave, &
+                            perturbed_outgoing_longwave)
+    if (abs(perturbed_temperature_tendency(1) - temperature_tendency(1)) > 1.0e-16_real64 .or. &
+        abs(perturbed_outgoing_longwave - outgoing_longwave) > 1.0e-12_real64) then
+      error stop 'radiation longwave does not use the filtered previous temperature alone'
+    end if
+
+    call radiation_tendency(pressure_half, temperature, surface_temperature, 285.0_real64, &
+                            longwave_temperature, longwave_surface_temperature, &
+                            3.0_real64, 4.0_real64, 0.0_real64, acos(0.5_real64), 0.0_real64, &
+                            temperature_tendency, surface_tendency, deep_tendency, &
+                            incoming_shortwave, reflected_shortwave, outgoing_longwave)
+    surface_shortwave = 0.5_real64*(solar_constant - absorbed_shortwave)
+    if (abs(incoming_shortwave - 0.5_real64*solar_constant) > 1.0e-12_real64 .or. &
+        abs(reflected_shortwave - surface_shortwave_albedo*surface_shortwave) > 1.0e-12_real64) then
+      error stop 'radiation column does not use the prescribed vertical ozone path'
     end if
   end subroutine check_radiation_column
 
@@ -272,7 +371,10 @@ contains
       mean_incoming_shortwave, mean_reflected_shortwave, mean_outgoing_longwave)
     if (abs(diagnostic_time) > 1.0e-12_real64 .or. &
         abs(mean_incoming_shortwave - solar_constant/4.0_real64) > 5.0_real64 .or. &
-        abs(mean_reflected_shortwave - surface_shortwave_albedo*mean_incoming_shortwave) > 1.0e-10_real64 .or. &
+        abs(mean_reflected_shortwave - surface_shortwave_albedo* &
+          (1.0_real64 - ultraviolet_shortwave_fraction* &
+          (1.0_real64 - exp(-ozone_shortwave_optical_depth)))* &
+          mean_incoming_shortwave) > 1.0e-10_real64 .or. &
         min(mean_atmospheric_temperature, mean_surface_temperature, mean_deep_temperature, &
             mean_surface_pressure, mean_outgoing_longwave) <= 0.0_real64 .or. mean_kinetic_energy < 0.0_real64) then
       error stop 'radiation daily diagnostics are incorrect'

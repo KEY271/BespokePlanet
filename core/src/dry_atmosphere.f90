@@ -318,7 +318,7 @@ contains
     if (collect_radiation_diagnostics) then
       call compute_dry_nonlinear_tendency(this%transform, this%truncation, this%coordinate, &
                                           current_zeta, current_delta, current_temperature, current_log_ps, &
-                                          previous_temperature, previous_log_ps, &
+                                          previous_temperature, previous_log_ps, previous_surface_temperature, &
                                           this%surface_geopotential, current_surface_temperature, &
                                           current_deep_temperature, rhs_zeta, rhs_delta, rhs_temperature, &
                                           rhs_log_ps, rhs_surface_temperature, rhs_deep_temperature, maximum_speed, &
@@ -329,7 +329,7 @@ contains
     else
       call compute_dry_nonlinear_tendency(this%transform, this%truncation, this%coordinate, &
                                           current_zeta, current_delta, current_temperature, current_log_ps, &
-                                          previous_temperature, previous_log_ps, &
+                                          previous_temperature, previous_log_ps, previous_surface_temperature, &
                                           this%surface_geopotential, current_surface_temperature, &
                                           current_deep_temperature, rhs_zeta, rhs_delta, rhs_temperature, &
                                           rhs_log_ps, rhs_surface_temperature, rhs_deep_temperature, maximum_speed, &
