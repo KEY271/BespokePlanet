@@ -32,12 +32,12 @@ program main
   implicit none
 
   integer, parameter :: T = 63
-  real(real64), parameter :: dt = 900.0_real64
+  real(real64), parameter :: dt = 1200.0_real64
   real(real64), parameter :: duration = 10.0_real64*24.0_real64*3600.0_real64
   integer, parameter :: output_interval_steps = 16
   real(real64), parameter :: held_suarez_duration = 200.0_real64*24.0_real64*3600.0_real64
   integer, parameter :: held_suarez_output_interval_steps = nint(5.0_real64*24.0_real64*3600.0_real64/dt)
-  real(real64), parameter :: radiation_time_step = 900.0_real64
+  real(real64), parameter :: radiation_time_step = dt
   integer, parameter :: radiation_number_of_years = 5
   real(real64), parameter :: radiation_duration = real(radiation_number_of_years, real64)*orbital_period
   !> Progress is logged once per simulated day (and at the final step).

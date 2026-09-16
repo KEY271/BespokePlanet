@@ -23,7 +23,7 @@ contains
 
     allocate (initial(0:T + 1, 0:T))
     initial = cmplx(0.0_real64, 0.0_real64, kind=real64)
-    call solver%init(T, 900.0_real64)
+    call solver%init(T, 1200.0_real64)
     call solver%set_initial_vorticity(initial)
     call solver%advance()
     call solver%advance()

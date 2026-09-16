@@ -166,10 +166,10 @@ $$
 \Delta t\lesssim C\frac{a}{U_\mathrm{max}\sqrt{T(T+1)}}
 $$
 
-なので $T=63$ で $C=0.5$ とすると、$\Delta t=900\,\mathrm{s}$ くらいで良いことになる。各ステップで
+なので $T=63$ で $C=0.6$ とすると、$\Delta t=1200\,\mathrm{s}$ くらいで良いことになる。各ステップで
 
 $$
 C=\frac{U_\mathrm{max}\Delta t}{a}\sqrt{T(T+1)}
 $$
 
-を計算して $0.5$ 程度以下かを監視する。
+を計算して $0.6$ 程度以下かを監視する。

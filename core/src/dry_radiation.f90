@@ -18,6 +18,8 @@ module dry_radiation
   real(real64), parameter, public :: gustiness_speed = 1.0_real64
   real(real64), parameter, public :: axial_tilt = 23.4_real64*pi/180.0_real64
   real(real64), parameter, public :: solar_day = 86400.0_real64
+  integer, parameter, public :: radiation_top_rayleigh_levels = 2
+  real(real64), parameter, public :: radiation_top_rayleigh_rate = 1.0_real64/solar_day
   integer, parameter, public :: days_per_month = 30
   integer, parameter, public :: months_per_year = 12
   integer, parameter, public :: days_per_year = days_per_month*months_per_year
@@ -84,8 +86,18 @@ module dry_radiation
   public :: shortwave_downward_flux
   public :: radiation_tendency
   public :: radiation_calendar_date
+  public :: radiation_rayleigh_rate
 
 contains
+
+  pure real(real64) function radiation_rayleigh_rate(level) result(rate)
+    integer, intent(in) :: level
+
+    rate = 0.0_real64
+    if (level >= 1 .and. level <= radiation_top_rayleigh_levels) then
+      rate = radiation_top_rayleigh_rate
+    end if
+  end function radiation_rayleigh_rate
 
   real(real64) function shortwave_downward_flux(sin_latitude, longitude, time_seconds) result(flux)
     real(real64), intent(in) :: sin_latitude, longitude, time_seconds

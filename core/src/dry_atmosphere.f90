@@ -18,11 +18,6 @@ module dry_atmosphere
   real(real64), parameter, public :: dry_vorticity_diffusion_time = 4.0_real64*3600.0_real64
   real(real64), parameter, public :: dry_divergence_diffusion_time = 1.0_real64*3600.0_real64
   real(real64), parameter, public :: dry_temperature_diffusion_time = 4.0_real64*3600.0_real64
-  real(real64), parameter, public :: radiation_sponge_taper_eta = 0.2_real64
-  real(real64), parameter, public :: radiation_sponge_tropospheric_order = 4.0_real64
-  real(real64), parameter, public :: radiation_sponge_top_order = 2.0_real64
-
-  public :: radiation_divergence_diffusion_order
 
   type, public :: dry_atmosphere_solver
     private
@@ -316,7 +311,7 @@ contains
     complex(real64), allocatable :: candidate_temperature(:, :, :), candidate_log_ps(:, :)
     complex(real64), allocatable :: candidate_surface_temperature(:, :), candidate_deep_temperature(:, :)
     complex(real64), allocatable :: filtered_level(:, :), next_level(:, :)
-    real(real64) :: centered_interval, divergence_diffusion_order
+    real(real64) :: centered_interval
     integer :: k
 
     centered_interval = 2.0_real64*interval
@@ -352,13 +347,8 @@ contains
     do k = 1, this%number_of_levels
       call apply_spectral_hyperdiffusion(this%truncation, centered_interval, candidate_zeta(:, :, k), &
                                          dry_vorticity_diffusion_time)
-      divergence_diffusion_order = radiation_sponge_tropospheric_order
-      if (this%radiation_enabled) then
-        divergence_diffusion_order = &
-          radiation_divergence_diffusion_order(this%coordinate%full_level_eta(k))
-      end if
       call apply_spectral_hyperdiffusion(this%truncation, centered_interval, candidate_delta(:, :, k), &
-                                         dry_divergence_diffusion_time, divergence_diffusion_order)
+                                         dry_divergence_diffusion_time)
       call apply_spectral_hyperdiffusion(this%truncation, centered_interval, candidate_temperature(:, :, k), &
                                          dry_temperature_diffusion_time)
     end do
@@ -549,16 +539,6 @@ contains
     cfl = maximum_speed*this%dt/earth_radius* &
           sqrt(real(this%truncation*(this%truncation + 1), real64))
   end function advective_cfl
-
-  pure real(real64) function radiation_divergence_diffusion_order(eta) result(order)
-    real(real64), intent(in) :: eta
-    real(real64) :: sponge_weight
-
-    sponge_weight = max(0.0_real64, min(1.0_real64, &
-      (radiation_sponge_taper_eta - eta)/radiation_sponge_taper_eta))
-    order = radiation_sponge_tropospheric_order + sponge_weight* &
-      (radiation_sponge_top_order - radiation_sponge_tropospheric_order)
-  end function radiation_divergence_diffusion_order
 
   subroutine allocate_state(this, zeta, delta, temperature, log_ps)
     class(dry_atmosphere_solver), intent(in) :: this

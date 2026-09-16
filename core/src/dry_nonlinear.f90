@@ -5,7 +5,8 @@ module dry_nonlinear
   use shallow_water_nonlinear, only: diagnose_shallow_water_velocity, flux_curl_divergence
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate, dry_air_gas_constant, dry_air_kappa
   use dry_held_suarez, only: held_suarez_forcing
-  use dry_radiation, only: radiation_tendency, radiation_diagnostics, planetary_rotation_rate
+  use dry_radiation, only: radiation_tendency, radiation_diagnostics, planetary_rotation_rate, &
+                           radiation_rayleigh_rate
   use dry_convection, only: dry_convective_adjustment_tendency
   implicit none
   private
@@ -65,7 +66,7 @@ contains
     integer :: number_of_levels, nx, ny, i, j, k, n, m
     real(real64) :: cosphi, gradient_u, gradient_v, coefficient, thermodynamic_q, active_rotation_rate
     real(real64) :: absolute_vorticity, kinetic, maximum_speed_squared
-    real(real64) :: full_level_pressure, forcing_u, forcing_v, forcing_temperature
+    real(real64) :: full_level_pressure, forcing_u, forcing_v, forcing_temperature, top_rayleigh_rate
     real(real64) :: longitude, current_time, incoming_shortwave, reflected_shortwave, outgoing_longwave
     real(real64) :: area_weight, atmospheric_mass, temperature_mass_sum, kinetic_energy_mass_sum
     logical :: use_held_suarez, use_radiation
@@ -324,6 +325,8 @@ contains
       vector_v = 0.0_real64
       tendency_grid = 0.0_real64
       held_temperature_tendency = 0.0_real64
+      top_rayleigh_rate = 0.0_real64
+      if (use_radiation) top_rayleigh_rate = radiation_rayleigh_rate(k)
       ! With the momentum forcing F = -(vertical advection) - R T (pressure-gradient term),
       !   d(zeta)/dt = -div((zeta+f) u) + curl F,   d(delta)/dt = curl((zeta+f) u) + div F - lap(K+Phi).
       ! Since -div(A u, A v) = curl(A v, -A u) and curl(A u, A v) = div(A v, -A u), both
@@ -346,6 +349,10 @@ contains
             vector_u(i, j) = vector_u(i, j) + forcing_u
             vector_v(i, j) = vector_v(i, j) + forcing_v
             if (use_held_suarez) held_temperature_tendency(i, j) = forcing_temperature
+          end if
+          if (use_radiation) then
+            vector_u(i, j) = vector_u(i, j) - top_rayleigh_rate*u(i, j, k)
+            vector_v(i, j) = vector_v(i, j) - top_rayleigh_rate*v(i, j, k)
           end if
           tendency_grid(i, j) = kinetic + geopotential(i, j, k)
         end do

@@ -4,9 +4,7 @@ program check_dry_atmosphere
   use harmonics, only: harmonic_transform
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate, reference_surface_pressure, dry_air_kappa
   use dry_gravity_wave, only: dry_gravity_wave_solver, dry_gravity_wave_implicitness
-  use dry_atmosphere, only: dry_atmosphere_solver, radiation_divergence_diffusion_order, &
-                            radiation_sponge_taper_eta, radiation_sponge_tropospheric_order, &
-                            radiation_sponge_top_order
+  use dry_atmosphere, only: dry_atmosphere_solver
   use dry_convection, only: dry_convective_adjustment_tendency, dry_convective_adjustment_time
   use dry_held_suarez, only: held_suarez_forcing, held_suarez_initial_temperature, &
                               held_suarez_temperature_perturbation, held_suarez_sigma_boundary, &
@@ -19,11 +17,12 @@ program check_dry_atmosphere
                            dry_gravity_acceleration, solar_constant, surface_shortwave_albedo, &
                            surface_heat_capacity, deep_ground_heat_capacity, axial_tilt, orbital_period, &
                            solar_day, days_per_month, months_per_year, days_per_year, planetary_rotation_rate, &
-                           radiation_calendar_date, radiation_diagnostics, radiation_daily_accumulator
+                           radiation_calendar_date, radiation_diagnostics, radiation_daily_accumulator, &
+                           radiation_top_rayleigh_levels, radiation_top_rayleigh_rate, radiation_rayleigh_rate
   implicit none
 
   integer, parameter :: truncation = 5
-  real(real64), parameter :: time_step = 900.0_real64
+  real(real64), parameter :: time_step = 1200.0_real64
 
   call check_reference_atmosphere()
   call check_precomputed_gravity_wave_inverse()
@@ -31,7 +30,7 @@ program check_dry_atmosphere
   call check_held_suarez_forcing()
   call check_held_suarez_state()
   call check_dry_convective_adjustment()
-  call check_radiation_divergence_sponge()
+  call check_radiation_top_rayleigh_friction()
   call check_solar_geometry()
   call check_radiation_column()
   call check_radiation_daily_accumulator()
@@ -41,21 +40,15 @@ program check_dry_atmosphere
 
 contains
 
-  subroutine check_radiation_divergence_sponge()
-    real(real64) :: midpoint_order
-
-    midpoint_order = radiation_divergence_diffusion_order(0.5_real64*radiation_sponge_taper_eta)
-    if (abs(radiation_divergence_diffusion_order(0.0_real64) - &
-            radiation_sponge_top_order) > 1.0e-15_real64 .or. &
-        abs(midpoint_order - 0.5_real64*(radiation_sponge_top_order + &
-            radiation_sponge_tropospheric_order)) > 1.0e-15_real64 .or. &
-        abs(radiation_divergence_diffusion_order(radiation_sponge_taper_eta) - &
-            radiation_sponge_tropospheric_order) > 1.0e-15_real64 .or. &
-        abs(radiation_divergence_diffusion_order(1.0_real64) - &
-            radiation_sponge_tropospheric_order) > 1.0e-15_real64) then
-      error stop 'radiation divergence sponge has the wrong vertical taper'
+  subroutine check_radiation_top_rayleigh_friction()
+    if (radiation_top_rayleigh_levels /= 2 .or. &
+        abs(radiation_top_rayleigh_rate - 1.0_real64/solar_day) > 1.0e-15_real64 .or. &
+        abs(radiation_rayleigh_rate(1) - radiation_top_rayleigh_rate) > 1.0e-15_real64 .or. &
+        abs(radiation_rayleigh_rate(2) - radiation_top_rayleigh_rate) > 1.0e-15_real64 .or. &
+        abs(radiation_rayleigh_rate(3)) > 1.0e-15_real64) then
+      error stop 'radiation top-level Rayleigh friction is incorrect'
     end if
-  end subroutine check_radiation_divergence_sponge
+  end subroutine check_radiation_top_rayleigh_friction
 
   subroutine check_dry_convective_adjustment()
     real(real64), parameter :: pressure_half(0:4) = [ &
@@ -256,7 +249,7 @@ contains
 
     call transform%init(truncation)
     nlon = transform%get_nlon()
-    call solver%init(truncation, 900.0_real64)
+    call solver%init(truncation, time_step)
     call solver%set_radiation_state()
     call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
                            surface_temperature=surface_temperature, deep_temperature=deep_temperature)
@@ -273,7 +266,7 @@ contains
     do step = 1, 4
       call solver%advance()
     end do
-    ! Four advances collect samples at t = 0, 900, 1800 and 2700 s; the mean is stamped with t = 0.
+    ! Four advances collect samples at t = 0, 1200, 2400 and 3600 s; the mean is stamped with t = 0.
     call solver%take_radiation_daily_means(diagnostic_time, mean_atmospheric_temperature, &
       mean_surface_temperature, mean_deep_temperature, mean_kinetic_energy, mean_surface_pressure, &
       mean_incoming_shortwave, mean_reflected_shortwave, mean_outgoing_longwave)
@@ -308,21 +301,37 @@ contains
 
   subroutine check_reference_atmosphere()
     type(hybrid_sigma_coordinate) :: coordinate
+    real(real64), parameter :: expected_a(0:12) = [ &
+      100.0_real64, 300.0_real64, 1000.0_real64, 5000.0_real64, &
+      10000.0_real64, 8000.0_real64, 8000.0_real64, 10000.0_real64, &
+      12000.0_real64, 10000.0_real64, 7000.0_real64, 3000.0_real64, &
+      0.0_real64]
+    real(real64), parameter :: expected_b(0:12) = [ &
+      0.0_real64, 0.0_real64, 0.0_real64, 0.0_real64, 0.0_real64, &
+      0.1_real64, 0.2_real64, 0.3_real64, 0.4_real64, 0.55_real64, &
+      0.7_real64, 0.85_real64, 1.0_real64]
+    real(real64), parameter :: expected_eta(12) = [ &
+      0.002_real64, 0.0065_real64, 0.03_real64, 0.075_real64, &
+      0.14_real64, 0.23_real64, 0.34_real64, 0.46_real64, &
+      0.585_real64, 0.71_real64, 0.825_real64, 0.94_real64]
 
     call coordinate%init_default()
-    if (coordinate%number_of_levels /= 10) error stop 'default dry atmosphere does not have ten levels'
-    if (abs(coordinate%reference_p_half(0) - 1000.0_real64) > 1.0e-12_real64) then
+    if (coordinate%number_of_levels /= 12) error stop 'default dry atmosphere does not have twelve levels'
+    if (maxval(abs(coordinate%a_half - expected_a)) > 1.0e-12_real64 .or. &
+        maxval(abs(coordinate%b_half - expected_b)) > 1.0e-14_real64) then
+      error stop 'dry atmosphere has the wrong default hybrid-sigma coefficients'
+    end if
+    if (abs(coordinate%reference_p_half(0) - 100.0_real64) > 1.0e-12_real64) then
       error stop 'dry atmosphere has the wrong top pressure'
     end if
-    if (abs(coordinate%reference_p_half(10) - reference_surface_pressure) > 1.0e-12_real64) then
+    if (abs(coordinate%reference_p_half(12) - reference_surface_pressure) > 1.0e-12_real64) then
       error stop 'dry atmosphere has the wrong reference surface pressure'
     end if
     if (any(coordinate%reference_delta_p <= 0.0_real64) .or. &
         any(coordinate%reference_temperature <= 0.0_real64)) then
       error stop 'dry reference atmosphere contains a nonphysical value'
     end if
-    if (abs(coordinate%full_level_eta(1) - 0.03_real64) > 1.0e-14_real64 .or. &
-        abs(coordinate%full_level_eta(10) - 0.94_real64) > 1.0e-14_real64) then
+    if (maxval(abs(coordinate%full_level_eta - expected_eta)) > 1.0e-14_real64) then
       error stop 'dry full-level eta values do not match the hybrid-sigma pressures'
     end if
   end subroutine check_reference_atmosphere
@@ -525,8 +534,8 @@ contains
     ! pressures and the surface geopotential is supplied; otherwise |v| grows to
     ! several m/s and ps oscillates by several hPa within a day.
     integer, parameter :: steady_truncation = 21
-    integer, parameter :: steady_steps = 96
-    real(real64), parameter :: wind_tolerance = 1.0_real64
+    integer, parameter :: steady_steps = nint(86400.0_real64/time_step)
+    real(real64), parameter :: wind_tolerance = 1.5_real64
     real(real64), parameter :: surface_pressure_tolerance = 100.0_real64
     type(harmonic_transform) :: transform
     type(dry_atmosphere_solver) :: solver

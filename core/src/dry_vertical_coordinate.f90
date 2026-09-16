@@ -3,7 +3,7 @@ module dry_vertical_coordinate
   implicit none
   private
 
-  integer, parameter, public :: default_number_of_levels = 10
+  integer, parameter, public :: default_number_of_levels = 12
   real(real64), parameter, public :: reference_surface_pressure = 1.0e5_real64
   real(real64), parameter, public :: dry_air_gas_constant = 287.0_real64
   real(real64), parameter, public :: dry_air_kappa = 2.0_real64/7.0_real64
@@ -28,12 +28,14 @@ contains
   subroutine initialize_default_coordinate(this)
     class(hybrid_sigma_coordinate), intent(inout) :: this
     real(real64), parameter :: a(0:default_number_of_levels) = [ &
-      1000.0_real64, 5000.0_real64, 10000.0_real64, 8000.0_real64, &
-      8000.0_real64, 10000.0_real64, 12000.0_real64, 10000.0_real64, &
-      7000.0_real64, 3000.0_real64, 0.0_real64]
+      100.0_real64, 300.0_real64, 1000.0_real64, 5000.0_real64, &
+      10000.0_real64, 8000.0_real64, 8000.0_real64, 10000.0_real64, &
+      12000.0_real64, 10000.0_real64, 7000.0_real64, 3000.0_real64, &
+      0.0_real64]
     real(real64), parameter :: b(0:default_number_of_levels) = [ &
-      0.0_real64, 0.0_real64, 0.0_real64, 0.1_real64, 0.2_real64, &
-      0.3_real64, 0.4_real64, 0.55_real64, 0.7_real64, 0.85_real64, 1.0_real64]
+      0.0_real64, 0.0_real64, 0.0_real64, 0.0_real64, 0.0_real64, &
+      0.1_real64, 0.2_real64, 0.3_real64, 0.4_real64, 0.55_real64, &
+      0.7_real64, 0.85_real64, 1.0_real64]
 
     call this%init(a, b)
   end subroutine initialize_default_coordinate

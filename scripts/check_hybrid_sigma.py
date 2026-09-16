@@ -3,11 +3,10 @@
 # requires-python = ">=3.9"
 # dependencies = ["matplotlib>=3.10,<4"]
 # ///
-"""Check the fixed N=10 hybrid-sigma A/B profile and plot the pressures.
+"""Check the fixed N=12 hybrid-sigma A/B profile and plot the pressures.
 
-The coordinate is ordered from the model top (eta=0) to the surface
-(eta=1).  Interface pressure is calculated directly from the prescribed
-coefficients:
+The coordinate is ordered from the model top to the surface (eta=1).
+Interface pressure is calculated directly from the prescribed coefficients:
 
     p_i(ps) = A_i + B_i ps
 
@@ -29,8 +28,23 @@ import matplotlib.pyplot as plt
 
 
 DEFAULT_SURFACE_PRESSURES_HPA = (100.0, 200.0, 400.0, 600.0, 800.0, 1000.0)
-FIXED_A_PA = (1000.0, 5000.0, 10000.0, 8000.0, 8000.0, 10000.0, 12000.0, 10000.0, 7000.0, 3000.0, 0.0)
-FIXED_B = (0.0, 0.0, 0.0, 0.1, 0.2, 0.3, 0.4, 0.55, 0.7, 0.85, 1.0)
+REFERENCE_SURFACE_PRESSURE_PA = 100000.0
+FIXED_A_PA = (
+    100.0,
+    300.0,
+    1000.0,
+    5000.0,
+    10000.0,
+    8000.0,
+    8000.0,
+    10000.0,
+    12000.0,
+    10000.0,
+    7000.0,
+    3000.0,
+    0.0,
+)
+FIXED_B = (0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.2, 0.3, 0.4, 0.55, 0.7, 0.85, 1.0)
 
 
 def make_coefficients(
@@ -49,8 +63,10 @@ def make_coefficients(
     if any(lower < upper for upper, lower in zip(b, b[1:])):
         raise ValueError("B must be nondecreasing")
 
-    n_layers = len(a_pa) - 1
-    eta = [interface / n_layers for interface in range(n_layers + 1)]
+    eta = [
+        a / REFERENCE_SURFACE_PRESSURE_PA + weight
+        for a, weight in zip(a_pa, b)
+    ]
     a_hpa = [value / 100.0 for value in a_pa]
     return eta, a_hpa, list(b)
 
@@ -102,7 +118,7 @@ def print_report(
     print(f"A/B coefficients (N={n_layers} gives {len(eta)} layer interfaces)")
     print("interface   eta       A [hPa]           B")
     for k, (eta_k, a_k, b_k) in enumerate(zip(eta, a_hpa, b)):
-        print(f"{k:9d}  {eta_k:4.2f}  {a_k:12.6f}  {b_k:10.7f}")
+        print(f"{k:9d}  {eta_k:7.4f}  {a_k:12.6f}  {b_k:10.7f}")
 
     profiles: dict[float, list[float]] = {}
     print("\nInterface pressures [hPa], ordered from model top to surface")

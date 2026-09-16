@@ -270,7 +270,7 @@ $$
 (1-2\beta\Delta tG)X^{k+1}_*=\overline{X}^{k-1}+2\Delta t[\mathcal{R}(X^k)-G(X^k)+(1-\beta)G\overline{X}^{k-1}]
 $$
 
-として $X^{n+1}_*$ を得る。時間ステップは $\Delta t=900\,\mathrm{s}$ とする。
+として $X^{n+1}_*$ を得る。時間ステップは $\Delta t=1200\,\mathrm{s}$ とする。
 
 ## 超粘性
 
