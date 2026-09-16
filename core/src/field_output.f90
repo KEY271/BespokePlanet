@@ -422,6 +422,7 @@ contains
     write (unit, '(a)') '  "numerics": {'
     write (unit, '(a,i0,a)') '    "spectral_truncation": ', truncation, ','
     write (unit, '(a)') '    "time_integrator": "semi-implicit RAW-filtered leapfrog",'
+    write (unit, '(a)') '    "physics_tendency_state": "RAW-filtered previous time level",'
     write (unit, '(a,es24.16e3,a)') '    "maximum_advective_cfl": ', maximum_cfl, ','
     write (unit, '(a,es24.16e3)') '    "elapsed_wall_seconds": ', elapsed_wall_seconds
     write (unit, '(a)') '  },'

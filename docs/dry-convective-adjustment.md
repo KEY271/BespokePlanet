@@ -94,7 +94,7 @@ $$
 
 ### 1 つ前の時刻で評価する傾向項
 
-対流調節の項は、[乾燥大気](./dry.md) の温度の傾向項 $\mathcal{R}(X^n)$ に加える。ただし他の項とは異なり、現在の時刻 $X^n$ ではなく、RAW フィルター適用済みの 1 つ前の時刻 $\overline X^{n-1}$ で評価する。すなわち各格子点で $\overline T_k^{n-1}$ と $(\ln p_s)^{\overline{n-1}}$ から $\Pi_k$、$\Delta p_k$ と参照温度 $T_{\mathrm{ref},k}[\overline X^{n-1}]$ を作り、
+対流調節の項は、[乾燥大気](./dry.md) の温度の傾向項に加える。ただし力学項とは異なり、現在の時刻 $X^n$ ではなく、RAW フィルター適用済みの 1 つ前の時刻 $\overline X^{n-1}$ で評価する。すなわち各格子点で $\overline T_k^{n-1}$ と $(\ln p_s)^{\overline{n-1}}$ から $\Pi_k$、$\Delta p_k$ と参照温度 $T_{\mathrm{ref},k}[\overline X^{n-1}]$ を作り、
 
 $$
 C_k=-\frac{\overline T_k^{n-1}-T_{\mathrm{ref},k}[\overline X^{n-1}]}{\tau}
@@ -112,7 +112,7 @@ $$
 \mathcal{R}_{T_k}(X^n)\;\to\;\mathcal{R}_{T_k}(X^n)+C_k
 $$
 
-と置き換える。$\zeta,\delta,\ln p_s$ の傾向項と、重力波の線形演算子 $G$ は変更しない。$C_k$ は $\mathcal{R}$ に含まれるので、重力波の陰的解法、超粘性、RAW フィルターは [乾燥大気](./dry.md) の手順のまま適用する。地面温度 $T_s,T_d$ の傾向項には加えない。[長波放射](./radiation.md#長波を評価する時刻)も同じ理由で $\overline X^{n-1}$ で評価する。短波放射、地面フラックス、Held–Suarez 強制の項は、従来どおり $X^n$ で評価する。
+と置き換える。$\zeta,\delta,\ln p_s$ の力学的な傾向項と、重力波の線形演算子 $G$ は変更しない。$C_k$ は $\mathcal{R}$ に含まれるので、重力波の陰的解法、超粘性、RAW フィルターは [乾燥大気](./dry.md) の手順のまま適用する。地面温度 $T_s,T_d$ の傾向項には加えない。放射、地面フラックス、Rayleigh 摩擦、Held–Suarez 強制を含む他の物理過程も、[放射ケースの時間評価](./radiation.md#物理過程を評価する時刻)と同じく $\overline X^{n-1}$ の場で評価する。
 
 $X^n$ で評価しない理由は、減衰項を LeapFrog の中心差分で扱うと計算モードが増幅するためである。
 

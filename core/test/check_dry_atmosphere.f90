@@ -22,7 +22,8 @@ program check_dry_atmosphere
                            ozone_pressure_upper_bound, ozone_peak_pressure, ozone_log_pressure_width, &
                            ozone_layer_optical_depth, ozone_longwave_layer_optical_depth, &
                            surface_exchange_coefficient, gustiness_speed, &
-                           surface_heat_capacity, deep_ground_heat_capacity, axial_tilt, orbital_period, &
+                           surface_heat_capacity, deep_ground_heat_capacity, ground_exchange_coefficient, &
+                           axial_tilt, orbital_period, &
                            solar_day, days_per_month, months_per_year, days_per_year, planetary_rotation_rate, &
                            radiation_calendar_date, radiation_diagnostics, radiation_daily_accumulator, &
                            radiation_top_rayleigh_levels, radiation_top_rayleigh_rate, radiation_rayleigh_rate
@@ -198,22 +199,18 @@ contains
 
   subroutine check_radiation_column()
     real(real64), parameter :: pressure_half(0:2) = [1000.0_real64, 40000.0_real64, 100000.0_real64]
-    real(real64), parameter :: temperature(2) = [250.0_real64, 280.0_real64]
-    real(real64), parameter :: surface_temperature = 290.0_real64
-    ! The longwave sources are the RAW-filtered previous time level, so they differ from the state.
-    real(real64), parameter :: longwave_temperature(2) = [252.0_real64, 279.0_real64]
-    real(real64), parameter :: longwave_surface_temperature = 291.0_real64
+    ! Every state-dependent term receives the same RAW-filtered previous-time column.
+    real(real64), parameter :: temperature(2) = [252.0_real64, 279.0_real64]
+    real(real64), parameter :: surface_temperature = 291.0_real64
+    real(real64), parameter :: deep_temperature = 285.0_real64
     real(real64) :: temperature_tendency(2), expected_temperature_tendency(2), surface_tendency, deep_tendency
     real(real64) :: transmission(2), emission(2), upward_longwave(0:2), downward_longwave(0:2), net_longwave(0:2)
     real(real64) :: surface_shortwave, absorbed_shortwave, sensible_heat, pressure_thickness
     real(real64) :: total_energy_tendency
     real(real64) :: incoming_shortwave, reflected_shortwave, outgoing_longwave
-    real(real64) :: perturbed_temperature(2), perturbed_temperature_tendency(2)
-    real(real64) :: perturbed_surface_tendency, perturbed_deep_tendency, perturbed_outgoing_longwave
     integer :: k
 
-    call radiation_tendency(pressure_half, temperature, surface_temperature, 285.0_real64, &
-                            longwave_temperature, longwave_surface_temperature, &
+    call radiation_tendency(pressure_half, temperature, surface_temperature, deep_temperature, &
                             3.0_real64, 4.0_real64, 0.0_real64, 0.0_real64, 0.0_real64, &
                             temperature_tendency, surface_tendency, deep_tendency, &
                             incoming_shortwave, reflected_shortwave, outgoing_longwave)
@@ -225,13 +222,13 @@ contains
       transmission(k) = exp(-(longwave_surface_optical_depth*pressure_thickness/ &
         (pressure_half(2) - pressure_half(0)) + &
         ozone_longwave_layer_optical_depth(pressure_half(k - 1), pressure_half(k))))
-      emission(k) = (1.0_real64 - transmission(k))*stefan_boltzmann_constant*longwave_temperature(k)**4
+      emission(k) = (1.0_real64 - transmission(k))*stefan_boltzmann_constant*temperature(k)**4
     end do
     downward_longwave(0) = 0.0_real64
     do k = 1, 2
       downward_longwave(k) = transmission(k)*downward_longwave(k - 1) + emission(k)
     end do
-    upward_longwave(2) = stefan_boltzmann_constant*longwave_surface_temperature**4
+    upward_longwave(2) = stefan_boltzmann_constant*surface_temperature**4
     do k = 2, 1, -1
       upward_longwave(k - 1) = transmission(k)*upward_longwave(k) + emission(k)
     end do
@@ -249,7 +246,8 @@ contains
     expected_temperature_tendency(2) = expected_temperature_tendency(2) + &
       dry_gravity_acceleration/(dry_air_specific_heat*(pressure_half(2) - pressure_half(1)))*sensible_heat
     if (maxval(abs(temperature_tendency - expected_temperature_tendency)) > 1.0e-16_real64 .or. &
-        abs(deep_tendency - 5.0e-7_real64) > 1.0e-18_real64) then
+        abs(deep_tendency - ground_exchange_coefficient*(surface_temperature - deep_temperature)/ &
+          deep_ground_heat_capacity) > 1.0e-18_real64) then
       error stop 'radiation column tendencies are incorrect'
     end if
     if (abs(incoming_shortwave - solar_constant) > 1.0e-12_real64 .or. &
@@ -265,23 +263,7 @@ contains
       error stop 'radiation column does not conserve energy'
     end if
 
-    ! The longwave must follow the filtered previous time level alone, so perturbing the current
-    ! temperature of a layer that feels neither sensible heat nor a temperature-dependent shortwave
-    ! may not change its heating rate or the outgoing longwave.
-    perturbed_temperature = [temperature(1) + 12.0_real64, temperature(2)]
-    call radiation_tendency(pressure_half, perturbed_temperature, surface_temperature, 285.0_real64, &
-                            longwave_temperature, longwave_surface_temperature, &
-                            3.0_real64, 4.0_real64, 0.0_real64, 0.0_real64, 0.0_real64, &
-                            perturbed_temperature_tendency, perturbed_surface_tendency, &
-                            perturbed_deep_tendency, incoming_shortwave, reflected_shortwave, &
-                            perturbed_outgoing_longwave)
-    if (abs(perturbed_temperature_tendency(1) - temperature_tendency(1)) > 1.0e-16_real64 .or. &
-        abs(perturbed_outgoing_longwave - outgoing_longwave) > 1.0e-12_real64) then
-      error stop 'radiation longwave does not use the filtered previous temperature alone'
-    end if
-
-    call radiation_tendency(pressure_half, temperature, surface_temperature, 285.0_real64, &
-                            longwave_temperature, longwave_surface_temperature, &
+    call radiation_tendency(pressure_half, temperature, surface_temperature, deep_temperature, &
                             3.0_real64, 4.0_real64, 0.0_real64, acos(0.5_real64), 0.0_real64, &
                             temperature_tendency, surface_tendency, deep_tendency, &
                             incoming_shortwave, reflected_shortwave, outgoing_longwave)

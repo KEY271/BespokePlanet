@@ -258,19 +258,27 @@ P_k&=\widetilde T_k\Gamma_k+\sum_{j=k+1}^N\widetilde T_j\Lambda_j+\widetilde T_k
 \end{aligned}
 $$
 
-とした。この重力波の方程式の右辺を $GX$ と置き、元の方程式の右辺を $\mathcal{R}(X)$ と置いたとき、陰的にする度合いを $\beta=0.5$ として
+とした。この重力波の方程式の右辺を $GX$、移流などの力学的な陽解法部分を $\mathcal{D}(X)$、放射や摩擦などの物理過程を $\mathcal{P}(X)$ と置く。陰的にする度合いを $\beta=0.5$ として
 
 $$
-\frac{X_*^{n+1}-\overline{X}^{n-1}}{2\Delta t}=\mathcal{R}(X^n)-GX^n+(1-\beta)G\overline{X}^{n-1}+\beta GX^{n+1}_*
+\frac{X_*^{n+1}-\overline{X}^{n-1}}{2\Delta t}=\mathcal{D}(X^n)+\mathcal{P}(\overline X^{n-1})-GX^n+(1-\beta)G\overline{X}^{n-1}+\beta GX^{n+1}_*
 $$
 
 とする。つまり
 
 $$
-(1-2\beta\Delta tG)X^{k+1}_*=\overline{X}^{k-1}+2\Delta t[\mathcal{R}(X^k)-G(X^k)+(1-\beta)G\overline{X}^{k-1}]
+(1-2\beta\Delta tG)X^{k+1}_*=\overline{X}^{k-1}+2\Delta t[\mathcal{D}(X^k)+\mathcal{P}(\overline X^{k-1})-G(X^k)+(1-\beta)G\overline{X}^{k-1}]
 $$
 
 として $X^{n+1}_*$ を得る。時間ステップは $\Delta t=1200\,\mathrm{s}$ とする。
+
+放射、乾燥対流調節、顕熱・地中熱交換、Newton 緩和、Rayleigh 摩擦などの物理過程は、RAW フィルター適用済みの前時刻場 $\overline X^{n-1}$ で評価する。したがって右辺の陽な部分は
+
+$$
+\mathcal{D}(X^n)+\mathcal{P}(\overline X^{n-1})
+$$
+
+となる。物理過程を持たない乾燥力学ケースでは $\mathcal{P}=0$ である。
 
 ## 超粘性
 

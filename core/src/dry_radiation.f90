@@ -178,21 +178,16 @@ contains
 
   !> Column radiation, surface fluxes and ground temperatures.
   !>
-  !> Every term is evaluated at the current state except the longwave sources
-  !> longwave_temperature and longwave_surface_temperature, which the caller takes from the
-  !> RAW-filtered previous time level so that the sigma*T**4 damping does not feed the LeapFrog
-  !> computational mode.  The layer optical depths and the pressure thicknesses that convert
-  !> flux divergence into heating still come from the current pressure_half.
+  !> The caller supplies one internally consistent RAW-filtered previous-time column for every
+  !> state-dependent term.  Solar geometry is evaluated at time_seconds because it is prescribed
+  !> rather than prognostic.
   subroutine radiation_tendency(pressure_half, temperature, surface_temperature, &
-                                deep_temperature, longwave_temperature, &
-                                longwave_surface_temperature, lowest_u, lowest_v, sin_latitude, &
+                                deep_temperature, lowest_u, lowest_v, sin_latitude, &
                                 longitude, time_seconds, temperature_tendency, &
                                 surface_temperature_tendency, deep_temperature_tendency, &
                                 incoming_shortwave, reflected_shortwave, outgoing_longwave)
     real(real64), intent(in) :: pressure_half(0:), temperature(:)
     real(real64), intent(in) :: surface_temperature, deep_temperature
-    !> Longwave source temperatures, taken from the RAW-filtered previous time level.
-    real(real64), intent(in) :: longwave_temperature(:), longwave_surface_temperature
     real(real64), intent(in) :: lowest_u, lowest_v
     real(real64), intent(in) :: sin_latitude, longitude, time_seconds
     real(real64), intent(out) :: temperature_tendency(:)
@@ -208,12 +203,10 @@ contains
 
     number_of_levels = size(temperature)
     if (number_of_levels < 1 .or. size(pressure_half) /= number_of_levels + 1 .or. &
-        size(longwave_temperature) /= number_of_levels .or. &
         size(temperature_tendency) /= number_of_levels) then
       error stop 'radiation column has inconsistent vertical dimensions'
     end if
     if (pressure_half(number_of_levels) <= pressure_half(0) .or. any(temperature <= 0.0_real64) .or. &
-        any(longwave_temperature <= 0.0_real64) .or. longwave_surface_temperature <= 0.0_real64 .or. &
         surface_temperature <= 0.0_real64 .or. deep_temperature <= 0.0_real64) then
       error stop 'radiation column contains a nonphysical state'
     end if
@@ -227,14 +220,14 @@ contains
         (pressure_half(number_of_levels) - pressure_half(0)) + &
         ozone_longwave_layer_optical_depth(pressure_half(k - 1), pressure_half(k))
       transmission(k) = exp(-layer_longwave_optical_depth)
-      emission(k) = (1.0_real64 - transmission(k))*stefan_boltzmann_constant*longwave_temperature(k)**4
+      emission(k) = (1.0_real64 - transmission(k))*stefan_boltzmann_constant*temperature(k)**4
     end do
 
     downward_longwave(0) = 0.0_real64
     do k = 1, number_of_levels
       downward_longwave(k) = transmission(k)*downward_longwave(k - 1) + emission(k)
     end do
-    upward_longwave(number_of_levels) = stefan_boltzmann_constant*longwave_surface_temperature**4
+    upward_longwave(number_of_levels) = stefan_boltzmann_constant*surface_temperature**4
     do k = number_of_levels, 1, -1
       upward_longwave(k - 1) = transmission(k)*upward_longwave(k) + emission(k)
     end do
@@ -274,8 +267,7 @@ contains
     reflected_shortwave = surface_shortwave_albedo*shortwave_downward
     outgoing_longwave = upward_longwave(0)
     surface_deep_heat = ground_exchange_coefficient*(surface_temperature - deep_temperature)
-    ! The surface loses exactly the upward longwave the lowest layer sees, so the column budget
-    ! stays closed even though both longwave terms come from the filtered previous time level.
+    ! The surface loses exactly the upward longwave the lowest layer sees, so the column budget closes.
     surface_temperature_tendency = (shortwave_downward - reflected_shortwave + &
       downward_longwave(number_of_levels) - upward_longwave(number_of_levels) - &
       surface_deep_heat - sensible_heat)/surface_heat_capacity
