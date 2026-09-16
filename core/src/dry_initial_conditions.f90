@@ -19,7 +19,7 @@ contains
   subroutine jablonowski_williamson_initial_state(transform, truncation, coordinate, &
                                                   include_perturbation, zeta, delta, temperature, &
                                                   log_surface_pressure, surface_geopotential, &
-                                                  planetary_rotation_rate)
+                                                  planetary_rotation_rate, flat_terrain)
     type(harmonic_transform), intent(inout) :: transform
     integer, intent(in) :: truncation
     type(hybrid_sigma_coordinate), intent(in) :: coordinate
@@ -28,15 +28,18 @@ contains
     complex(real64), allocatable, intent(out) :: log_surface_pressure(:, :)
     complex(real64), allocatable, intent(out) :: surface_geopotential(:, :)
     real(real64), intent(in), optional :: planetary_rotation_rate
+    ! When true, Phi_s = 0 and the base-state zonal wind is replaced by the wind in
+    ! gradient-wind balance with the unchanged temperature over flat terrain.
+    logical, intent(in), optional :: flat_terrain
     real(real64), allocatable :: u(:, :), v(:, :), temperature_grid(:, :), log_ps_grid(:, :)
     real(real64), allocatable :: surface_geopotential_grid(:, :)
     complex(real64), allocatable :: level_spectral(:, :)
     integer, allocatable :: nlon(:)
     integer :: i, j, k, number_of_levels
-    logical :: perturb
-    real(real64) :: pi, longitude, latitude, eta, eta_v, vertical_shape, surface_shape
+    logical :: perturb, flat
+    real(real64) :: pi, longitude, eta, eta_v, vertical_shape, surface_shape
     real(real64) :: sinphi, cosphi, angular_cosine, distance, wind_perturbation
-    real(real64) :: temperature_correction, active_rotation_rate
+    real(real64) :: temperature_correction, active_rotation_rate, base_wind
     real(real64), parameter :: centre_longitude = 20.0_real64*acos(-1.0_real64)/180.0_real64
     real(real64), parameter :: centre_latitude = 40.0_real64*acos(-1.0_real64)/180.0_real64
     real(real64), parameter :: perturbation_radius = earth_radius/10.0_real64
@@ -45,6 +48,8 @@ contains
     if (present(include_perturbation)) perturb = include_perturbation
     active_rotation_rate = rotation_rate
     if (present(planetary_rotation_rate)) active_rotation_rate = planetary_rotation_rate
+    flat = .false.
+    if (present(flat_terrain)) flat = flat_terrain
     number_of_levels = coordinate%number_of_levels
     if (number_of_levels < 1) error stop 'Jablonowski-Williamson coordinate is not initialized'
     pi = acos(-1.0_real64)
@@ -63,15 +68,18 @@ contains
 
     ! The surface geopotential balances the nonzero surface wind under a uniform
     ! surface pressure.  It is the eta = 1 value of the balanced geopotential.
+    ! With flat_terrain the geopotential is instead zero and the wind is adjusted below.
     surface_geopotential_grid = 0.0_real64
     surface_shape = cos(0.5_real64*pi*(1.0_real64 - jablonowski_jet_eta))**1.5_real64
-    do j = 1, size(nlon)
-      sinphi = transform%mu(j)
-      cosphi = sqrt(max(0.0_real64, 1.0_real64 - sinphi*sinphi))
-      surface_geopotential_grid(1:nlon(j), j) = jablonowski_maximum_wind*surface_shape*( &
-        jablonowski_maximum_wind*surface_shape*latitude_function_a(sinphi, cosphi) + &
-        earth_radius*active_rotation_rate*latitude_function_b(sinphi, cosphi))
-    end do
+    if (.not. flat) then
+      do j = 1, size(nlon)
+        sinphi = transform%mu(j)
+        cosphi = sqrt(max(0.0_real64, 1.0_real64 - sinphi*sinphi))
+        surface_geopotential_grid(1:nlon(j), j) = jablonowski_maximum_wind*surface_shape*( &
+          jablonowski_maximum_wind*surface_shape*latitude_function_a(sinphi, cosphi) + &
+          earth_radius*active_rotation_rate*latitude_function_b(sinphi, cosphi))
+      end do
+    end if
     call transform%grid_to_spectral(surface_geopotential_grid, surface_geopotential)
 
     do k = 1, number_of_levels
@@ -84,7 +92,12 @@ contains
       do j = 1, size(nlon)
         sinphi = transform%mu(j)
         cosphi = sqrt(max(0.0_real64, 1.0_real64 - sinphi*sinphi))
-        latitude = asin(sinphi)
+        if (flat) then
+          base_wind = flat_terrain_balanced_wind(sinphi, cosphi, vertical_shape**1.5_real64, &
+                                                 surface_shape, active_rotation_rate)
+        else
+          base_wind = jablonowski_maximum_wind*vertical_shape**1.5_real64*double_angle_sine_squared(sinphi, cosphi)
+        end if
         temperature_correction = 0.75_real64*eta*pi*jablonowski_maximum_wind/ &
           dry_air_gas_constant*sin(eta_v)*sqrt(vertical_shape)*( &
           2.0_real64*jablonowski_maximum_wind*vertical_shape**1.5_real64* &
@@ -100,8 +113,7 @@ contains
             wind_perturbation = jablonowski_perturbation_wind* &
               exp(-(distance/perturbation_radius)**2)
           end if
-          u(i, j) = jablonowski_maximum_wind*vertical_shape**1.5_real64* &
-                    sin(2.0_real64*latitude)**2 + wind_perturbation
+          u(i, j) = base_wind + wind_perturbation
           temperature_grid(i, j) = coordinate%reference_temperature(k) + temperature_correction
         end do
       end do
@@ -118,6 +130,33 @@ contains
     log_ps_grid = log(reference_surface_pressure)
     call transform%grid_to_spectral(log_ps_grid, log_surface_pressure)
   end subroutine jablonowski_williamson_initial_state
+
+  pure real(real64) function double_angle_sine_squared(sinphi, cosphi) result(value)
+    real(real64), intent(in) :: sinphi, cosphi
+
+    value = (2.0_real64*sinphi*cosphi)**2
+  end function double_angle_sine_squared
+
+  ! Zonal wind in gradient-wind balance, (f + u tan(phi)/a) u = -(1/a) dPhi/dphi, with the
+  ! Jablonowski-Williamson temperature over flat terrain (Phi_s = 0).  vertical_factor and
+  ! surface_factor are cos^(3/2) eta_v at the level and at eta = 1.  The rationalised root
+  ! avoids cancellation near the poles.
+  pure real(real64) function flat_terrain_balanced_wind(sinphi, cosphi, vertical_factor, &
+                                                       surface_factor, active_rotation_rate) result(value)
+    real(real64), intent(in) :: sinphi, cosphi, vertical_factor, surface_factor, active_rotation_rate
+    real(real64) :: jet_wind, surface_wind, planetary_speed, discriminant_excess
+
+    jet_wind = jablonowski_maximum_wind*vertical_factor*double_angle_sine_squared(sinphi, cosphi)
+    surface_wind = jablonowski_maximum_wind*surface_factor*double_angle_sine_squared(sinphi, cosphi)
+    planetary_speed = earth_radius*active_rotation_rate*cosphi
+    ! Nonnegative because cos^(3/2) eta_v is smallest at eta = 1.
+    discriminant_excess = (jet_wind - surface_wind)*(jet_wind + surface_wind + 2.0_real64*planetary_speed)
+    if (discriminant_excess <= 0.0_real64) then
+      value = 0.0_real64
+    else
+      value = discriminant_excess/(planetary_speed + sqrt(planetary_speed**2 + discriminant_excess))
+    end if
+  end function flat_terrain_balanced_wind
 
   pure real(real64) function latitude_function_a(sinphi, cosphi) result(value)
     real(real64), intent(in) :: sinphi, cosphi

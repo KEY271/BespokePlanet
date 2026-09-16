@@ -192,10 +192,12 @@ contains
     complex(real64), allocatable :: unused_surface_geopotential(:, :)
 
     call check_initialized(this)
+    ! Jablonowski-Williamson temperature over flat terrain, with the unperturbed zonal wind
+    ! rebalanced for Phi_s = 0.
     call jablonowski_williamson_initial_state(this%transform, this%truncation, this%coordinate, &
-                                              .true., zeta, delta, temperature, log_ps, &
-                                              unused_surface_geopotential, planetary_rotation_rate)
-    ! This case deliberately uses the Jablonowski-Williamson atmosphere over flat terrain.
+                                              .false., zeta, delta, temperature, log_ps, &
+                                              unused_surface_geopotential, planetary_rotation_rate, &
+                                              flat_terrain=.true.)
     call this%set_initial_state(zeta, delta, temperature, log_ps)
     this%current_surface_temperature = this%current_temperature(:, :, this%number_of_levels)
     this%current_deep_temperature = this%current_surface_temperature

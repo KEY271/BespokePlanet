@@ -428,13 +428,94 @@ $$
 
 ## 初期値
 
-[Jablonowski–Williamson の初期状態](Jablonowski-Williamson.md)に従って速度と温度を初期化する。地表面気圧の初期値は $p_s=10^5\,\mathrm{Pa}$ とする。ただし地形については
+[Jablonowski–Williamson の初期状態](Jablonowski-Williamson.md)（以下 JW）をもとに初期化する。温度と地表面気圧 $p_s=p_0=10^5\,\mathrm{Pa}$ は JW と同じとし、$\Omega$ には前節の放射ケースの値を用いる。ただし地形については
 
 $$
 \Phi_s=0
 $$
 
-とし、平坦地形にする。また、$T_s,T_d$ は $T_N$ と等しくする。
+とし、平坦地形にする。JW の東西風は $\Phi_s\neq0$ を前提に釣り合っているので、そのままでは $\Phi_s=0$ と整合しない。そこで温度はそのままにして、東西風の方を $\Phi_s=0$ に釣り合うよう調整する。
+
+### 釣り合った東西風
+
+JW の $\eta_v,A(\varphi),B(\varphi)$ を用い、
+
+$$
+c(\eta)=\cos^{3/2}\eta_v,\qquad
+c_s=\cos^{3/2}\eta_{v,s},\qquad
+\eta_{v,s}=\frac{\pi}{2}(1-\eta_0)
+$$
+
+と置く。JW の基本場の東西風と、その地表 $\eta=1$ での値を
+
+$$
+u_{\mathrm{JW}}(\varphi,\eta)=u_0c(\eta)\sin^2(2\varphi),\qquad
+u_{\mathrm{JW},s}(\varphi)=u_0c_s\sin^2(2\varphi)
+$$
+
+とする。JW のジオポテンシャルの緯度依存部分を
+
+$$
+G(\varphi,\eta)=u_0c(\eta)\left[u_0c(\eta)A(\varphi)+a\Omega B(\varphi)\right]
+$$
+
+と書くと、JW の基本場は $\Phi=\overline\Phi(\eta)+G(\varphi,\eta)$ であり、$\Phi_s=G(\varphi,1)$ である。温度を変えずに $\Phi_s=0$ とすると、静水圧の関係から全層のジオポテンシャルが一様に $G(\varphi,1)$ だけずれ、
+
+$$
+\Phi(\varphi,\eta)=\overline\Phi(\eta)+G(\varphi,\eta)-G(\varphi,1)
+$$
+
+となる。$p_s$ が一様なので $\eta$ 面は等圧面であり、$v=0$ の東西対称な流れが定常であるための条件は、曲率項を含めた傾度風バランス
+
+$$
+\left(2\Omega\sin\varphi+\frac{u\tan\varphi}{a}\right)u
+=-\frac{1}{a}\frac{\partial\Phi}{\partial\varphi}
+$$
+
+である。JW の東西風は $G(\varphi,\eta)$ に対してこの関係を厳密に満たすので、
+
+$$
+F(u)=\left(2\Omega\sin\varphi+\frac{u\tan\varphi}{a}\right)u
+$$
+
+と置けば、求める東西風 $u_{\mathrm{bal}}$ は
+
+$$
+F(u_{\mathrm{bal}})=F(u_{\mathrm{JW}})-F(u_{\mathrm{JW},s})
+$$
+
+を満たす。$a/\tan\varphi$ を掛けると $u$ の 2 次方程式
+
+$$
+\left(u_{\mathrm{bal}}+a\Omega\cos\varphi\right)^2
+=\left(a\Omega\cos\varphi\right)^2+D,\\
+\begin{aligned}
+D(\varphi,\eta)&=\left(u_{\mathrm{JW}}-u_{\mathrm{JW},s}\right)
+\left(u_{\mathrm{JW}}+u_{\mathrm{JW},s}+2a\Omega\cos\varphi\right)\\
+&=u_0^2\left[c(\eta)-c_s\right]\sin^2(2\varphi)
+\left\{\left[c(\eta)+c_s\right]\sin^2(2\varphi)+\frac{2a\Omega}{u_0}\cos\varphi\right\}
+\end{aligned}
+$$
+
+になる。$\Phi_s=0$ のときに風速 0 へ連続につながる根を選び、極付近での桁落ちを避けるため有理化して
+
+$$
+u_{\mathrm{bal}}(\varphi,\eta)
+=\frac{D(\varphi,\eta)}
+{a\Omega\cos\varphi+\sqrt{\left(a\Omega\cos\varphi\right)^2+D(\varphi,\eta)}}
+$$
+
+とする。$|\eta_v|$ は $0\le\eta\le1$ で $\eta=1$ のとき最大なので $c(\eta)\ge c_s$ であり、$D\ge0$ となって根号の中は常に正である。また $\sin^2(2\varphi)$ の因子により、$u_{\mathrm{bal}}$ は赤道と極で 0 になる。
+
+$u_{\mathrm{bal}}$ は地表 $\eta=1$ で 0 となり、上空ほど JW の東西風に近づく。$N=12$ の full level では、最大値はおおむね緯度 $45^\circ$ にあり、最上層 $\eta=0.002$ で約 $23.2\,\mathrm{m\,s^{-1}}$（JW では約 $31.1$）、$\eta=0.23$ で約 $27.2\,\mathrm{m\,s^{-1}}$（約 $35.0$）、最下層 $\eta=0.94$ で約 $3.0\,\mathrm{m\,s^{-1}}$（約 $11.3$）となる。
+
+東西風には、局所的な擾乱を加えず
+
+$$
+u=u_\mathrm{bal},v=0
+$$
+
+を初期値とし、$\zeta,\delta$ をスペクトル法で求める。温度は JW の式をそのまま用いる。また、$T_s,T_d$ は $T_N$ と等しくする。
 
 ## 時間・出力
 

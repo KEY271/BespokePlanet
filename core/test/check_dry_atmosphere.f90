@@ -6,6 +6,7 @@ program check_dry_atmosphere
                                      dry_air_gas_constant, dry_air_kappa
   use dry_gravity_wave, only: dry_gravity_wave_solver, dry_gravity_wave_implicitness
   use dry_atmosphere, only: dry_atmosphere_solver
+  use dry_initial_conditions, only: jablonowski_williamson_initial_state
   use dry_convection, only: dry_convective_adjustment_tendency, dry_convective_adjustment_time
   use dry_held_suarez, only: held_suarez_forcing, held_suarez_initial_temperature, &
                               held_suarez_temperature_perturbation, held_suarez_sigma_boundary, &
@@ -44,6 +45,7 @@ program check_dry_atmosphere
   call check_radiation_state()
   call check_jablonowski_state()
   call check_jablonowski_steady_state()
+  call check_flat_terrain_balanced_state()
 
 contains
 
@@ -674,6 +676,68 @@ contains
       error stop 'Jablonowski-Williamson base state is not steady'
     end if
   end subroutine check_jablonowski_steady_state
+
+  subroutine check_flat_terrain_balanced_state()
+    ! Over flat terrain the Jablonowski-Williamson temperature is steady only with the
+    ! rebalanced zonal wind used by the radiation case.  With the original wind instead,
+    ! |v| reaches about 20 m/s and ps changes by about 9 hPa within a day.
+    integer, parameter :: steady_truncation = 21
+    integer, parameter :: steady_steps = nint(86400.0_real64/time_step)
+    real(real64), parameter :: wind_tolerance = 1.5_real64
+    real(real64), parameter :: surface_pressure_tolerance = 100.0_real64
+    type(harmonic_transform) :: transform
+    type(hybrid_sigma_coordinate) :: coordinate
+    type(dry_atmosphere_solver) :: solver
+    complex(real64), allocatable :: zeta_spectral(:, :, :), delta_spectral(:, :, :)
+    complex(real64), allocatable :: temperature_spectral(:, :, :), log_ps_spectral(:, :)
+    complex(real64), allocatable :: unused_surface_geopotential(:, :)
+    real(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
+    real(real64), allocatable :: surface_pressure(:, :), u(:, :, :), v(:, :, :), initial_u(:, :, :)
+    integer, allocatable :: nlon(:)
+    real(real64) :: maximum_v, maximum_u_change, maximum_surface_pressure_change
+    integer :: step, j
+
+    call transform%init(steady_truncation)
+    nlon = transform%get_nlon()
+    call coordinate%init_default()
+    call solver%init(steady_truncation, time_step)
+    call jablonowski_williamson_initial_state(transform, steady_truncation, coordinate, &
+                                              .false., zeta_spectral, delta_spectral, &
+                                              temperature_spectral, log_ps_spectral, &
+                                              unused_surface_geopotential, flat_terrain=.true.)
+    if (maxval(abs(unused_surface_geopotential)) > 0.0_real64) then
+      error stop 'flat-terrain Jablonowski-Williamson state has nonzero surface geopotential'
+    end if
+    call solver%set_initial_state(zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral)
+    call solver%get_fields(zeta, delta, temperature, surface_pressure, initial_u, v)
+    do j = 1, size(nlon)
+      if (maxval(abs(initial_u(1:nlon(j), j, size(initial_u, 3)))) > 3.5_real64 .or. &
+          maxval(initial_u(1:nlon(j), j, 1)) > 24.0_real64) then
+        error stop 'flat-terrain balanced zonal wind has an unexpected magnitude'
+      end if
+    end do
+    do step = 1, steady_steps
+      call solver%advance()
+    end do
+    call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v)
+
+    maximum_v = 0.0_real64
+    maximum_u_change = 0.0_real64
+    maximum_surface_pressure_change = 0.0_real64
+    do j = 1, size(nlon)
+      maximum_v = max(maximum_v, maxval(abs(v(1:nlon(j), j, :))))
+      maximum_u_change = max(maximum_u_change, &
+        maxval(abs(u(1:nlon(j), j, :) - initial_u(1:nlon(j), j, :))))
+      maximum_surface_pressure_change = max(maximum_surface_pressure_change, &
+        maxval(abs(surface_pressure(1:nlon(j), j) - reference_surface_pressure)))
+    end do
+    if (maximum_v > wind_tolerance .or. maximum_u_change > wind_tolerance .or. &
+        maximum_surface_pressure_change > surface_pressure_tolerance) then
+      write (*, '(a,3es12.4)') 'max |v|, max |du|, max |dps| = ', maximum_v, maximum_u_change, &
+        maximum_surface_pressure_change
+      error stop 'flat-terrain balanced Jablonowski-Williamson state is not steady'
+    end if
+  end subroutine check_flat_terrain_balanced_state
 
   subroutine allocate_zero_state(levels, surface_pressure, delta, temperature)
     integer, intent(in) :: levels
