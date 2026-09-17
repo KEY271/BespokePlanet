@@ -25,11 +25,12 @@ module dry_gravity_wave
 
 contains
 
-  subroutine initialize_gravity_wave_solver(this, truncation, time_step, coordinate)
+  subroutine initialize_gravity_wave_solver(this, truncation, time_step, coordinate, reference_temperature)
     class(dry_gravity_wave_solver), intent(inout) :: this
     integer, intent(in) :: truncation
     real(real64), intent(in) :: time_step
     type(hybrid_sigma_coordinate), intent(in) :: coordinate
+    real(real64), intent(in) :: reference_temperature(:)
     real(real64), allocatable :: matrix(:, :), work(:)
     integer, allocatable :: pivots(:)
     integer :: dimension, n, interval_index, i, info
@@ -37,6 +38,10 @@ contains
     if (truncation < 1) error stop 'dry gravity-wave truncation must be positive'
     if (time_step <= 0.0_real64) error stop 'dry gravity-wave time step must be positive'
     if (coordinate%number_of_levels < 1) error stop 'dry gravity-wave coordinate is not initialized'
+    if (size(reference_temperature) /= coordinate%number_of_levels .or. &
+        any(reference_temperature <= 0.0_real64)) then
+      error stop 'dry gravity-wave reference temperature has an invalid shape or value'
+    end if
     this%truncation = truncation
     this%number_of_levels = coordinate%number_of_levels
     this%time_step = time_step
@@ -47,7 +52,7 @@ contains
     allocate (matrix(dimension, dimension), pivots(dimension), work(max(1, 64*dimension)))
 
     do n = 0, truncation
-      call build_operator_matrix(coordinate, n, this%operator_matrix(:, :, n))
+      call build_operator_matrix(coordinate, reference_temperature, n, this%operator_matrix(:, :, n))
       do interval_index = 1, 3
         matrix = -this%centered_intervals(interval_index)*dry_gravity_wave_implicitness* &
                  this%operator_matrix(:, :, n)
@@ -63,8 +68,9 @@ contains
     end do
   end subroutine initialize_gravity_wave_solver
 
-  subroutine build_operator_matrix(coordinate, degree, matrix)
+  subroutine build_operator_matrix(coordinate, reference_temperature, degree, matrix)
     type(hybrid_sigma_coordinate), intent(in) :: coordinate
+    real(real64), intent(in) :: reference_temperature(:)
     integer, intent(in) :: degree
     real(real64), intent(out) :: matrix(:, :)
     real(real64), allocatable :: delta_basis(:), cumulative(:)
@@ -103,11 +109,11 @@ contains
         mass_below = coordinate%b_half(k - 1)*cumulative(number_of_levels) - cumulative(k - 1)
         vertical_term = 0.0_real64
         if (k < number_of_levels) vertical_term = vertical_term + mass_above* &
-          (coordinate%reference_temperature(k + 1) - coordinate%reference_temperature(k))
+          (reference_temperature(k + 1) - reference_temperature(k))
         if (k > 1) vertical_term = vertical_term + mass_below* &
-          (coordinate%reference_temperature(k) - coordinate%reference_temperature(k - 1))
+          (reference_temperature(k) - reference_temperature(k - 1))
         vertical_term = -vertical_term/(2.0_real64*coordinate%reference_delta_p(k))
-        vertical_term = vertical_term - dry_air_kappa*coordinate%reference_temperature(k)* &
+        vertical_term = vertical_term - dry_air_kappa*reference_temperature(k)* &
           (coordinate%reference_alpha(k)*delta_basis(k) + &
            coordinate%reference_l(k)*cumulative(k - 1)/coordinate%reference_delta_p(k))
         delta_column = 1 + j

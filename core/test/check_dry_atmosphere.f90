@@ -5,7 +5,7 @@ program check_dry_atmosphere
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate, reference_surface_pressure, &
                                      dry_air_gas_constant, dry_air_kappa
   use dry_gravity_wave, only: dry_gravity_wave_solver, dry_gravity_wave_implicitness
-  use dry_atmosphere, only: dry_atmosphere_solver
+  use dry_atmosphere, only: dry_atmosphere_solver, dry_gravity_wave_reference_temperature
   use dry_initial_conditions, only: jablonowski_williamson_initial_state
   use dry_convection, only: dry_convective_adjustment_tendency, dry_convective_adjustment_time
   use dry_held_suarez, only: held_suarez_forcing, held_suarez_initial_temperature, &
@@ -387,6 +387,7 @@ contains
 
   subroutine check_reference_atmosphere()
     type(hybrid_sigma_coordinate) :: coordinate
+    type(dry_atmosphere_solver) :: solver
     real(real64), parameter :: expected_a(0:12) = [ &
       100.0_real64, 300.0_real64, 1000.0_real64, 5000.0_real64, &
       10000.0_real64, 8000.0_real64, 8000.0_real64, 10000.0_real64, &
@@ -400,6 +401,8 @@ contains
       0.002_real64, 0.0065_real64, 0.03_real64, 0.075_real64, &
       0.14_real64, 0.23_real64, 0.34_real64, 0.46_real64, &
       0.585_real64, 0.71_real64, 0.825_real64, 0.94_real64]
+    real(real64), allocatable :: pressure_half(:), delta_pressure(:), layer_l(:), alpha(:)
+    real(real64), allocatable :: reference_temperature(:)
 
     call coordinate%init_default()
     if (coordinate%number_of_levels /= 12) error stop 'default dry atmosphere does not have twelve levels'
@@ -420,6 +423,11 @@ contains
     if (maxval(abs(coordinate%full_level_eta - expected_eta)) > 1.0e-14_real64) then
       error stop 'dry full-level eta values do not match the hybrid-sigma pressures'
     end if
+    call solver%init(truncation, time_step)
+    call solver%get_reference_atmosphere(pressure_half, delta_pressure, layer_l, alpha, reference_temperature)
+    if (any(abs(reference_temperature - dry_gravity_wave_reference_temperature) > 1.0e-14_real64)) then
+      error stop 'dry gravity-wave reference temperature is not constant at 300 K'
+    end if
   end subroutine check_reference_atmosphere
 
   subroutine check_precomputed_gravity_wave_inverse()
@@ -432,9 +440,11 @@ contains
     complex(real64), allocatable :: residual_surface_pressure(:, :), residual_delta(:, :, :)
     complex(real64), allocatable :: residual_temperature(:, :, :)
     real(real64) :: centered_interval
+    integer :: n
 
     call coordinate%init_default()
-    call gravity_wave%init(truncation, time_step, coordinate)
+    call gravity_wave%init(truncation, time_step, coordinate, &
+                           [(dry_gravity_wave_reference_temperature, n=1, coordinate%number_of_levels)])
     call allocate_zero_state(coordinate%number_of_levels, surface_pressure, delta, temperature)
     delta(3, 2, 4) = cmplx(2.0e-5_real64, -1.0e-5_real64, real64)
     temperature(3, 2, 7) = cmplx(0.7_real64, 0.2_real64, real64)

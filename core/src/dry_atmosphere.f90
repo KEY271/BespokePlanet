@@ -18,6 +18,7 @@ module dry_atmosphere
   real(real64), parameter, public :: dry_vorticity_diffusion_time = 4.0_real64*3600.0_real64
   real(real64), parameter, public :: dry_divergence_diffusion_time = 1.0_real64*3600.0_real64
   real(real64), parameter, public :: dry_temperature_diffusion_time = 4.0_real64*3600.0_real64
+  real(real64), parameter, public :: dry_gravity_wave_reference_temperature = 300.0_real64
 
   type, public :: dry_atmosphere_solver
     private
@@ -33,6 +34,7 @@ module dry_atmosphere
     type(radiation_diagnostics) :: latest_radiation_diagnostics
     type(radiation_daily_accumulator) :: daily_radiation
     type(radiation_monthly_accumulator) :: monthly_radiation
+    real(real64), allocatable :: gravity_wave_reference_temperature(:)
     !> Advective CFL of the state that the most recent advance started from.
     real(real64) :: last_advance_cfl = 0.0_real64
     complex(real64), allocatable :: previous_zeta(:, :, :), previous_delta(:, :, :)
@@ -87,7 +89,9 @@ contains
       call this%coordinate%init_default()
     end if
     this%number_of_levels = this%coordinate%number_of_levels
-    call this%gravity_wave%init(truncation, dt, this%coordinate)
+    allocate (this%gravity_wave_reference_temperature(this%number_of_levels))
+    this%gravity_wave_reference_temperature = dry_gravity_wave_reference_temperature
+    call this%gravity_wave%init(truncation, dt, this%coordinate, this%gravity_wave_reference_temperature)
     call allocate_state(this, this%previous_zeta, this%previous_delta, &
                         this%previous_temperature, this%previous_log_ps)
     call allocate_state(this, this%current_zeta, this%current_delta, &
@@ -477,7 +481,7 @@ contains
     delta_pressure = this%coordinate%reference_delta_p
     layer_l = this%coordinate%reference_l
     alpha = this%coordinate%reference_alpha
-    temperature = this%coordinate%reference_temperature
+    temperature = this%gravity_wave_reference_temperature
     if (present(a_half)) a_half = this%coordinate%a_half
     if (present(b_half)) b_half = this%coordinate%b_half
   end subroutine get_reference_atmosphere
