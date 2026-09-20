@@ -7,30 +7,33 @@ program check_dry_atmosphere
   use dry_gravity_wave, only: dry_gravity_wave_solver, dry_gravity_wave_implicitness
   use dry_atmosphere, only: dry_atmosphere_solver, dry_gravity_wave_reference_temperature
   use dry_initial_conditions, only: jablonowski_williamson_initial_state
-  use dry_convection, only: dry_convective_adjustment_tendency, dry_convective_adjustment_time
+  use dry_convection, only: dry_convective_adjustment_tendency
   use dry_held_suarez, only: held_suarez_forcing, held_suarez_initial_temperature, &
-                              held_suarez_temperature_perturbation, held_suarez_sigma_boundary, &
-                              held_suarez_upper_thermal_rate, held_suarez_lower_thermal_rate, &
-                              held_suarez_friction_rate, held_suarez_minimum_equilibrium_temperature, &
-                              held_suarez_equatorial_temperature, held_suarez_equator_to_pole_difference, &
-                              held_suarez_vertical_difference
-  use dry_radiation, only: radiation_tendency, shortwave_downward_flux, stefan_boltzmann_constant, &
-                           longwave_surface_optical_depth, dry_air_specific_heat, &
-                           dry_gravity_acceleration, solar_constant, surface_shortwave_albedo, &
-                           ultraviolet_shortwave_fraction, ozone_shortwave_optical_depth, &
-                           ozone_longwave_optical_depth, ozone_pressure_lower_bound, &
-                           ozone_pressure_upper_bound, ozone_peak_pressure, ozone_log_pressure_width, &
+                              held_suarez_temperature_perturbation
+  use dry_radiation, only: radiation_tendency, shortwave_downward_flux, &
                            ozone_layer_optical_depth, ozone_longwave_layer_optical_depth, &
-                           surface_exchange_coefficient, gustiness_speed, &
-                           surface_heat_capacity, deep_ground_heat_capacity, ground_exchange_coefficient, &
-                           axial_tilt, orbital_period, &
-                           solar_day, days_per_month, months_per_year, days_per_year, planetary_rotation_rate, &
-                           radiation_calendar_date, radiation_diagnostics, radiation_daily_accumulator, &
-                           radiation_top_rayleigh_levels, radiation_top_rayleigh_rate, radiation_rayleigh_rate
+                           radiation_calendar_date, radiation_diagnostics
+  use dry_rayleigh_friction_tendency, only: dry_rayleigh_friction_rate
+  use radiation_diagnostics_collector, only: radiation_case_diagnostics, radiation_daily_accumulator
+  use dry_case_initial_conditions, only: set_jablonowski_williamson_case_state, &
+                                         held_suarez_case_physics, set_held_suarez_case_state, &
+                                         radiation_case_physics, radiation_case_planet, set_radiation_case_state
+  use planet_parameters, only: planet_config
+  use dry_physics_config, only: dry_model_physics_config, radiation_config, held_suarez_config, &
+                                surface_friction_config, rayleigh_friction_config, convection_config, &
+                                radiation_days_per_year, radiation_orbital_period, radiation_planet_rotation_rate
+  use dry_state, only: dry_state_type, dry_tendency_type, allocate_dry_state, allocate_dry_tendency
+  use dry_tendency_workspace, only: dry_workspace_type
+  use dry_tendency_evaluator, only: evaluate_dry_tendency
   implicit none
 
   integer, parameter :: truncation = 5
   real(real64), parameter :: time_step = 1200.0_real64
+  !> Default coefficients of every dry physical process, as the cases run them.
+  type(radiation_config) :: radiation
+  type(held_suarez_config) :: relaxation
+  type(surface_friction_config) :: friction
+  type(convection_config) :: convection
 
   call check_reference_atmosphere()
   call check_precomputed_gravity_wave_inverse()
@@ -47,15 +50,18 @@ program check_dry_atmosphere
   call check_jablonowski_state()
   call check_jablonowski_steady_state()
   call check_flat_terrain_balanced_state()
+  call check_dry_tendency_composition()
 
 contains
 
   subroutine check_radiation_top_rayleigh_friction()
-    if (radiation_top_rayleigh_levels /= 2 .or. &
-        abs(radiation_top_rayleigh_rate - 1.0_real64/solar_day) > 1.0e-15_real64 .or. &
-        abs(radiation_rayleigh_rate(1) - radiation_top_rayleigh_rate) > 1.0e-15_real64 .or. &
-        abs(radiation_rayleigh_rate(2) - radiation_top_rayleigh_rate) > 1.0e-15_real64 .or. &
-        abs(radiation_rayleigh_rate(3)) > 1.0e-15_real64) then
+    type(rayleigh_friction_config) :: sponge
+
+    if (sponge%top_levels /= 2 .or. &
+        abs(sponge%rate - 1.0_real64/radiation%solar_day) > 1.0e-15_real64 .or. &
+        abs(dry_rayleigh_friction_rate(sponge, 1) - sponge%rate) > 1.0e-15_real64 .or. &
+        abs(dry_rayleigh_friction_rate(sponge, 2) - sponge%rate) > 1.0e-15_real64 .or. &
+        abs(dry_rayleigh_friction_rate(sponge, 3)) > 1.0e-15_real64) then
       error stop 'radiation top-level Rayleigh friction is incorrect'
     end if
   end subroutine check_radiation_top_rayleigh_friction
@@ -80,14 +86,14 @@ contains
     end do
 
     temperature = exner*stable_potential_temperature
-    call dry_convective_adjustment_tendency(pressure_half, temperature, tendency)
+    call dry_convective_adjustment_tendency(convection, pressure_half, temperature, tendency)
     if (maxval(abs(tendency)) > 1.0e-15_real64) then
       error stop 'dry convective adjustment changed a stable column'
     end if
 
     temperature = exner*unstable_potential_temperature
-    call dry_convective_adjustment_tendency(pressure_half, temperature, tendency)
-    reference_temperature = temperature + dry_convective_adjustment_time*tendency
+    call dry_convective_adjustment_tendency(convection, pressure_half, temperature, tendency)
+    reference_temperature = temperature + convection%adjustment_time*tendency
     reference_potential_temperature = reference_temperature/exner
     if (any(reference_potential_temperature(1:3) < &
             reference_potential_temperature(2:4) - 1.0e-12_real64)) then
@@ -109,38 +115,41 @@ contains
     real(real64) :: global_mean, longitude, seconds_of_day
     integer :: i, j, calendar_year, calendar_month, calendar_day
 
-    if (abs(solar_day - 86400.0_real64) > 1.0e-12_real64 .or. days_per_month /= 30 .or. &
-        months_per_year /= 12 .or. days_per_year /= 360 .or. &
-        abs(orbital_period - real(days_per_year, real64)*solar_day) > 1.0e-12_real64 .or. &
-        abs(planetary_rotation_rate - 2.0_real64*acos(-1.0_real64)* &
-          (1.0_real64/solar_day + 1.0_real64/(360.0_real64*solar_day))) > 1.0e-18_real64) then
+    if (abs(radiation%solar_day - 86400.0_real64) > 1.0e-12_real64 .or. radiation%days_per_month /= 30 .or. &
+        radiation%months_per_year /= 12 .or. radiation_days_per_year(radiation) /= 360 .or. &
+        abs(radiation_orbital_period(radiation) - &
+            real(radiation_days_per_year(radiation), real64)*radiation%solar_day) > 1.0e-12_real64 .or. &
+        abs(radiation_planet_rotation_rate(radiation) - 2.0_real64*acos(-1.0_real64)* &
+          (1.0_real64/radiation%solar_day + 1.0_real64/(360.0_real64*radiation%solar_day))) > 1.0e-18_real64) then
       error stop 'radiation 360-day calendar constants are incorrect'
     end if
-    call radiation_calendar_date(0.0_real64, calendar_year, calendar_month, calendar_day, seconds_of_day)
+    call radiation_calendar_date(radiation, 0.0_real64, calendar_year, calendar_month, calendar_day, seconds_of_day)
     if (calendar_year /= 1 .or. calendar_month /= 4 .or. calendar_day /= 1 .or. &
         abs(seconds_of_day) > 1.0e-12_real64) error stop 'radiation calendar does not start on year 1 April 1'
-    call radiation_calendar_date(30.0_real64*solar_day, calendar_year, calendar_month, &
+    call radiation_calendar_date(radiation, 30.0_real64*radiation%solar_day, calendar_year, calendar_month, &
                                  calendar_day, seconds_of_day)
     if (calendar_year /= 1 .or. calendar_month /= 5 .or. calendar_day /= 1 .or. &
         abs(seconds_of_day) > 1.0e-12_real64) error stop 'radiation 30-day month boundary is incorrect'
-    call radiation_calendar_date(270.0_real64*solar_day, calendar_year, calendar_month, &
+    call radiation_calendar_date(radiation, 270.0_real64*radiation%solar_day, calendar_year, calendar_month, &
                                  calendar_day, seconds_of_day)
     if (calendar_year /= 2 .or. calendar_month /= 1 .or. calendar_day /= 1) then
       error stop 'radiation 30-day month rollover is incorrect'
     end if
-    call radiation_calendar_date(360.0_real64*solar_day, calendar_year, calendar_month, &
+    call radiation_calendar_date(radiation, 360.0_real64*radiation%solar_day, calendar_year, calendar_month, &
                                  calendar_day, seconds_of_day)
     if (calendar_year /= 2 .or. calendar_month /= 4 .or. calendar_day /= 1) then
       error stop 'radiation 360-day year rollover is incorrect'
     end if
 
-    if (abs(shortwave_downward_flux(0.0_real64, 0.0_real64, 0.0_real64) - solar_constant) > 1.0e-12_real64 .or. &
-        abs(shortwave_downward_flux(0.0_real64, acos(-1.0_real64), 0.0_real64)) > 1.0e-12_real64 .or. &
-        abs(shortwave_downward_flux(0.0_real64, 0.0_real64, orbital_period) - solar_constant) > 1.0e-12_real64) then
+    if (abs(shortwave_downward_flux(radiation, 0.0_real64, 0.0_real64, 0.0_real64) - &
+            radiation%solar_constant) > 1.0e-12_real64 .or. &
+        abs(shortwave_downward_flux(radiation, 0.0_real64, acos(-1.0_real64), 0.0_real64)) > 1.0e-12_real64 .or. &
+        abs(shortwave_downward_flux(radiation, 0.0_real64, 0.0_real64, radiation_orbital_period(radiation)) - &
+            radiation%solar_constant) > 1.0e-12_real64) then
       error stop 'radiation equinox day/night geometry is incorrect'
     end if
-    if (abs(shortwave_downward_flux(1.0_real64, 0.0_real64, 0.25_real64*orbital_period) - &
-            solar_constant*sin(axial_tilt)) > 1.0e-10_real64) then
+    if (abs(shortwave_downward_flux(radiation, 1.0_real64, 0.0_real64, 0.25_real64*radiation_orbital_period(radiation)) - &
+            radiation%solar_constant*sin(radiation%axial_tilt)) > 1.0e-10_real64) then
       error stop 'radiation solstice declination is incorrect'
     end if
 
@@ -152,10 +161,10 @@ contains
       do i = 1, nlon(j)
         longitude = 2.0_real64*acos(-1.0_real64)*real(i - 1, real64)/real(nlon(j), real64)
         global_mean = global_mean + 0.5_real64*weights(j)/real(nlon(j), real64)* &
-          shortwave_downward_flux(transform%mu(j), longitude, 0.137_real64*orbital_period)
+          shortwave_downward_flux(radiation, transform%mu(j), longitude, 0.137_real64*radiation_orbital_period(radiation))
       end do
     end do
-    if (abs(global_mean - solar_constant/4.0_real64) > 5.0_real64) then
+    if (abs(global_mean - radiation%solar_constant/4.0_real64) > 5.0_real64) then
       error stop 'discrete global shortwave input is inconsistent with S0/4'
     end if
   end subroutine check_solar_geometry
@@ -165,34 +174,35 @@ contains
     real(real64) :: upper_longwave_optical_depth, lower_longwave_optical_depth
     real(real64) :: pressure_lower, pressure_upper, x_lower, x_upper, x_profile_lower, x_profile_upper
 
-    upper_optical_depth = ozone_layer_optical_depth(ozone_pressure_lower_bound, ozone_peak_pressure)
-    lower_optical_depth = ozone_layer_optical_depth(ozone_peak_pressure, ozone_pressure_upper_bound)
+    upper_optical_depth = ozone_layer_optical_depth(radiation, radiation%ozone_pressure_lower_bound, radiation%ozone_peak_pressure)
+    lower_optical_depth = ozone_layer_optical_depth(radiation, radiation%ozone_peak_pressure, radiation%ozone_pressure_upper_bound)
     upper_longwave_optical_depth = &
-      ozone_longwave_layer_optical_depth(ozone_pressure_lower_bound, ozone_peak_pressure)
+      ozone_longwave_layer_optical_depth(radiation, radiation%ozone_pressure_lower_bound, radiation%ozone_peak_pressure)
     lower_longwave_optical_depth = &
-      ozone_longwave_layer_optical_depth(ozone_peak_pressure, ozone_pressure_upper_bound)
-    if (abs(upper_optical_depth - 0.5_real64*ozone_shortwave_optical_depth) > 1.0e-15_real64 .or. &
-        abs(lower_optical_depth - 0.5_real64*ozone_shortwave_optical_depth) > 1.0e-15_real64 .or. &
-        abs(upper_longwave_optical_depth - 0.5_real64*ozone_longwave_optical_depth) > 1.0e-15_real64 .or. &
-        abs(lower_longwave_optical_depth - 0.5_real64*ozone_longwave_optical_depth) > 1.0e-15_real64 .or. &
-        abs(ozone_layer_optical_depth(1.0_real64, ozone_pressure_lower_bound)) > 1.0e-15_real64 .or. &
-        abs(ozone_layer_optical_depth(ozone_pressure_upper_bound, 1.0e5_real64)) > 1.0e-15_real64 .or. &
-        abs(ozone_longwave_layer_optical_depth(1.0_real64, ozone_pressure_lower_bound)) > 1.0e-15_real64 .or. &
-        abs(ozone_longwave_layer_optical_depth(ozone_pressure_upper_bound, 1.0e5_real64)) > 1.0e-15_real64) then
+      ozone_longwave_layer_optical_depth(radiation, radiation%ozone_peak_pressure, radiation%ozone_pressure_upper_bound)
+    if (abs(upper_optical_depth - 0.5_real64*radiation%ozone_shortwave_optical_depth) > 1.0e-15_real64 .or. &
+        abs(lower_optical_depth - 0.5_real64*radiation%ozone_shortwave_optical_depth) > 1.0e-15_real64 .or. &
+        abs(upper_longwave_optical_depth - 0.5_real64*radiation%ozone_longwave_optical_depth) > 1.0e-15_real64 .or. &
+        abs(lower_longwave_optical_depth - 0.5_real64*radiation%ozone_longwave_optical_depth) > 1.0e-15_real64 .or. &
+        abs(ozone_layer_optical_depth(radiation, 1.0_real64, radiation%ozone_pressure_lower_bound)) > 1.0e-15_real64 .or. &
+        abs(ozone_layer_optical_depth(radiation, radiation%ozone_pressure_upper_bound, 1.0e5_real64)) > 1.0e-15_real64 .or. &
+        abs(ozone_longwave_layer_optical_depth(radiation, 1.0_real64, radiation%ozone_pressure_lower_bound)) > 1.0e-15_real64 .or. &
+        abs(ozone_longwave_layer_optical_depth(radiation, radiation%ozone_pressure_upper_bound, &
+                                               1.0e5_real64)) > 1.0e-15_real64) then
       error stop 'ozone optical-depth profile has incorrect bounds or normalization'
     end if
 
     pressure_lower = 300.0_real64
     pressure_upper = 1000.0_real64
-    x_lower = log(pressure_lower/ozone_peak_pressure)/(sqrt(2.0_real64)*ozone_log_pressure_width)
-    x_upper = log(pressure_upper/ozone_peak_pressure)/(sqrt(2.0_real64)*ozone_log_pressure_width)
-    x_profile_lower = log(ozone_pressure_lower_bound/ozone_peak_pressure)/ &
-      (sqrt(2.0_real64)*ozone_log_pressure_width)
-    x_profile_upper = log(ozone_pressure_upper_bound/ozone_peak_pressure)/ &
-      (sqrt(2.0_real64)*ozone_log_pressure_width)
-    expected_optical_depth = ozone_shortwave_optical_depth*(erf(x_upper) - erf(x_lower))/ &
+    x_lower = log(pressure_lower/radiation%ozone_peak_pressure)/(sqrt(2.0_real64)*radiation%ozone_log_pressure_width)
+    x_upper = log(pressure_upper/radiation%ozone_peak_pressure)/(sqrt(2.0_real64)*radiation%ozone_log_pressure_width)
+    x_profile_lower = log(radiation%ozone_pressure_lower_bound/radiation%ozone_peak_pressure)/ &
+      (sqrt(2.0_real64)*radiation%ozone_log_pressure_width)
+    x_profile_upper = log(radiation%ozone_pressure_upper_bound/radiation%ozone_peak_pressure)/ &
+      (sqrt(2.0_real64)*radiation%ozone_log_pressure_width)
+    expected_optical_depth = radiation%ozone_shortwave_optical_depth*(erf(x_upper) - erf(x_lower))/ &
       (erf(x_profile_upper) - erf(x_profile_lower))
-    if (abs(ozone_layer_optical_depth(pressure_lower, pressure_upper) - expected_optical_depth) > 1.0e-15_real64) then
+    if (abs(ozone_layer_optical_depth(radiation, pressure_lower, pressure_upper) - expected_optical_depth) > 1.0e-15_real64) then
       error stop 'ozone optical depth does not use the documented error-function integral'
     end if
   end subroutine check_ozone_absorption
@@ -210,66 +220,66 @@ contains
     real(real64) :: incoming_shortwave, reflected_shortwave, outgoing_longwave
     integer :: k
 
-    call radiation_tendency(pressure_half, temperature, surface_temperature, deep_temperature, &
+    call radiation_tendency(radiation, pressure_half, temperature, surface_temperature, deep_temperature, &
                             3.0_real64, 4.0_real64, 0.0_real64, 0.0_real64, 0.0_real64, &
                             temperature_tendency, surface_tendency, deep_tendency, &
                             incoming_shortwave, reflected_shortwave, outgoing_longwave)
-    absorbed_shortwave = ultraviolet_shortwave_fraction*solar_constant*(1.0_real64 - &
-      exp(-ozone_layer_optical_depth(pressure_half(0), pressure_half(1))))
-    surface_shortwave = solar_constant - absorbed_shortwave
+    absorbed_shortwave = radiation%ultraviolet_shortwave_fraction*radiation%solar_constant*(1.0_real64 - &
+      exp(-ozone_layer_optical_depth(radiation, pressure_half(0), pressure_half(1))))
+    surface_shortwave = radiation%solar_constant - absorbed_shortwave
     do k = 1, 2
       pressure_thickness = pressure_half(k) - pressure_half(k - 1)
-      transmission(k) = exp(-(longwave_surface_optical_depth*pressure_thickness/ &
+      transmission(k) = exp(-(radiation%longwave_surface_optical_depth*pressure_thickness/ &
         (pressure_half(2) - pressure_half(0)) + &
-        ozone_longwave_layer_optical_depth(pressure_half(k - 1), pressure_half(k))))
-      emission(k) = (1.0_real64 - transmission(k))*stefan_boltzmann_constant*temperature(k)**4
+        ozone_longwave_layer_optical_depth(radiation, pressure_half(k - 1), pressure_half(k))))
+      emission(k) = (1.0_real64 - transmission(k))*radiation%stefan_boltzmann_constant*temperature(k)**4
     end do
     downward_longwave(0) = 0.0_real64
     do k = 1, 2
       downward_longwave(k) = transmission(k)*downward_longwave(k - 1) + emission(k)
     end do
-    upward_longwave(2) = stefan_boltzmann_constant*surface_temperature**4
+    upward_longwave(2) = radiation%stefan_boltzmann_constant*surface_temperature**4
     do k = 2, 1, -1
       upward_longwave(k - 1) = transmission(k)*upward_longwave(k) + emission(k)
     end do
     net_longwave = upward_longwave - downward_longwave
     do k = 1, 2
       pressure_thickness = pressure_half(k) - pressure_half(k - 1)
-      expected_temperature_tendency(k) = dry_gravity_acceleration/ &
-        (dry_air_specific_heat*pressure_thickness)*(net_longwave(k) - net_longwave(k - 1))
+      expected_temperature_tendency(k) = radiation%gravity_acceleration/ &
+        (radiation%dry_air_specific_heat*pressure_thickness)*(net_longwave(k) - net_longwave(k - 1))
     end do
     expected_temperature_tendency(1) = expected_temperature_tendency(1) + &
-      dry_gravity_acceleration/(dry_air_specific_heat*(pressure_half(1) - pressure_half(0)))*absorbed_shortwave
+      radiation%gravity_acceleration/(radiation%dry_air_specific_heat*(pressure_half(1) - pressure_half(0)))*absorbed_shortwave
     sensible_heat = pressure_half(2)/(dry_air_gas_constant*temperature(2))* &
-      dry_air_specific_heat*surface_exchange_coefficient*sqrt(3.0_real64**2 + 4.0_real64**2 + &
-      gustiness_speed**2)*(surface_temperature - temperature(2))
+      radiation%dry_air_specific_heat*radiation%surface_exchange_coefficient*sqrt(3.0_real64**2 + 4.0_real64**2 + &
+      radiation%gustiness_speed**2)*(surface_temperature - temperature(2))
     expected_temperature_tendency(2) = expected_temperature_tendency(2) + &
-      dry_gravity_acceleration/(dry_air_specific_heat*(pressure_half(2) - pressure_half(1)))*sensible_heat
+      radiation%gravity_acceleration/(radiation%dry_air_specific_heat*(pressure_half(2) - pressure_half(1)))*sensible_heat
     if (maxval(abs(temperature_tendency - expected_temperature_tendency)) > 1.0e-16_real64 .or. &
-        abs(deep_tendency - ground_exchange_coefficient*(surface_temperature - deep_temperature)/ &
-          deep_ground_heat_capacity) > 1.0e-18_real64) then
+        abs(deep_tendency - radiation%ground_exchange_coefficient*(surface_temperature - deep_temperature)/ &
+          radiation%deep_ground_heat_capacity) > 1.0e-18_real64) then
       error stop 'radiation column tendencies are incorrect'
     end if
-    if (abs(incoming_shortwave - solar_constant) > 1.0e-12_real64 .or. &
-        abs(reflected_shortwave - surface_shortwave_albedo*surface_shortwave) > 1.0e-12_real64) then
+    if (abs(incoming_shortwave - radiation%solar_constant) > 1.0e-12_real64 .or. &
+        abs(reflected_shortwave - radiation%surface_shortwave_albedo*surface_shortwave) > 1.0e-12_real64) then
       error stop 'radiation column shortwave fluxes are incorrect'
     end if
-    total_energy_tendency = sum(dry_air_specific_heat* &
-      (pressure_half(1:2) - pressure_half(0:1))/dry_gravity_acceleration*temperature_tendency) + &
-      surface_heat_capacity*surface_tendency + deep_ground_heat_capacity*deep_tendency
+    total_energy_tendency = sum(radiation%dry_air_specific_heat* &
+      (pressure_half(1:2) - pressure_half(0:1))/radiation%gravity_acceleration*temperature_tendency) + &
+      radiation%surface_heat_capacity*surface_tendency + radiation%deep_ground_heat_capacity*deep_tendency
     if (abs(total_energy_tendency - &
         (incoming_shortwave - reflected_shortwave - upward_longwave(0))) > 1.0e-10_real64 .or. &
         abs(outgoing_longwave - upward_longwave(0)) > 1.0e-12_real64) then
       error stop 'radiation column does not conserve energy'
     end if
 
-    call radiation_tendency(pressure_half, temperature, surface_temperature, deep_temperature, &
+    call radiation_tendency(radiation, pressure_half, temperature, surface_temperature, deep_temperature, &
                             3.0_real64, 4.0_real64, 0.0_real64, acos(0.5_real64), 0.0_real64, &
                             temperature_tendency, surface_tendency, deep_tendency, &
                             incoming_shortwave, reflected_shortwave, outgoing_longwave)
-    surface_shortwave = 0.5_real64*(solar_constant - absorbed_shortwave)
-    if (abs(incoming_shortwave - 0.5_real64*solar_constant) > 1.0e-12_real64 .or. &
-        abs(reflected_shortwave - surface_shortwave_albedo*surface_shortwave) > 1.0e-12_real64) then
+    surface_shortwave = 0.5_real64*(radiation%solar_constant - absorbed_shortwave)
+    if (abs(incoming_shortwave - 0.5_real64*radiation%solar_constant) > 1.0e-12_real64 .or. &
+        abs(reflected_shortwave - radiation%surface_shortwave_albedo*surface_shortwave) > 1.0e-12_real64) then
       error stop 'radiation column does not use the prescribed vertical ozone path'
     end if
   end subroutine check_radiation_column
@@ -315,6 +325,9 @@ contains
 
   subroutine check_radiation_state()
     type(dry_atmosphere_solver) :: solver
+    type(dry_model_physics_config) :: physics
+    type(radiation_case_diagnostics) :: diagnostics
+    type(radiation_diagnostics) :: sample, daily_means
     real(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     real(real64), allocatable :: surface_pressure(:, :), u(:, :, :), v(:, :, :)
     real(real64), allocatable :: surface_temperature(:, :), deep_temperature(:, :)
@@ -333,7 +346,9 @@ contains
     call transform%init(truncation)
     nlon = transform%get_nlon()
     call solver%init(truncation, time_step)
-    call solver%set_radiation_state()
+    physics = radiation_case_physics()
+    call set_radiation_case_state(solver, transform, physics, radiation_case_planet(physics))
+    call diagnostics%reset()
     call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
                            surface_temperature=surface_temperature, deep_temperature=deep_temperature)
     maximum_initial_difference = 0.0_real64
@@ -348,22 +363,31 @@ contains
 
     do step = 1, 4
       call solver%advance()
+      call solver%take_latest_diagnostics(sample)
+      call diagnostics%add(sample)
     end do
     ! Four advances collect samples at t = 0, 1200, 2400 and 3600 s; the mean is stamped with t = 0.
-    call solver%take_radiation_daily_means(diagnostic_time, mean_atmospheric_temperature, &
-      mean_surface_temperature, mean_deep_temperature, mean_kinetic_energy, mean_surface_pressure, &
-      mean_incoming_shortwave, mean_reflected_shortwave, mean_outgoing_longwave)
+    call diagnostics%take_daily(daily_means)
+    diagnostic_time = daily_means%time_seconds
+    mean_atmospheric_temperature = daily_means%mean_atmospheric_temperature
+    mean_surface_temperature = daily_means%mean_surface_temperature
+    mean_deep_temperature = daily_means%mean_deep_temperature
+    mean_kinetic_energy = daily_means%mean_kinetic_energy
+    mean_surface_pressure = daily_means%mean_surface_pressure
+    mean_incoming_shortwave = daily_means%mean_incoming_shortwave
+    mean_reflected_shortwave = daily_means%mean_reflected_shortwave
+    mean_outgoing_longwave = daily_means%mean_outgoing_longwave
     if (abs(diagnostic_time) > 1.0e-12_real64 .or. &
-        abs(mean_incoming_shortwave - solar_constant/4.0_real64) > 5.0_real64 .or. &
-        abs(mean_reflected_shortwave - surface_shortwave_albedo* &
-          (1.0_real64 - ultraviolet_shortwave_fraction* &
-          (1.0_real64 - exp(-ozone_shortwave_optical_depth)))* &
+        abs(mean_incoming_shortwave - radiation%solar_constant/4.0_real64) > 5.0_real64 .or. &
+        abs(mean_reflected_shortwave - radiation%surface_shortwave_albedo* &
+          (1.0_real64 - radiation%ultraviolet_shortwave_fraction* &
+          (1.0_real64 - exp(-radiation%ozone_shortwave_optical_depth)))* &
           mean_incoming_shortwave) > 1.0e-10_real64 .or. &
         min(mean_atmospheric_temperature, mean_surface_temperature, mean_deep_temperature, &
             mean_surface_pressure, mean_outgoing_longwave) <= 0.0_real64 .or. mean_kinetic_energy < 0.0_real64) then
       error stop 'radiation daily diagnostics are incorrect'
     end if
-    call solver%take_radiation_monthly_means(monthly_surface_temperature, monthly_surface_pressure, &
+    call diagnostics%take_monthly(monthly_surface_temperature, monthly_surface_pressure, &
                                              zonal_temperature, zonal_u, zonal_v, eddy_uv, eddy_vt)
     call solver%get_spectral_state(snapshot_zeta_spectral, snapshot_delta_spectral, &
                                    snapshot_temperature_spectral, snapshot_log_ps_spectral)
@@ -452,6 +476,7 @@ contains
     call gravity_wave%apply(surface_pressure, delta, temperature, &
                             rhs_surface_pressure, rhs_delta, rhs_temperature)
     centered_interval = 2.0_real64*time_step
+    call allocate_zero_state(coordinate%number_of_levels, next_surface_pressure, next_delta, next_temperature)
     call gravity_wave%solve(centered_interval, surface_pressure, delta, temperature, &
                             surface_pressure, delta, temperature, &
                             rhs_surface_pressure, rhs_delta, rhs_temperature, &
@@ -517,12 +542,12 @@ contains
     real(real64) :: pressure_ratio, cosphi_squared, sigma_weight, equilibrium_temperature
     real(real64) :: thermal_rate
 
-    call held_suarez_forcing(0.0_real64, reference_surface_pressure, reference_surface_pressure, &
+    call held_suarez_forcing(relaxation, friction, 0.0_real64, reference_surface_pressure, reference_surface_pressure, &
                              323.0_real64, 12.0_real64, -6.0_real64, &
                              forcing_u, forcing_v, temperature_tendency)
-    if (abs(forcing_u + 12.0_real64*held_suarez_friction_rate) > 1.0e-15_real64 .or. &
-        abs(forcing_v - 6.0_real64*held_suarez_friction_rate) > 1.0e-15_real64 .or. &
-        abs(temperature_tendency + 8.0_real64*held_suarez_lower_thermal_rate) > 1.0e-15_real64) then
+    if (abs(forcing_u + 12.0_real64*friction%friction_rate) > 1.0e-15_real64 .or. &
+        abs(forcing_v - 6.0_real64*friction%friction_rate) > 1.0e-15_real64 .or. &
+        abs(temperature_tendency + 8.0_real64*relaxation%lower_thermal_rate) > 1.0e-15_real64) then
       error stop 'Held-Suarez lower-boundary forcing is incorrect'
     end if
 
@@ -532,17 +557,17 @@ contains
     temperature = 250.0_real64
     u = 12.0_real64
     v = -6.0_real64
-    call held_suarez_forcing(sinphi, pressure, surface_pressure, temperature, u, v, &
+    call held_suarez_forcing(relaxation, friction, sinphi, pressure, surface_pressure, temperature, u, v, &
                              forcing_u, forcing_v, temperature_tendency)
     pressure_ratio = pressure/reference_surface_pressure
     cosphi_squared = 1.0_real64 - sinphi**2
-    sigma_weight = max(0.0_real64, (pressure/surface_pressure - held_suarez_sigma_boundary)/ &
-                       (1.0_real64 - held_suarez_sigma_boundary))
-    equilibrium_temperature = max(held_suarez_minimum_equilibrium_temperature, &
-      (held_suarez_equatorial_temperature - held_suarez_equator_to_pole_difference*sinphi**2 - &
-       held_suarez_vertical_difference*log(pressure_ratio)*cosphi_squared)*pressure_ratio**dry_air_kappa)
-    thermal_rate = held_suarez_upper_thermal_rate + &
-      (held_suarez_lower_thermal_rate - held_suarez_upper_thermal_rate)*sigma_weight*cosphi_squared**2
+    sigma_weight = max(0.0_real64, (pressure/surface_pressure - relaxation%sigma_boundary)/ &
+                       (1.0_real64 - relaxation%sigma_boundary))
+    equilibrium_temperature = max(relaxation%minimum_equilibrium_temperature, &
+      (relaxation%equatorial_temperature - relaxation%equator_to_pole_difference*sinphi**2 - &
+       relaxation%vertical_difference*log(pressure_ratio)*cosphi_squared)*pressure_ratio**dry_air_kappa)
+    thermal_rate = relaxation%upper_thermal_rate + &
+      (relaxation%lower_thermal_rate - relaxation%upper_thermal_rate)*sigma_weight*cosphi_squared**2
     if (abs(forcing_u) > 1.0e-15_real64 .or. abs(forcing_v) > 1.0e-15_real64 .or. &
         abs(temperature_tendency + thermal_rate*(temperature - equilibrium_temperature)) > 1.0e-15_real64) then
       error stop 'Held-Suarez free-atmosphere forcing is incorrect'
@@ -564,7 +589,7 @@ contains
     call transform%init(truncation)
     nlon = transform%get_nlon()
     call forced_solver%init(truncation, time_step)
-    call forced_solver%set_held_suarez_state()
+    call set_held_suarez_case_state(forced_solver, transform, held_suarez_case_physics())
     call forced_solver%get_fields(zeta, delta, temperature, surface_pressure, u, v)
     do k = 1, size(temperature, 3)
       do j = 1, size(nlon)
@@ -604,13 +629,15 @@ contains
 
   subroutine check_jablonowski_state()
     type(dry_atmosphere_solver) :: solver
+    type(harmonic_transform) :: transform
     real(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     real(real64), allocatable :: surface_pressure(:, :), u(:, :, :), v(:, :, :)
     real(real64) :: cfl
     integer :: step
 
+    call transform%init(truncation)
     call solver%init(truncation, time_step)
-    call solver%set_jablonowski_williamson_state(.true.)
+    call set_jablonowski_williamson_case_state(solver, transform, .true.)
     do step = 1, 4
       call solver%advance()
     end do
@@ -644,7 +671,7 @@ contains
     call transform%init(steady_truncation)
     nlon = transform%get_nlon()
     call solver%init(steady_truncation, time_step)
-    call solver%set_jablonowski_williamson_state(.false.)
+    call set_jablonowski_williamson_case_state(solver, transform, .false.)
     call solver%get_fields(zeta, delta, temperature, surface_pressure, initial_u, v)
     do step = 1, steady_steps
       call solver%advance()
@@ -742,5 +769,159 @@ contains
     delta = 0.0_real64
     temperature = 0.0_real64
   end subroutine allocate_zero_state
+
+
+  !> Each physical process is a separate tendency that adds into the shared
+  !> right-hand side.  This checks that they stay independent of one another:
+  !> every process touches only the prognostic variables it is responsible for,
+  !> enabling two processes adds exactly the sum of their separate
+  !> contributions, and a process contributes the same amount whichever other
+  !> processes are active.  A process that silently depended on another, or
+  !> that was applied twice, would break one of these.
+  subroutine check_dry_tendency_composition()
+    type(harmonic_transform) :: transform
+    type(hybrid_sigma_coordinate) :: coordinate
+    type(dry_workspace_type) :: workspace
+    type(dry_state_type) :: state
+    type(dry_tendency_type) :: base, held, convective, held_and_convective
+    type(dry_tendency_type) :: radiative, radiative_and_convective
+    type(dry_model_physics_config) :: physics
+    complex(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
+    complex(real64), allocatable :: log_ps(:, :), surface_geopotential(:, :), warm(:, :)
+    real(real64), allocatable :: warm_grid(:, :)
+    real(real64) :: speed_base, speed_held, speed_convective, speed_both
+    real(real64) :: speed_radiative, speed_radiative_convective
+    real(real64), parameter :: tolerance = 1.0e-10_real64
+    integer :: levels
+
+    call transform%init(truncation)
+    call coordinate%init_default()
+    levels = coordinate%number_of_levels
+    call jablonowski_williamson_initial_state(transform, truncation, coordinate, .true., &
+                                              zeta, delta, temperature, log_ps, surface_geopotential)
+    ! A uniformly warmed lowest level makes every column statically unstable, so
+    ! that the convective adjustment has a non-zero contribution to compare.
+    call transform%allocate_field(warm_grid)
+    warm_grid = 40.0_real64
+    call transform%grid_to_spectral(warm_grid, warm)
+    temperature(:, :, levels) = temperature(:, :, levels) + warm
+
+    call allocate_dry_state(state, truncation, levels)
+    state%zeta = zeta
+    state%delta = delta
+    state%temperature = temperature
+    state%log_surface_pressure = log_ps
+    state%surface_temperature = temperature(:, :, levels)
+    ! A deep ground colder than the surface gives the ground heat flux, and so the
+    ! deep temperature tendency, something to do.
+    state%deep_temperature = temperature(:, :, levels) - warm
+    call workspace%initialize(transform, truncation, levels)
+    call allocate_dry_tendency(base, truncation, levels)
+    call allocate_dry_tendency(held, truncation, levels)
+    call allocate_dry_tendency(convective, truncation, levels)
+    call allocate_dry_tendency(held_and_convective, truncation, levels)
+    call allocate_dry_tendency(radiative, truncation, levels)
+    call allocate_dry_tendency(radiative_and_convective, truncation, levels)
+
+    physics = dry_model_physics_config()
+    call evaluate_dry_tendency(transform, truncation, coordinate, planet_config(), state, state, surface_geopotential, &
+                               physics, workspace, 0.0_real64, base, speed_base)
+    physics%held_suarez%enabled = .true.
+    physics%surface_friction%enabled = .true.
+    call evaluate_dry_tendency(transform, truncation, coordinate, planet_config(), state, state, surface_geopotential, &
+                               physics, workspace, 0.0_real64, held, speed_held)
+    physics = dry_model_physics_config()
+    physics%convection%enabled = .true.
+    call evaluate_dry_tendency(transform, truncation, coordinate, planet_config(), state, state, surface_geopotential, &
+                               physics, workspace, 0.0_real64, convective, speed_convective)
+    physics%held_suarez%enabled = .true.
+    physics%surface_friction%enabled = .true.
+    call evaluate_dry_tendency(transform, truncation, coordinate, planet_config(), state, state, surface_geopotential, &
+                               physics, workspace, 0.0_real64, held_and_convective, speed_both)
+    physics = dry_model_physics_config()
+    physics%radiation%enabled = .true.
+    call evaluate_dry_tendency(transform, truncation, coordinate, planet_config(), state, state, surface_geopotential, &
+                               physics, workspace, 0.0_real64, radiative, speed_radiative)
+    physics%convection%enabled = .true.
+    call evaluate_dry_tendency(transform, truncation, coordinate, planet_config(), state, state, surface_geopotential, &
+                               physics, workspace, 0.0_real64, radiative_and_convective, &
+                               speed_radiative_convective)
+
+    ! The largest wind speed describes the state, not the forcing.
+    if (speed_held /= speed_base .or. speed_convective /= speed_base .or. speed_both /= speed_base .or. &
+        speed_radiative /= speed_base .or. speed_radiative_convective /= speed_base) then
+      error stop 'the dry tendency maximum speed depends on the active physics'
+    end if
+
+    ! The convective adjustment touches nothing but temperature.
+    if (maxval(abs(convective%temperature - base%temperature)) <= 0.0_real64) then
+      error stop 'the convective adjustment has no effect on the test state'
+    end if
+    if (any(convective%zeta /= base%zeta) .or. any(convective%delta /= base%delta) .or. &
+        any(convective%log_surface_pressure /= base%log_surface_pressure) .or. &
+        any(convective%surface_temperature /= base%surface_temperature) .or. &
+        any(convective%deep_temperature /= base%deep_temperature)) then
+      error stop 'the convective adjustment changes variables other than temperature'
+    end if
+
+    ! Held-Suarez (relaxation with its boundary drag) changes temperature and wind, but not the surface fields.
+    if (maxval(abs(held%temperature - base%temperature)) <= 0.0_real64 .or. &
+        maxval(abs(held%zeta - base%zeta)) <= 0.0_real64) then
+      error stop 'the Held-Suarez forcing has no effect on the test state'
+    end if
+    if (any(held%log_surface_pressure /= base%log_surface_pressure) .or. &
+        any(held%surface_temperature /= base%surface_temperature) .or. &
+        any(held%deep_temperature /= base%deep_temperature)) then
+      error stop 'the Held-Suarez forcing changes the surface pressure or the ground temperature'
+    end if
+
+    ! Only radiation drives the ground.
+    if (any(base%surface_temperature /= 0.0_real64) .or. any(base%deep_temperature /= 0.0_real64)) then
+      error stop 'the adiabatic dry tendency drives the ground temperature'
+    end if
+    if (maxval(abs(radiative%surface_temperature)) <= 0.0_real64 .or. &
+        maxval(abs(radiative%deep_temperature)) <= 0.0_real64) then
+      error stop 'radiation does not drive the ground temperature'
+    end if
+
+    ! Two processes together add exactly the sum of their separate contributions.
+    if (composition_error(held_and_convective%temperature, base%temperature, &
+                          held%temperature, convective%temperature) > tolerance .or. &
+        composition_error(held_and_convective%zeta, base%zeta, held%zeta, convective%zeta) > tolerance .or. &
+        composition_error(held_and_convective%delta, base%delta, held%delta, convective%delta) > tolerance) then
+      error stop 'the dry tendencies do not compose additively'
+    end if
+
+    ! The convective contribution does not depend on which other process is active.
+    if (increment_error(radiative_and_convective%temperature, radiative%temperature, &
+                        convective%temperature, base%temperature) > tolerance) then
+      error stop 'the convective adjustment depends on the other active physics'
+    end if
+  end subroutine check_dry_tendency_composition
+
+  !> Relative error of (both - base) against (first - base) + (second - base).
+  real(real64) function composition_error(both, base, first, second) result(relative_error)
+    complex(real64), intent(in) :: both(:, :, :), base(:, :, :), first(:, :, :), second(:, :, :)
+
+    relative_error = normalized_error(maxval(abs((both - base) - ((first - base) + (second - base)))), &
+                                      maxval(abs(both - base)))
+  end function composition_error
+
+  !> Relative error of the increment (a - a_base) against (b - b_base).
+  real(real64) function increment_error(a, a_base, b, b_base) result(relative_error)
+    complex(real64), intent(in) :: a(:, :, :), a_base(:, :, :), b(:, :, :), b_base(:, :, :)
+
+    relative_error = normalized_error(maxval(abs((a - a_base) - (b - b_base))), maxval(abs(b - b_base)))
+  end function increment_error
+
+  real(real64) function normalized_error(difference, scale) result(relative_error)
+    real(real64), intent(in) :: difference, scale
+
+    if (scale <= 0.0_real64) then
+      relative_error = difference
+    else
+      relative_error = difference/scale
+    end if
+  end function normalized_error
 
 end program check_dry_atmosphere

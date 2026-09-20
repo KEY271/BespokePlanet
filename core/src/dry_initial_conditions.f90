@@ -1,8 +1,8 @@
 module dry_initial_conditions
   use iso_fortran_env, only: real64
   use harmonics, only: harmonic_transform
-  use barotropic_vorticity, only: earth_radius, rotation_rate
-  use shallow_water_nonlinear, only: flux_divergence, flux_curl
+  use planet_parameters, only: earth_radius, rotation_rate => earth_rotation_rate
+  use spectral_vector_operators, only: flux_divergence, flux_curl
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate, dry_air_gas_constant, &
                                      reference_surface_pressure
   implicit none

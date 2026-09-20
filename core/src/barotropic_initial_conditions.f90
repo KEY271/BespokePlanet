@@ -1,7 +1,7 @@
 module barotropic_initial_conditions
   use iso_fortran_env, only: real64, int64
   use harmonics, only: harmonic_transform
-  use barotropic_vorticity, only: earth_radius
+  use planet_parameters, only: earth_radius
   implicit none
   private
 

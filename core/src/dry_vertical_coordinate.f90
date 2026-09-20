@@ -1,5 +1,6 @@
 module dry_vertical_coordinate
   use iso_fortran_env, only: real64
+  use planet_parameters, only: earth_gravity
   implicit none
   private
 
@@ -108,7 +109,7 @@ contains
     real(real64), intent(in) :: eta
     real(real64), parameter :: base_temperature = 288.0_real64
     real(real64), parameter :: lapse_rate = 0.005_real64
-    real(real64), parameter :: gravity = 9.80616_real64
+    real(real64), parameter :: gravity = earth_gravity
     real(real64), parameter :: tropopause_eta = 0.2_real64
     real(real64), parameter :: stratospheric_adjustment = 4.8e5_real64
 

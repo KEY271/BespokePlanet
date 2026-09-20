@@ -1,16 +1,16 @@
 module dry_convection
   use iso_fortran_env, only: real64
   use dry_vertical_coordinate, only: dry_air_kappa, reference_surface_pressure
+  use dry_physics_config, only: convection_config
   implicit none
   private
-
-  real(real64), parameter, public :: dry_convective_adjustment_time = 4.0_real64*3600.0_real64
 
   public :: dry_convective_adjustment_tendency
 
 contains
 
-  subroutine dry_convective_adjustment_tendency(pressure_half, temperature, temperature_tendency)
+  subroutine dry_convective_adjustment_tendency(config, pressure_half, temperature, temperature_tendency)
+    type(convection_config), intent(in) :: config
     real(real64), intent(in) :: pressure_half(0:), temperature(:)
     real(real64), intent(out) :: temperature_tendency(:)
     real(real64), allocatable :: exner(:), delta_p(:)
@@ -69,7 +69,7 @@ contains
       merged_potential_temperature = block_enthalpy(block)/block_weight(block)
       do k = block_top(block), block_bottom(block)
         temperature_tendency(k) = -(temperature(k) - exner(k)*merged_potential_temperature)/ &
-                                    dry_convective_adjustment_time
+                                    config%adjustment_time
       end do
     end do
   end subroutine dry_convective_adjustment_tendency

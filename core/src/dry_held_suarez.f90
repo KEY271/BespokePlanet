@@ -3,23 +3,19 @@ module dry_held_suarez
   use harmonics, only: harmonic_transform
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate, dry_air_kappa, &
                                      reference_surface_pressure
+  use dry_physics_config, only: held_suarez_config, surface_friction_config
   implicit none
   private
 
+  !> Initial-condition values of the Held-Suarez case; the forcing coefficients
+  !> live in held_suarez_config and surface_friction_config.
   real(real64), parameter, public :: held_suarez_initial_temperature = 264.0_real64
   real(real64), parameter, public :: held_suarez_temperature_perturbation = 0.1_real64
-  real(real64), parameter, public :: held_suarez_sigma_boundary = 0.7_real64
-  real(real64), parameter, public :: held_suarez_minimum_equilibrium_temperature = 200.0_real64
-  real(real64), parameter, public :: held_suarez_equatorial_temperature = 315.0_real64
-  real(real64), parameter, public :: held_suarez_equator_to_pole_difference = 60.0_real64
-  real(real64), parameter, public :: held_suarez_vertical_difference = 10.0_real64
-  real(real64), parameter, public :: held_suarez_day = 86400.0_real64
-  real(real64), parameter, public :: held_suarez_friction_rate = 1.0_real64/held_suarez_day
-  real(real64), parameter, public :: held_suarez_upper_thermal_rate = 1.0_real64/(40.0_real64*held_suarez_day)
-  real(real64), parameter, public :: held_suarez_lower_thermal_rate = 1.0_real64/(4.0_real64*held_suarez_day)
 
   public :: held_suarez_initial_state
   public :: held_suarez_forcing
+  public :: held_suarez_friction
+  public :: held_suarez_thermal_relaxation
 
 contains
 
@@ -68,29 +64,63 @@ contains
     surface_geopotential = 0.0_real64
   end subroutine held_suarez_initial_state
 
-  pure subroutine held_suarez_forcing(sinphi, full_level_pressure, surface_pressure, temperature, &
-                                      u, v, forcing_u, forcing_v, temperature_tendency)
-    real(real64), intent(in) :: sinphi, full_level_pressure, surface_pressure, temperature, u, v
-    real(real64), intent(out) :: forcing_u, forcing_v, temperature_tendency
-    real(real64) :: cosphi_squared, pressure_ratio, sigma, boundary_weight
-    real(real64) :: equilibrium_temperature, thermal_rate, friction_rate
+  !> Fraction of the Rayleigh boundary layer at this level, zero above sigma_b.
+  !> Shared by the boundary friction and the thermal relaxation rate.
+  pure real(real64) function held_suarez_boundary_weight(sigma_boundary, full_level_pressure, &
+                                                         surface_pressure) result(weight)
+    real(real64), intent(in) :: sigma_boundary, full_level_pressure, surface_pressure
+    real(real64) :: sigma
+
+    sigma = full_level_pressure/surface_pressure
+    weight = max(0.0_real64, (sigma - sigma_boundary)/(1.0_real64 - sigma_boundary))
+  end function held_suarez_boundary_weight
+
+  !> Boundary-layer Rayleigh drag on the horizontal wind.  This is the only part
+  !> of the Held-Suarez forcing that the radiation case also applies.
+  pure subroutine held_suarez_friction(config, full_level_pressure, surface_pressure, u, v, forcing_u, forcing_v)
+    type(surface_friction_config), intent(in) :: config
+    real(real64), intent(in) :: full_level_pressure, surface_pressure, u, v
+    real(real64), intent(out) :: forcing_u, forcing_v
+    real(real64) :: friction_rate
+
+    friction_rate = config%friction_rate* &
+                    held_suarez_boundary_weight(config%sigma_boundary, full_level_pressure, surface_pressure)
+    forcing_u = -friction_rate*u
+    forcing_v = -friction_rate*v
+  end subroutine held_suarez_friction
+
+  !> Newtonian relaxation of temperature towards the Held-Suarez equilibrium profile.
+  pure subroutine held_suarez_thermal_relaxation(config, sinphi, full_level_pressure, surface_pressure, &
+                                                 temperature, temperature_tendency)
+    type(held_suarez_config), intent(in) :: config
+    real(real64), intent(in) :: sinphi, full_level_pressure, surface_pressure, temperature
+    real(real64), intent(out) :: temperature_tendency
+    real(real64) :: cosphi_squared, pressure_ratio, boundary_weight
+    real(real64) :: equilibrium_temperature, thermal_rate
 
     cosphi_squared = max(0.0_real64, 1.0_real64 - sinphi**2)
     pressure_ratio = full_level_pressure/reference_surface_pressure
-    sigma = full_level_pressure/surface_pressure
-    boundary_weight = max(0.0_real64, (sigma - held_suarez_sigma_boundary)/ &
-                          (1.0_real64 - held_suarez_sigma_boundary))
-    equilibrium_temperature = max(held_suarez_minimum_equilibrium_temperature, &
-      (held_suarez_equatorial_temperature - held_suarez_equator_to_pole_difference*sinphi**2 - &
-       held_suarez_vertical_difference*log(pressure_ratio)*cosphi_squared)*pressure_ratio**dry_air_kappa)
-    thermal_rate = held_suarez_upper_thermal_rate + &
-      (held_suarez_lower_thermal_rate - held_suarez_upper_thermal_rate)* &
+    boundary_weight = held_suarez_boundary_weight(config%sigma_boundary, full_level_pressure, surface_pressure)
+    equilibrium_temperature = max(config%minimum_equilibrium_temperature, &
+      (config%equatorial_temperature - config%equator_to_pole_difference*sinphi**2 - &
+       config%vertical_difference*log(pressure_ratio)*cosphi_squared)*pressure_ratio**dry_air_kappa)
+    thermal_rate = config%upper_thermal_rate + &
+      (config%lower_thermal_rate - config%upper_thermal_rate)* &
       boundary_weight*cosphi_squared**2
-    friction_rate = held_suarez_friction_rate*boundary_weight
-
-    forcing_u = -friction_rate*u
-    forcing_v = -friction_rate*v
     temperature_tendency = -thermal_rate*(temperature - equilibrium_temperature)
+  end subroutine held_suarez_thermal_relaxation
+
+  !> Full Held-Suarez forcing; the composition of the two independent parts above.
+  pure subroutine held_suarez_forcing(relaxation, friction, sinphi, full_level_pressure, surface_pressure, &
+                                      temperature, u, v, forcing_u, forcing_v, temperature_tendency)
+    type(held_suarez_config), intent(in) :: relaxation
+    type(surface_friction_config), intent(in) :: friction
+    real(real64), intent(in) :: sinphi, full_level_pressure, surface_pressure, temperature, u, v
+    real(real64), intent(out) :: forcing_u, forcing_v, temperature_tendency
+
+    call held_suarez_friction(friction, full_level_pressure, surface_pressure, u, v, forcing_u, forcing_v)
+    call held_suarez_thermal_relaxation(relaxation, sinphi, full_level_pressure, surface_pressure, &
+                                        temperature, temperature_tendency)
   end subroutine held_suarez_forcing
 
 end module dry_held_suarez

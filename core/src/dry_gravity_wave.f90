@@ -1,6 +1,6 @@
 module dry_gravity_wave
   use iso_fortran_env, only: real64
-  use barotropic_vorticity, only: earth_radius
+  use planet_parameters, only: earth_radius
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate, dry_air_gas_constant, dry_air_kappa, &
                                      reference_surface_pressure
   use lapack_interfaces, only: dgetrf, dgetri
@@ -164,17 +164,22 @@ contains
     complex(real64), intent(in) :: current_delta(0:, 0:, :), current_temperature(0:, 0:, :)
     complex(real64), intent(in) :: rhs_surface_pressure(0:, 0:)
     complex(real64), intent(in) :: rhs_delta(0:, 0:, :), rhs_temperature(0:, 0:, :)
-    complex(real64), allocatable, intent(out) :: next_surface_pressure(:, :)
-    complex(real64), allocatable, intent(out) :: next_delta(:, :, :), next_temperature(:, :, :)
+    !> Caller-owned output storage of shape (0:T+1, 0:T[, levels]); it is overwritten entirely.
+    complex(real64), intent(inout) :: next_surface_pressure(0:, 0:)
+    complex(real64), intent(inout) :: next_delta(0:, 0:, :), next_temperature(0:, 0:, :)
     complex(real64), allocatable :: previous_state(:), current_state(:), rhs(:), vector(:)
     integer :: dimension, interval_index, n, m
 
     call check_initialized(this)
     interval_index = nearest_interval(this, centered_interval)
     dimension = 2*this%number_of_levels + 1
-    allocate (next_surface_pressure(0:this%truncation + 1, 0:this%truncation))
-    allocate (next_delta(0:this%truncation + 1, 0:this%truncation, this%number_of_levels))
-    allocate (next_temperature(0:this%truncation + 1, 0:this%truncation, this%number_of_levels))
+    if (ubound(next_surface_pressure, 1) /= this%truncation + 1 .or. &
+        ubound(next_surface_pressure, 2) /= this%truncation .or. &
+        ubound(next_delta, 1) /= this%truncation + 1 .or. ubound(next_delta, 2) /= this%truncation .or. &
+        size(next_delta, 3) /= this%number_of_levels .or. &
+        any(shape(next_temperature) /= shape(next_delta))) then
+      error stop 'dry gravity-wave solve output storage has an inconsistent shape'
+    end if
     allocate (previous_state(dimension), current_state(dimension), rhs(dimension), vector(dimension))
     next_surface_pressure = 0.0_real64
     next_delta = 0.0_real64
