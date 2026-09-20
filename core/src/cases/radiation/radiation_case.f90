@@ -1,14 +1,14 @@
-!> The dry radiation case: five calendar years with daily global means, monthly
-!> zonal means and yearly snapshots.  The case chooses the physics, the planet,
-!> and the calendar boundaries at which each output is written.
+!> The dry radiation and slab-ocean cases: five calendar years with daily
+!> global means, monthly zonal means and yearly snapshots.  Each case chooses
+!> the surface physics, planet, and calendar boundaries for its output.
 module radiation_case
   use iso_fortran_env, only: real64, int64
   use planet_parameters, only: planet_config
   use numerics_config, only: model_numerics_config
   use dry_physics_config, only: dry_model_physics_config, radiation_days_per_year, radiation_orbital_period
   use dry_atmosphere, only: dry_atmosphere_solver
-  use dry_case_initial_conditions, only: radiation_case_physics, radiation_case_planet, &
-                                         set_radiation_case_state
+  use dry_case_initial_conditions, only: radiation_case_physics, slab_ocean_case_physics, &
+                                         radiation_case_planet, set_radiation_case_state
   use dry_radiation, only: radiation_diagnostics, radiation_calendar_date
   use radiation_diagnostics_collector, only: radiation_case_diagnostics
   use filesystem, only: make_directory
@@ -19,7 +19,7 @@ module radiation_case
                           elapsed_seconds
   implicit none
   private
-  public :: run_radiation_case
+  public :: run_radiation_case, run_slab_ocean_case
 
   real(real64), parameter :: radiation_time_step = dt
   integer, parameter :: radiation_number_of_years = 5
@@ -28,6 +28,17 @@ contains
 
   subroutine run_radiation_case(context)
     type(case_context), intent(inout) :: context
+    call run_radiative_surface_case(context, .false.)
+  end subroutine run_radiation_case
+
+  subroutine run_slab_ocean_case(context)
+    type(case_context), intent(inout) :: context
+    call run_radiative_surface_case(context, .true.)
+  end subroutine run_slab_ocean_case
+
+  subroutine run_radiative_surface_case(context, use_slab_ocean)
+    type(case_context), intent(inout) :: context
+    logical, intent(in) :: use_slab_ocean
     type(dry_atmosphere_solver) :: solver
     type(model_numerics_config) :: numerics
     type(dry_model_physics_config) :: physics
@@ -39,7 +50,7 @@ contains
     real(real64), allocatable :: eddy_uv(:, :), eddy_vt(:, :)
     real(real64), allocatable :: pressure_half(:), delta_pressure(:), layer_l(:), alpha(:)
     real(real64), allocatable :: reference_temperature(:), a_half(:), b_half(:)
-    character(len=:), allocatable :: case_directory
+    character(len=:), allocatable :: case_directory, case_name
     integer :: completed_step, number_of_steps, daily_interval_steps
     integer :: month, month_boundary_step, year, year_boundary_step
     integer :: calendar_year, calendar_month, calendar_day, days_per_month, days_per_year
@@ -49,21 +60,27 @@ contains
     call ensure_context(context)
     numerics = context%numerics
     numerics%time_step = radiation_time_step
-    physics = radiation_case_physics()
+    if (use_slab_ocean) then
+      physics = slab_ocean_case_physics()
+      case_name = 'dry_slab_ocean'
+    else
+      physics = radiation_case_physics()
+      case_name = 'dry_radiation'
+    end if
     planet = radiation_case_planet(physics)
     solar_day = physics%radiation%solar_day
     days_per_month = physics%radiation%days_per_month
     days_per_year = radiation_days_per_year(physics%radiation)
     radiation_duration = real(radiation_number_of_years, real64)*radiation_orbital_period(physics%radiation)
     call system_clock(start_count)
-    call write_case_header('dry_radiation', radiation_duration, numerics%time_step)
-    case_directory = context%output_root//'/dry_radiation'
+    call write_case_header(case_name, radiation_duration, numerics%time_step)
+    case_directory = context%output_root//'/'//case_name
     call make_directory(case_directory)
-    call initialize_radiation_daily_output(case_directory)
+    call initialize_radiation_daily_output(case_directory, .not. use_slab_ocean)
     call solver%init_with_config(numerics)
     call set_radiation_case_state(solver, context%transform, physics, planet)
     call diagnostics%reset()
-    call write_current_radiation_snapshot(solver, case_directory, 1, context%nlon)
+    call write_current_radiation_snapshot(solver, case_directory, 1, context%nlon, .not. use_slab_ocean)
     number_of_steps = nint(radiation_duration/numerics%time_step)
     daily_interval_steps = nint(solar_day/numerics%time_step)
     if (abs(real(daily_interval_steps, real64)*numerics%time_step - solar_day) > 1.0e-12_real64) then
@@ -88,7 +105,7 @@ contains
         call radiation_calendar_date(physics%radiation, daily_means%time_seconds, calendar_year, &
                                      calendar_month, calendar_day, seconds_of_day)
         call append_radiation_daily_output(case_directory, daily_means, daily_means%time_seconds/solar_day, &
-                                           calendar_year, calendar_month, calendar_day)
+                                           calendar_year, calendar_month, calendar_day, .not. use_slab_ocean)
       end if
 
       if (completed_step == month_boundary_step) then
@@ -103,7 +120,7 @@ contains
       end if
 
       if (completed_step == year_boundary_step) then
-        call write_current_radiation_snapshot(solver, case_directory, year, context%nlon)
+        call write_current_radiation_snapshot(solver, case_directory, year, context%nlon, .not. use_slab_ocean)
         year = year + 1
         if (year <= radiation_number_of_years + 1) then
           year_boundary_step = (year - 1)*days_per_year*daily_interval_steps
@@ -119,17 +136,18 @@ contains
     elapsed_wall_seconds = elapsed_seconds(start_count)
     call solver%get_reference_atmosphere(pressure_half, delta_pressure, layer_l, alpha, &
                                          reference_temperature, a_half, b_half)
-    call write_radiation_metadata(case_directory, physics%radiation, physics%convection, planet, &
+    call write_radiation_metadata(case_directory, case_name, physics%radiation, physics%convection, planet, &
                                   numerics%truncation, numerics%time_step, radiation_duration, number_of_steps, &
                                   maximum_cfl, elapsed_wall_seconds, context%nlon, context%transform%mu, &
                                   pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
                                   a_half, b_half)
-  end subroutine run_radiation_case
+  end subroutine run_radiative_surface_case
 
-  subroutine write_current_radiation_snapshot(solver, case_directory, year, ring_nlon)
+  subroutine write_current_radiation_snapshot(solver, case_directory, year, ring_nlon, write_deep_temperature)
     type(dry_atmosphere_solver), intent(inout) :: solver
     character(*), intent(in) :: case_directory
     integer, intent(in) :: year, ring_nlon(:)
+    logical, intent(in) :: write_deep_temperature
     complex(real64), allocatable :: zeta_spectral(:, :, :), delta_spectral(:, :, :)
     complex(real64), allocatable :: temperature_spectral(:, :, :), log_ps_spectral(:, :)
     real(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
@@ -143,7 +161,8 @@ contains
     log_surface_pressure = log(surface_pressure)
     call write_radiation_yearly_snapshot(case_directory, year, ring_nlon, &
       zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
-      zeta, delta, temperature, u, v, log_surface_pressure, surface_temperature, deep_temperature)
+      zeta, delta, temperature, u, v, log_surface_pressure, surface_temperature, deep_temperature, &
+      write_deep_temperature)
   end subroutine write_current_radiation_snapshot
 
 end module radiation_case

@@ -5,7 +5,7 @@ module case_runners
   use barotropic_case, only: run_barotropic_case
   use shallow_water_case, only: run_shallow_water_case
   use dry_case, only: run_dry_case
-  use radiation_case, only: run_radiation_case
+  use radiation_case, only: run_radiation_case, run_slab_ocean_case
   implicit none
   private
 
@@ -32,6 +32,8 @@ contains
       call run_dry_case(context, 'dry_held_suarez', .false., held_suarez=.true.)
     case ('radiation', '--radiation', 'uniform-radiation', '--uniform-radiation', 'uniform_radiation')
       call run_radiation_case(context)
+    case ('slab-ocean', '--slab-ocean', 'slab_ocean')
+      call run_slab_ocean_case(context)
     case ('all')
       call run_dry_case(context, 'dry_jablonowski_williamson_steady', .false.)
       call run_dry_case(context, 'dry_jablonowski_williamson_perturbed', .true.)
@@ -42,6 +44,7 @@ contains
       call run_barotropic_case(context, 'random_n8_n12_seed_20260913', 3)
       call run_dry_case(context, 'dry_held_suarez', .false., held_suarez=.true.)
       call run_radiation_case(context)
+      call run_slab_ocean_case(context)
     case ('--help', '-h', 'help')
       call print_usage()
     case default
@@ -51,13 +54,14 @@ contains
   end subroutine run_requested_cases
 
   subroutine print_usage()
-    write (*, '(a)') 'Usage: core [shallow-water|barotropic|dry|held-suarez|radiation|all]'
+    write (*, '(a)') 'Usage: core [shallow-water|barotropic|dry|held-suarez|radiation|slab-ocean|all]'
     write (*, '(a)') '  shallow-water:           run the mountain and single-harmonic height cases'
     write (*, '(a)') '  barotropic:             run the three barotropic-vorticity cases'
     write (*, '(a)') '  dry (default):          run the 10-day Jablonowski-Williamson dry-atmosphere cases'
     write (*, '(a)') '                          (steady base state and localized wind perturbation)'
     write (*, '(a)') '  held-suarez:            run the 200-day forced dry-atmosphere case (output every 5 days)'
     write (*, '(a)') '  radiation:              run the 5-year diurnal/seasonal radiation case'
+    write (*, '(a)') '  slab-ocean:             run the zero-obliquity radiation case with a 30 m slab ocean'
     write (*, '(a)') '  all:                    run every case'
   end subroutine print_usage
 

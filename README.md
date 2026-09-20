@@ -25,7 +25,7 @@ brew install gcc fpm fftw lapack openblas pkg-config just node
 # テストを実行
 just test
 
-# モデルを実行（shallow-water / barotropic / dry / held-suarez / radiation / all、省略時は dry）
+# モデルを実行（shallow-water / barotropic / dry / held-suarez / radiation / slab-ocean / all、省略時は dry）
 just run dry
 
 # Held–Suarez 強制を 200 日間実行（5 日ごとに出力）
@@ -33,6 +33,9 @@ just run held-suarez
 
 # 日変化・季節変化を含む放射ケースを5年間実行（日次・月平均・毎年4月1日の瞬時値を出力）
 just run radiation
+
+# 地軸傾斜0・深さ30 mのslab oceanを持つ放射ケースを5年間実行
+just run slab-ocean
 
 # ビジュアライザを起動し、http://127.0.0.1:8000 を開く
 just viz
@@ -61,6 +64,7 @@ just viz
 - [短波放射](./docs/tendency/shortwave-radiation.md)
 - [オゾン](./docs/tendency/ozone.md)
 - [地面](./docs/tendency/ground.md)
+- [Slab ocean](./docs/tendency/slab-ocean.md)
 - [上層の Rayleigh 摩擦](./docs/tendency/upper-rayleigh-friction.md)
 - [Held–Suarez 強制](./docs/tendency/Held-Suarez.md)
 - [Betts–Miller 型の乾燥対流調節](./docs/tendency/dry-convective-adjustment.md)
@@ -74,6 +78,7 @@ just viz
 - [乾燥大気のケース](./docs/cases/dry.md)
 - [Held–Suarez ケース](./docs/cases/held-suarez.md)
 - [放射ケース](./docs/cases/radiation.md)
+- [Slab ocean ケース](./docs/cases/slab-ocean.md)
 
 ## ライセンス
 

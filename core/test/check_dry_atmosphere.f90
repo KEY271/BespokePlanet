@@ -17,11 +17,13 @@ program check_dry_atmosphere
   use radiation_diagnostics_collector, only: radiation_case_diagnostics, radiation_daily_accumulator
   use dry_case_initial_conditions, only: set_jablonowski_williamson_case_state, &
                                          held_suarez_case_physics, set_held_suarez_case_state, &
-                                         radiation_case_physics, radiation_case_planet, set_radiation_case_state
+                                         radiation_case_physics, slab_ocean_case_physics, &
+                                         radiation_case_planet, set_radiation_case_state
   use planet_parameters, only: planet_config
   use dry_physics_config, only: dry_model_physics_config, radiation_config, held_suarez_config, &
                                 surface_friction_config, rayleigh_friction_config, convection_config, &
-                                radiation_days_per_year, radiation_orbital_period, radiation_planet_rotation_rate
+                                radiation_days_per_year, radiation_orbital_period, radiation_planet_rotation_rate, &
+                                radiation_surface_heat_capacity
   use dry_state, only: dry_state_type, dry_tendency_type, allocate_dry_state, allocate_dry_tendency
   use dry_tendency_workspace, only: dry_workspace_type
   use dry_tendency_evaluator, only: evaluate_dry_tendency
@@ -45,6 +47,7 @@ program check_dry_atmosphere
   call check_solar_geometry()
   call check_ozone_absorption()
   call check_radiation_column()
+  call check_slab_ocean_column()
   call check_radiation_daily_accumulator()
   call check_radiation_state()
   call check_jablonowski_state()
@@ -283,6 +286,61 @@ contains
       error stop 'radiation column does not use the prescribed vertical ozone path'
     end if
   end subroutine check_radiation_column
+
+  subroutine check_slab_ocean_column()
+    real(real64), parameter :: pressure_half(0:2) = [1000.0_real64, 40000.0_real64, 100000.0_real64]
+    real(real64), parameter :: temperature(2) = [252.0_real64, 279.0_real64]
+    real(real64), parameter :: ocean_temperature = 291.0_real64
+    type(dry_model_physics_config) :: ground_physics, ocean_physics
+    type(radiation_config) :: ocean
+    real(real64) :: temperature_tendency(2), surface_tendency, deep_tendency
+    real(real64) :: reference_temperature_tendency(2), reference_surface_tendency
+    real(real64) :: incoming_shortwave, reflected_shortwave, outgoing_longwave
+    real(real64) :: reference_incoming, reference_reflected, reference_outgoing
+    real(real64) :: atmospheric_energy_tendency, total_energy_tendency, ocean_heat_capacity
+
+    ground_physics = radiation_case_physics()
+    ocean_physics = slab_ocean_case_physics()
+    ocean = ocean_physics%radiation
+    ocean_heat_capacity = radiation_surface_heat_capacity(ocean)
+    if (.not. ocean%slab_ocean_enabled .or. abs(ocean%axial_tilt) > 0.0_real64 .or. &
+        abs(ocean%slab_ocean_depth - 30.0_real64) > 0.0_real64 .or. &
+        abs(ocean_heat_capacity - 1.2558e8_real64) > 1.0e-6_real64 .or. &
+        (ocean_physics%radiation%enabled .neqv. ground_physics%radiation%enabled) .or. &
+        (ocean_physics%convection%enabled .neqv. ground_physics%convection%enabled) .or. &
+        (ocean_physics%surface_friction%enabled .neqv. ground_physics%surface_friction%enabled) .or. &
+        (ocean_physics%rayleigh_friction%enabled .neqv. ground_physics%rayleigh_friction%enabled)) then
+      error stop 'slab-ocean case configuration is incorrect'
+    end if
+    if (abs(shortwave_downward_flux(ocean, 1.0_real64, 0.0_real64, &
+                                    0.25_real64*radiation_orbital_period(ocean))) > 1.0e-12_real64) then
+      error stop 'zero-obliquity slab-ocean case has seasonal solar declination'
+    end if
+
+    call radiation_tendency(ocean, pressure_half, temperature, ocean_temperature, 285.0_real64, &
+                            3.0_real64, 4.0_real64, 0.0_real64, 0.0_real64, 0.0_real64, &
+                            temperature_tendency, surface_tendency, deep_tendency, &
+                            incoming_shortwave, reflected_shortwave, outgoing_longwave)
+    call radiation_tendency(ocean, pressure_half, temperature, ocean_temperature, -1.0_real64, &
+                            3.0_real64, 4.0_real64, 0.0_real64, 0.0_real64, 0.0_real64, &
+                            reference_temperature_tendency, reference_surface_tendency, deep_tendency, &
+                            reference_incoming, reference_reflected, reference_outgoing)
+    if (deep_tendency /= 0.0_real64 .or. &
+        maxval(abs(temperature_tendency - reference_temperature_tendency)) > 0.0_real64 .or. &
+        abs(surface_tendency - reference_surface_tendency) > 0.0_real64 .or. &
+        abs(incoming_shortwave - reference_incoming) > 0.0_real64 .or. &
+        abs(reflected_shortwave - reference_reflected) > 0.0_real64 .or. &
+        abs(outgoing_longwave - reference_outgoing) > 0.0_real64) then
+      error stop 'slab ocean depends on the unused deep-ground state'
+    end if
+    atmospheric_energy_tendency = sum(ocean%dry_air_specific_heat* &
+      (pressure_half(1:2) - pressure_half(0:1))/ocean%gravity_acceleration*temperature_tendency)
+    total_energy_tendency = atmospheric_energy_tendency + ocean_heat_capacity*surface_tendency
+    if (abs(total_energy_tendency - &
+        (incoming_shortwave - reflected_shortwave - outgoing_longwave)) > 1.0e-10_real64) then
+      error stop 'atmosphere and slab ocean do not conserve column energy'
+    end if
+  end subroutine check_slab_ocean_column
 
   subroutine check_radiation_daily_accumulator()
     type(radiation_daily_accumulator) :: accumulator

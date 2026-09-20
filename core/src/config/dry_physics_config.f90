@@ -42,8 +42,8 @@ module dry_physics_config
   end type rayleigh_friction_config
 
   !> Grey longwave radiation, prescribed ozone shortwave absorption, and the
-  !> two-layer ground energy budget, together with the calendar and orbit that
-  !> drive the solar forcing.
+  !> selectable two-layer-ground or slab-ocean surface energy budget, together
+  !> with the calendar and orbit that drive the solar forcing.
   type, public :: radiation_config
     logical :: enabled = .false.
     real(real64) :: solar_day = day_seconds
@@ -66,6 +66,10 @@ module dry_physics_config
     real(real64) :: surface_heat_capacity = 2.0e6_real64
     real(real64) :: deep_ground_heat_capacity = 2.0e7_real64
     real(real64) :: ground_exchange_coefficient = 2.0_real64
+    logical :: slab_ocean_enabled = .false.
+    real(real64) :: slab_ocean_depth = 30.0_real64
+    real(real64) :: seawater_density = 1000.0_real64
+    real(real64) :: seawater_specific_heat = 4186.0_real64
     real(real64) :: surface_exchange_coefficient = 1.0e-3_real64
     real(real64) :: gustiness_speed = 1.0_real64
   end type radiation_config
@@ -85,6 +89,7 @@ module dry_physics_config
   end type dry_model_physics_config
 
   public :: radiation_days_per_year, radiation_orbital_period, radiation_planet_rotation_rate
+  public :: radiation_surface_heat_capacity
 
 contains
 
@@ -103,5 +108,17 @@ contains
     type(radiation_config), intent(in) :: config
     rate = 2.0_real64*pi*(1.0_real64/config%solar_day + 1.0_real64/radiation_orbital_period(config))
   end function radiation_planet_rotation_rate
+
+  !> Heat capacity of the active surface layer.  The slab-ocean case replaces
+  !> the two-layer ground surface with one well-mixed water column.
+  pure real(real64) function radiation_surface_heat_capacity(config) result(heat_capacity)
+    type(radiation_config), intent(in) :: config
+
+    if (config%slab_ocean_enabled) then
+      heat_capacity = config%seawater_density*config%seawater_specific_heat*config%slab_ocean_depth
+    else
+      heat_capacity = config%surface_heat_capacity
+    end if
+  end function radiation_surface_heat_capacity
 
 end module dry_physics_config

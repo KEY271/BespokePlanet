@@ -1,7 +1,8 @@
 module dry_radiation
   use iso_fortran_env, only: real64
   use dry_vertical_coordinate, only: dry_air_gas_constant
-  use dry_physics_config, only: radiation_config, radiation_orbital_period, radiation_planet_rotation_rate
+  use dry_physics_config, only: radiation_config, radiation_orbital_period, radiation_planet_rotation_rate, &
+                                radiation_surface_heat_capacity
   implicit none
   private
 
@@ -145,7 +146,7 @@ contains
     seconds_of_day = modulo(time_seconds, solar_day)
   end subroutine radiation_calendar_date
 
-  !> Column radiation, surface fluxes and ground temperatures.
+  !> Column radiation, surface fluxes and the selected surface energy budget.
   !>
   !> The caller supplies one internally consistent RAW-filtered previous-time column for every
   !> state-dependent term.  Solar geometry is evaluated at time_seconds because it is prescribed
@@ -170,19 +171,25 @@ contains
     real(real64) :: layer_shortwave_optical_depth, shortwave_transmission
     real(real64) :: shortwave_downward, ultraviolet_downward, non_ultraviolet_downward, shortwave_absorbed
     real(real64) :: stefan_boltzmann_constant, dry_gravity_acceleration, dry_air_specific_heat
+    real(real64) :: surface_heat_capacity
     integer :: k, number_of_levels
 
     stefan_boltzmann_constant = config%stefan_boltzmann_constant
     dry_gravity_acceleration = config%gravity_acceleration
     dry_air_specific_heat = config%dry_air_specific_heat
+    surface_heat_capacity = radiation_surface_heat_capacity(config)
     number_of_levels = size(temperature)
     if (number_of_levels < 1 .or. size(pressure_half) /= number_of_levels + 1 .or. &
         size(temperature_tendency) /= number_of_levels) then
       error stop 'radiation column has inconsistent vertical dimensions'
     end if
     if (pressure_half(number_of_levels) <= pressure_half(0) .or. any(temperature <= 0.0_real64) .or. &
-        surface_temperature <= 0.0_real64 .or. deep_temperature <= 0.0_real64) then
+        surface_temperature <= 0.0_real64 .or. &
+        (.not. config%slab_ocean_enabled .and. deep_temperature <= 0.0_real64)) then
       error stop 'radiation column contains a nonphysical state'
+    end if
+    if (surface_heat_capacity <= 0.0_real64) then
+      error stop 'radiation surface heat capacity must be positive'
     end if
 
     do k = 1, number_of_levels
@@ -240,12 +247,22 @@ contains
 
     reflected_shortwave = config%surface_shortwave_albedo*shortwave_downward
     outgoing_longwave = upward_longwave(0)
-    surface_deep_heat = config%ground_exchange_coefficient*(surface_temperature - deep_temperature)
+    if (config%slab_ocean_enabled) then
+      ! A slab ocean is one isolated, well-mixed water column.  It has no
+      ! bottom heat exchange and its otherwise-unused deep state stays fixed.
+      surface_deep_heat = 0.0_real64
+    else
+      surface_deep_heat = config%ground_exchange_coefficient*(surface_temperature - deep_temperature)
+    end if
     ! The surface loses exactly the upward longwave the lowest layer sees, so the column budget closes.
     surface_temperature_tendency = (shortwave_downward - reflected_shortwave + &
       downward_longwave(number_of_levels) - upward_longwave(number_of_levels) - &
-      surface_deep_heat - sensible_heat)/config%surface_heat_capacity
-    deep_temperature_tendency = surface_deep_heat/config%deep_ground_heat_capacity
+      surface_deep_heat - sensible_heat)/surface_heat_capacity
+    if (config%slab_ocean_enabled) then
+      deep_temperature_tendency = 0.0_real64
+    else
+      deep_temperature_tendency = surface_deep_heat/config%deep_ground_heat_capacity
+    end if
   end subroutine radiation_tendency
 
 end module dry_radiation

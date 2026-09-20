@@ -1,5 +1,5 @@
-!> Radiative heating of the atmosphere together with the surface and deep
-!> ground energy budget.
+!> Radiative heating of the atmosphere together with the selected ground or
+!> slab-ocean surface energy budget.
 !>
 !> The instantaneous diagnostics that the radiation case aggregates are a
 !> by-product of this tendency, so they are produced here rather than being

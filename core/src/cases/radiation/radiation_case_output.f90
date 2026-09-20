@@ -1,4 +1,4 @@
-!> Output files and metadata schema of the dry radiation case.
+!> Output files and metadata schema shared by the dry radiation and slab-ocean cases.
 module radiation_case_output
   use iso_fortran_env, only: real64
   use field_binary_writer, only: write_field, write_rectangular_field, write_spectral_field, &
@@ -8,7 +8,7 @@ module radiation_case_output
   use dry_case_output, only: write_dry_reference_atmosphere
   use planet_parameters, only: planet_config
   use dry_physics_config, only: radiation_config, convection_config, radiation_days_per_year, &
-                                radiation_orbital_period
+                                radiation_orbital_period, radiation_surface_heat_capacity
   use dry_radiation, only: radiation_diagnostics
   implicit none
   private
@@ -19,32 +19,52 @@ module radiation_case_output
 
 contains
 
-  subroutine initialize_radiation_daily_output(case_directory)
+  subroutine initialize_radiation_daily_output(case_directory, include_deep_temperature)
     character(*), intent(in) :: case_directory
+    logical, intent(in) :: include_deep_temperature
 
-    call write_csv_header(trim(case_directory)//'/daily_global.csv', &
-      'time_seconds,simulation_day,calendar_year,calendar_month,calendar_day,'// &
-      'mean_atmospheric_temperature_k,'// &
-      'mean_surface_temperature_k,mean_deep_temperature_k,mean_kinetic_energy_j_kg-1,'// &
-      'mean_surface_pressure_pa,incoming_shortwave_w_m-2,reflected_shortwave_w_m-2,'// &
-      'outgoing_longwave_w_m-2')
+    if (include_deep_temperature) then
+      call write_csv_header(trim(case_directory)//'/daily_global.csv', &
+        'time_seconds,simulation_day,calendar_year,calendar_month,calendar_day,'// &
+        'mean_atmospheric_temperature_k,'// &
+        'mean_surface_temperature_k,mean_deep_temperature_k,mean_kinetic_energy_j_kg-1,'// &
+        'mean_surface_pressure_pa,incoming_shortwave_w_m-2,reflected_shortwave_w_m-2,'// &
+        'outgoing_longwave_w_m-2')
+    else
+      call write_csv_header(trim(case_directory)//'/daily_global.csv', &
+        'time_seconds,simulation_day,calendar_year,calendar_month,calendar_day,'// &
+        'mean_atmospheric_temperature_k,mean_ocean_temperature_k,mean_kinetic_energy_j_kg-1,'// &
+        'mean_surface_pressure_pa,incoming_shortwave_w_m-2,reflected_shortwave_w_m-2,'// &
+        'outgoing_longwave_w_m-2')
+    end if
   end subroutine initialize_radiation_daily_output
 
   !> Appends one row of daily means; the calendar date of the day start is supplied by the case runner.
   subroutine append_radiation_daily_output(case_directory, means, simulation_day, &
-                                           calendar_year, calendar_month, calendar_day)
+                                           calendar_year, calendar_month, calendar_day, include_deep_temperature)
     character(*), intent(in) :: case_directory
     type(radiation_diagnostics), intent(in) :: means
     real(real64), intent(in) :: simulation_day
     integer, intent(in) :: calendar_year, calendar_month, calendar_day
+    logical, intent(in) :: include_deep_temperature
 
-    call append_csv_row(trim(case_directory)//'/daily_global.csv', &
-      csv_real(means%time_seconds)//','//csv_real(simulation_day)//','// &
-      csv_integer(calendar_year)//','//csv_integer(calendar_month)//','//csv_integer(calendar_day)//','// &
-      csv_real(means%mean_atmospheric_temperature)//','//csv_real(means%mean_surface_temperature)//','// &
-      csv_real(means%mean_deep_temperature)//','//csv_real(means%mean_kinetic_energy)//','// &
-      csv_real(means%mean_surface_pressure)//','//csv_real(means%mean_incoming_shortwave)//','// &
-      csv_real(means%mean_reflected_shortwave)//','//csv_real(means%mean_outgoing_longwave))
+    if (include_deep_temperature) then
+      call append_csv_row(trim(case_directory)//'/daily_global.csv', &
+        csv_real(means%time_seconds)//','//csv_real(simulation_day)//','// &
+        csv_integer(calendar_year)//','//csv_integer(calendar_month)//','//csv_integer(calendar_day)//','// &
+        csv_real(means%mean_atmospheric_temperature)//','//csv_real(means%mean_surface_temperature)//','// &
+        csv_real(means%mean_deep_temperature)//','//csv_real(means%mean_kinetic_energy)//','// &
+        csv_real(means%mean_surface_pressure)//','//csv_real(means%mean_incoming_shortwave)//','// &
+        csv_real(means%mean_reflected_shortwave)//','//csv_real(means%mean_outgoing_longwave))
+    else
+      call append_csv_row(trim(case_directory)//'/daily_global.csv', &
+        csv_real(means%time_seconds)//','//csv_real(simulation_day)//','// &
+        csv_integer(calendar_year)//','//csv_integer(calendar_month)//','//csv_integer(calendar_day)//','// &
+        csv_real(means%mean_atmospheric_temperature)//','//csv_real(means%mean_surface_temperature)//','// &
+        csv_real(means%mean_kinetic_energy)//','//csv_real(means%mean_surface_pressure)//','// &
+        csv_real(means%mean_incoming_shortwave)//','//csv_real(means%mean_reflected_shortwave)//','// &
+        csv_real(means%mean_outgoing_longwave))
+    end if
   end subroutine append_radiation_daily_output
 
   subroutine write_radiation_monthly_output(case_directory, month, nlon, surface_temperature, &
@@ -89,7 +109,8 @@ contains
   subroutine write_radiation_yearly_snapshot(case_directory, year, nlon, &
                                               zeta_spectral, delta_spectral, temperature_spectral, &
                                               log_surface_pressure_spectral, zeta, delta, temperature, &
-                                              u, v, log_surface_pressure, surface_temperature, deep_temperature)
+                                              u, v, log_surface_pressure, surface_temperature, deep_temperature, &
+                                              write_deep_temperature)
     character(*), intent(in) :: case_directory
     integer, intent(in) :: year
     integer, intent(in) :: nlon(:)
@@ -99,6 +120,7 @@ contains
     real(real64), intent(in) :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     real(real64), intent(in) :: u(:, :, :), v(:, :, :), log_surface_pressure(:, :)
     real(real64), intent(in) :: surface_temperature(:, :), deep_temperature(:, :)
+    logical, intent(in) :: write_deep_temperature
     character(len=4) :: year_text
     character(len=2) :: level_text
     integer :: k
@@ -114,14 +136,16 @@ contains
     write (year_text, '(i4.4)') year
     call check_finite('yearly_log_surface_pressure', nlon, log_surface_pressure)
     call check_finite('yearly_surface_temperature', nlon, surface_temperature)
-    call check_finite('yearly_deep_temperature', nlon, deep_temperature)
+    if (write_deep_temperature) call check_finite('yearly_deep_temperature', nlon, deep_temperature)
     call check_spectral_finite('yearly_log_surface_pressure_spectral', log_surface_pressure_spectral)
     call write_field(trim(case_directory)//'/yearly_log_surface_pressure_y'//year_text//'.bin', &
                      nlon, log_surface_pressure)
     call write_field(trim(case_directory)//'/yearly_surface_temperature_y'//year_text//'.bin', &
                      nlon, surface_temperature)
-    call write_field(trim(case_directory)//'/yearly_deep_temperature_y'//year_text//'.bin', &
-                     nlon, deep_temperature)
+    if (write_deep_temperature) then
+      call write_field(trim(case_directory)//'/yearly_deep_temperature_y'//year_text//'.bin', &
+                       nlon, deep_temperature)
+    end if
     call write_spectral_field(trim(case_directory)//'/yearly_log_surface_pressure_spectral_y'// &
                               year_text//'.bin', log_surface_pressure_spectral)
     do k = 1, size(zeta, 3)
@@ -153,11 +177,11 @@ contains
 
   !> Metadata of one run.  The radiation, convection and planet configuration are
   !> the values the case runner integrated with; this module imports no constants.
-  subroutine write_radiation_metadata(case_directory, radiation, convection, planet, truncation, time_step, &
+  subroutine write_radiation_metadata(case_directory, case_name, radiation, convection, planet, truncation, time_step, &
                                       duration, number_of_steps, maximum_cfl, elapsed_wall_seconds, nlon, mu, &
                                       pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
                                       a_half, b_half)
-    character(*), intent(in) :: case_directory
+    character(*), intent(in) :: case_directory, case_name
     type(radiation_config), intent(in) :: radiation
     type(convection_config), intent(in) :: convection
     type(planet_config), intent(in) :: planet
@@ -173,10 +197,15 @@ contains
     open (newunit=unit, file=trim(case_directory)//'/metadata.json', status='replace', action='write')
     write (unit, '(a)') '{'
     write (unit, '(a)') '  "schema_version": 2,'
-    write (unit, '(a)') '  "case_name": "dry_radiation",'
+    write (unit, '(a)') '  "case_name": "'//trim(case_name)//'",'
     write (unit, '(a)') '  "equation": "dry_hydrostatic_atmosphere",'
-    write (unit, '(a)') '  "initial_condition": '// &
-      '"Jablonowski-Williamson perturbation, flat terrain, two-layer ground",'
+    if (radiation%slab_ocean_enabled) then
+      write (unit, '(a)') '  "initial_condition": '// &
+        '"unperturbed Jablonowski-Williamson temperature, balanced wind, flat terrain, slab ocean",'
+    else
+      write (unit, '(a)') '  "initial_condition": '// &
+        '"unperturbed Jablonowski-Williamson temperature, balanced wind, flat terrain, two-layer ground",'
+    end if
     write (unit, '(a)') '  "simulation": {'
     write (unit, '(a,es24.16e3,a)') '    "duration_seconds": ', duration, ','
     write (unit, '(a,es24.16e3,a)') '    "time_step_seconds": ', time_step, ','
@@ -228,15 +257,32 @@ contains
     write (unit, '(a,es24.16e3)') &
       '    "relaxation_time_seconds": ', convection%adjustment_time
     write (unit, '(a)') '  },'
-    write (unit, '(a)') '  "ground": {'
-    write (unit, '(a,es24.16e3,a)') '    "surface_heat_capacity_j_m-2_k-1": ', radiation%surface_heat_capacity, ','
-    write (unit, '(a,es24.16e3,a)') '    "deep_heat_capacity_j_m-2_k-1": ', radiation%deep_ground_heat_capacity, ','
-    write (unit, '(a,es24.16e3,a)') &
-      '    "exchange_coefficient_w_m-2_k-1": ', radiation%ground_exchange_coefficient, ','
-    write (unit, '(a,es24.16e3,a)') &
-      '    "surface_exchange_coefficient": ', radiation%surface_exchange_coefficient, ','
-    write (unit, '(a,es24.16e3)') '    "gustiness_speed_m_s-1": ', radiation%gustiness_speed
-    write (unit, '(a)') '  },'
+    if (radiation%slab_ocean_enabled) then
+      write (unit, '(a)') '  "slab_ocean": {'
+      write (unit, '(a,i0,a)') '    "number_of_layers": ', 1, ','
+      write (unit, '(a,es24.16e3,a)') '    "depth_m": ', radiation%slab_ocean_depth, ','
+      write (unit, '(a,es24.16e3,a)') '    "density_kg_m-3": ', radiation%seawater_density, ','
+      write (unit, '(a,es24.16e3,a)') &
+        '    "specific_heat_j_kg-1_k-1": ', radiation%seawater_specific_heat, ','
+      write (unit, '(a,es24.16e3,a)') &
+        '    "heat_capacity_j_m-2_k-1": ', radiation_surface_heat_capacity(radiation), ','
+      write (unit, '(a)') '    "ocean_heat_transport": "none",'
+      write (unit, '(a)') '    "bottom_heat_flux": "none",'
+      write (unit, '(a,es24.16e3,a)') &
+        '    "surface_exchange_coefficient": ', radiation%surface_exchange_coefficient, ','
+      write (unit, '(a,es24.16e3)') '    "gustiness_speed_m_s-1": ', radiation%gustiness_speed
+      write (unit, '(a)') '  },'
+    else
+      write (unit, '(a)') '  "ground": {'
+      write (unit, '(a,es24.16e3,a)') '    "surface_heat_capacity_j_m-2_k-1": ', radiation%surface_heat_capacity, ','
+      write (unit, '(a,es24.16e3,a)') '    "deep_heat_capacity_j_m-2_k-1": ', radiation%deep_ground_heat_capacity, ','
+      write (unit, '(a,es24.16e3,a)') &
+        '    "exchange_coefficient_w_m-2_k-1": ', radiation%ground_exchange_coefficient, ','
+      write (unit, '(a,es24.16e3,a)') &
+        '    "surface_exchange_coefficient": ', radiation%surface_exchange_coefficient, ','
+      write (unit, '(a,es24.16e3)') '    "gustiness_speed_m_s-1": ', radiation%gustiness_speed
+      write (unit, '(a)') '  },'
+    end if
     write (unit, '(a)') '  "numerics": {'
     write (unit, '(a,i0,a)') '    "spectral_truncation": ', truncation, ','
     write (unit, '(a)') '    "time_integrator": "semi-implicit RAW-filtered leapfrog",'

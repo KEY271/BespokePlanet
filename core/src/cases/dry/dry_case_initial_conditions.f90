@@ -19,7 +19,8 @@ module dry_case_initial_conditions
 
   public :: set_jablonowski_williamson_case_state
   public :: held_suarez_case_physics, set_held_suarez_case_state
-  public :: radiation_case_physics, radiation_case_planet, set_radiation_case_state
+  public :: radiation_case_physics, slab_ocean_case_physics
+  public :: radiation_case_planet, set_radiation_case_state
 
 contains
 
@@ -80,6 +81,16 @@ contains
     physics%rayleigh_friction%enabled = .true.
   end function radiation_case_physics
 
+  !> The radiation case with its two-layer ground replaced by a 30 m slab
+  !> ocean and with zero obliquity.  Every other physical process is unchanged.
+  function slab_ocean_case_physics() result(physics)
+    type(dry_model_physics_config) :: physics
+
+    physics = radiation_case_physics()
+    physics%radiation%slab_ocean_enabled = .true.
+    physics%radiation%axial_tilt = 0.0_real64
+  end function slab_ocean_case_physics
+
   !> The planet of the radiation case rotates with the calendar of its radiation
   !> configuration, so that a solar day is exactly solar_day seconds.
   function radiation_case_planet(physics) result(planet)
@@ -92,7 +103,7 @@ contains
 
   !> Jablonowski-Williamson temperature over flat terrain, with the unperturbed
   !> zonal wind rebalanced for Phi_s = 0 on the radiation case planet.  The
-  !> ground starts at the temperature of the lowest model level.
+  !> active ground or ocean surface starts at the lowest model-level temperature.
   subroutine set_radiation_case_state(solver, transform, physics, planet)
     type(dry_atmosphere_solver), intent(inout) :: solver
     type(harmonic_transform), intent(inout) :: transform
