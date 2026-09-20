@@ -22,11 +22,12 @@ $$
 海面から大気への上向き顕熱フラックスは[地面](./ground.md)と同じく
 
 $$
-H_{oa}=\frac{p_s}{RT_N}c_pC_H
-\sqrt{u_N^2+v_N^2+U_g^2}(T_o-T_N)
+H_{oa}=\rho_Nc_pC_H
+\sqrt{u_N^2+v_N^2+U_g^2}\left[T_o-T_N\left(\frac{p_s}{p_N}\right)^\kappa\right],\qquad
+\rho_N=\frac{p_N}{RT_N}
 $$
 
-とする。ここで $C_H=10^{-3}$、$U_g=1\,\mathrm{m\,s^{-1}}$ である。大気最下層には
+とする。ここで $C_H=10^{-3}$、$U_g=1\,\mathrm{m\,s^{-1}}$、$p_N$ は最下層 full level の気圧、$\kappa=2/7$ である。最下層の温度を地表面気圧まで乾燥断熱的に外挿してから海面温度と比べるので、乾燥断熱中立な大気では顕熱フラックスは 0 になる。大気最下層には
 
 $$
 \left(\frac{\partial T_N}{\partial t}\right)_{oa}
@@ -47,4 +48,4 @@ $$
 
 に従う。海面が大気へ与える長波放射と顕熱には、海洋から差し引くものと同じフラックスを使う。したがって大気と slab ocean を合わせたエネルギー収支は閉じる。海底との熱交換や prescribed Q-flux は加えない。
 
-右辺の放射フラックスと顕熱フラックスは、すべて[物理過程を評価する時刻](./physics-time-level.md)のとおり $\overline X^{n-1}$ の場で評価する。$T_o$ には重力波と超粘性を適用せず、RAW フィルターは適用する。
+右辺の放射フラックスと顕熱フラックスは、すべて[物理過程を評価する時刻](./physics-time-level.md)のとおり $\overline X^{n-1}$ の場で評価する。$T_o$ は[地面](./ground.md)の $T_s$ と同じ LeapFrog で進め、重力波と超粘性を適用せず、RAW フィルターは適用する。

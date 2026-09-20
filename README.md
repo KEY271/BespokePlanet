@@ -55,6 +55,7 @@ just viz
 - [浅水方程式](./docs/dynamics/shallow-water-equation.md)
 - [hybrid-sigma 座標](./docs/dynamics/hybrid-sigma.md)
 - [乾燥大気](./docs/dynamics/dry.md)
+- [湿潤大気](./docs/dynamics/moist.md)
 - [Jablonowski–Williamson の初期状態](./docs/dynamics/Jablonowski-Williamson.md)
 
 ### 傾向
@@ -68,6 +69,10 @@ just viz
 - [上層の Rayleigh 摩擦](./docs/tendency/upper-rayleigh-friction.md)
 - [Held–Suarez 強制](./docs/tendency/Held-Suarez.md)
 - [Betts–Miller 型の乾燥対流調節](./docs/tendency/dry-convective-adjustment.md)
+- [飽和比湿](./docs/tendency/saturation-specific-humidity.md)
+- [蒸発](./docs/tendency/evaporation.md)
+- [大規模凝結](./docs/tendency/large-scale-condensation.md)
+- [簡略化 Betts–Miller 型の湿潤対流調節](./docs/tendency/moist-convective-adjustment.md)
 
 ### 暦
 
@@ -79,6 +84,7 @@ just viz
 - [Held–Suarez ケース](./docs/cases/held-suarez.md)
 - [放射ケース](./docs/cases/radiation.md)
 - [Slab ocean ケース](./docs/cases/slab-ocean.md)
+- [湿潤ケース](./docs/cases/moist.md)
 
 ## ライセンス
 

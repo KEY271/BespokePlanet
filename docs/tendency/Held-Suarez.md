@@ -10,7 +10,7 @@ $$
 T_{\mathrm{eq},k}=\max\left[200\,\mathrm{K},\left\{315\,\mathrm{K}-60\,\mathrm{K}\sin^2\varphi-10\,\mathrm{K}\ln\frac{p_{k+1/2}\exp(-\alpha_k)}{p_0}\cos^2\varphi\right\}\left(\frac{p_{k+1/2}\exp(-\alpha_k)}{p_0}\right)^\kappa\right]
 $$
 
-と定める。$p_0=10^5\,\mathrm{hPa},\kappa=2/7$ である。そして温度の時間微分の右辺に
+と定める。$p_0=10^5\,\mathrm{Pa},\kappa=2/7$ である。そして温度の時間微分の右辺に
 
 $$
 -k_{T,k}(T_k-T_{\mathrm{eq},k})
