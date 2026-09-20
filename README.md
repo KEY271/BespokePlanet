@@ -42,16 +42,38 @@ just viz
 
 ## ドキュメント
 
-- [球面上の微分演算子](./docs/spherical-derivation.md)
-- [Octahedral Gaussian Grid](./docs/octahedral-gaussian-grid.md)
-- [順圧渦度方程式](./docs/barotropic-vorticity-equation.md)
-- [浅水方程式](./docs/shallow-water-equation.md)
-- [hybrid-sigma 座標](./docs/hybrid-sigma.md)
-- [乾燥大気](./docs/dry.md)
-- [Jablonowski–Williamson の初期状態](./docs/Jablonowski-Williamson.md)
-- [Held–Suarez 強制](./docs/Held-Suarez.md)
-- [日変化・季節変化を含む放射](./docs/radiation.md)
-- [Betts–Miller 型の乾燥対流調節](./docs/dry-convective-adjustment.md)
+力学コア（`docs/dynamics/`）、傾向を与える物理過程（`docs/tendency/`）、それらを使う計算ケースの定義（`docs/cases/`）に分けて置いている。
+
+### 力学
+
+- [球面上の微分演算子](./docs/dynamics/spherical-derivation.md)
+- [Octahedral Gaussian Grid](./docs/dynamics/octahedral-gaussian-grid.md)
+- [順圧渦度方程式](./docs/dynamics/barotropic-vorticity-equation.md)
+- [浅水方程式](./docs/dynamics/shallow-water-equation.md)
+- [hybrid-sigma 座標](./docs/dynamics/hybrid-sigma.md)
+- [乾燥大気](./docs/dynamics/dry.md)
+- [Jablonowski–Williamson の初期状態](./docs/dynamics/Jablonowski-Williamson.md)
+
+### 傾向
+
+- [物理過程を評価する時刻](./docs/tendency/physics-time-level.md)
+- [長波放射](./docs/tendency/longwave-radiation.md)
+- [短波放射](./docs/tendency/shortwave-radiation.md)
+- [オゾン](./docs/tendency/ozone.md)
+- [地面](./docs/tendency/ground.md)
+- [上層の Rayleigh 摩擦](./docs/tendency/upper-rayleigh-friction.md)
+- [Held–Suarez 強制](./docs/tendency/Held-Suarez.md)
+- [Betts–Miller 型の乾燥対流調節](./docs/tendency/dry-convective-adjustment.md)
+
+### 暦
+
+- [暦と軌道](./docs/calendar.md)
+
+### ケース定義
+
+- [乾燥大気のケース](./docs/cases/dry.md)
+- [Held–Suarez ケース](./docs/cases/held-suarez.md)
+- [放射ケース](./docs/cases/radiation.md)
 
 ## ライセンス
 

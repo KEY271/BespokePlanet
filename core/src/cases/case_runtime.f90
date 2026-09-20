@@ -121,12 +121,12 @@ contains
     character(len=:), allocatable :: path
     logical :: exists
 
-    inquire (file='docs/shallow-water-equation.md', exist=exists)
+    inquire (file='docs/dynamics/shallow-water-equation.md', exist=exists)
     if (exists) then
       path = 'output'
       return
     end if
-    inquire (file='../docs/shallow-water-equation.md', exist=exists)
+    inquire (file='../docs/dynamics/shallow-water-equation.md', exist=exists)
     if (exists) then
       path = '../output'
     else

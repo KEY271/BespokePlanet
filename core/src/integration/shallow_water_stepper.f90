@@ -56,7 +56,7 @@ contains
 
     if (step_number == 0) then
       ! The two start-up calls reproduce the half-step/midpoint initialization
-      ! in docs/shallow-water-equation.md.  The half-step is not RAW-filtered.
+      ! in docs/dynamics/shallow-water-equation.md.  The half-step is not RAW-filtered.
       call integration_step(transform, numerics, equation, 0.25_real64*time_step, current, current, .false., &
                             this%rhs, this%candidate, this%half, this%filtered)
       call integration_step(transform, numerics, equation, 0.5_real64*time_step, current, this%half, .true., &
