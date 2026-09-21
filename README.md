@@ -25,7 +25,7 @@ brew install gcc fpm fftw lapack openblas pkg-config just node
 # テストを実行
 just test
 
-# モデルを実行（shallow-water / barotropic / dry / held-suarez / radiation / slab-ocean / moist / all、省略時は dry）
+# モデルを実行（shallow-water / barotropic / dry / held-suarez / radiation / slab-ocean / moist / land / land-t63 / all、省略時は dry）
 just run dry
 
 # Held–Suarez 強制を 200 日間実行（5 日ごとに出力）
@@ -40,6 +40,10 @@ just run slab-ocean
 # slab ocean ケースに水蒸気（蒸発・湿潤対流調節・大規模凝結・水蒸気に依存する長波放射）を加え、
 # 地軸傾斜を地球の値に戻した湿潤ケースを T31 で5年間実行
 just run moist
+
+# 湿潤ケースに大陸・山脈と陸海混合の地表を加えた陸海ケースを T31 / T63 で5年間実行
+just run land
+just run land-t63
 
 # ビジュアライザを起動し、http://127.0.0.1:8000 を開く
 just viz
@@ -63,6 +67,7 @@ just viz
 - [乾燥大気](./docs/dynamics/dry.md)
 - [湿潤大気](./docs/dynamics/moist.md)
 - [Jablonowski–Williamson の初期状態](./docs/dynamics/Jablonowski-Williamson.md)
+- [地形](./docs/dynamics/topography.md)
 
 ### 傾向
 
@@ -72,6 +77,7 @@ just viz
 - [オゾン](./docs/tendency/ozone.md)
 - [地面](./docs/tendency/ground.md)
 - [Slab ocean](./docs/tendency/slab-ocean.md)
+- [陸と海の混合](./docs/tendency/land-sea-surface.md)
 - [上層の Rayleigh 摩擦](./docs/tendency/upper-rayleigh-friction.md)
 - [Held–Suarez 強制](./docs/tendency/Held-Suarez.md)
 - [Betts–Miller 型の乾燥対流調節](./docs/tendency/dry-convective-adjustment.md)
@@ -91,6 +97,7 @@ just viz
 - [放射ケース](./docs/cases/radiation.md)
 - [Slab ocean ケース](./docs/cases/slab-ocean.md)
 - [湿潤ケース](./docs/cases/moist.md)
+- [陸海ケース](./docs/cases/land-sea.md)
 
 ## ライセンス
 
