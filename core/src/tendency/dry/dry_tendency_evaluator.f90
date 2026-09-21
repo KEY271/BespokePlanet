@@ -1,4 +1,4 @@
-!> Composes the explicit right-hand side of the dry atmosphere from the
+!> Composes the explicit right-hand side of the dry or moist atmosphere from the
 !> individual dynamical and physical tendencies.
 !>
 !> Each tendency adds into the shared grid-space accumulators of the workspace;
@@ -6,8 +6,11 @@
 !> physical process means adding one call here, not editing a kernel.
 !>
 !> The order of the calls is the order in which the contributions are summed.
-!> It reproduces the accumulation order of the original single kernel, so the
-!> split does not change the rounding of the right-hand side.
+!> Radiation, surface fluxes, friction and the convective processes are all
+!> evaluated independently on the RAW-filtered previous time level; only the
+!> convective adjustments and the condensation are chained through provisional
+!> fields (dry_convection_tendency), and the evaporation is evaluated before the
+!> radiation so that the surface budget can take the same latent heat flux.
 module dry_tendency_evaluator
   use iso_fortran_env, only: real64
   use harmonics, only: harmonic_transform
@@ -21,8 +24,10 @@ module dry_tendency_evaluator
   use dry_surface_friction_tendency, only: add_dry_surface_friction_tendency
   use dry_rayleigh_friction_tendency, only: add_dry_rayleigh_friction_tendency
   use dry_held_suarez_tendency, only: add_dry_held_suarez_tendency
+  use dry_evaporation_tendency, only: add_dry_evaporation_tendency
   use dry_radiation_tendency, only: add_dry_radiation_tendency
   use dry_convection_tendency, only: add_dry_convection_tendency
+  use dry_tendency_diagnostics, only: collect_dry_diagnostics
   use dry_tendency_projection, only: project_dry_tendency
   implicit none
   private
@@ -30,8 +35,11 @@ module dry_tendency_evaluator
 
 contains
 
+  !> `interval` is the width the leapfrog advances the state by with this
+  !> tendency (2 dt in a regular step); the chained convective processes build
+  !> their provisional fields with it.
   subroutine evaluate_dry_tendency(transform, truncation, coordinate, planet, state, physics_state, &
-                                   surface_geopotential, physics, workspace, evaluation_time, rhs, &
+                                   surface_geopotential, physics, workspace, evaluation_time, interval, rhs, &
                                    maximum_speed, diagnostics)
     type(harmonic_transform), intent(inout) :: transform
     integer, intent(in) :: truncation
@@ -43,13 +51,20 @@ contains
     complex(real64), intent(in) :: surface_geopotential(0:, 0:)
     type(dry_model_physics_config), intent(in) :: physics
     type(dry_workspace_type), intent(inout) :: workspace
-    real(real64), intent(in) :: evaluation_time
+    real(real64), intent(in) :: evaluation_time, interval
     type(dry_tendency_type), intent(inout) :: rhs
     real(real64), intent(out) :: maximum_speed
     type(radiation_diagnostics), intent(out), optional :: diagnostics
 
     if (present(diagnostics) .and. .not. physics%radiation%enabled) then
       error stop 'radiation diagnostics requested without radiation forcing'
+    end if
+    if ((physics%evaporation%enabled .or. physics%moist_convection%enabled .or. physics%condensation%enabled) &
+        .and. .not. physics%moisture%enabled) then
+      error stop 'moist processes require the moisture (specific humidity) prognostic variable'
+    end if
+    if (physics%evaporation%enabled .and. .not. physics%radiation%enabled) then
+      error stop 'evaporation requires the radiation surface energy budget'
     end if
 
     call zero_dry_tendency(rhs)
@@ -68,18 +83,19 @@ contains
     if (physics%held_suarez%enabled) then
       call add_dry_held_suarez_tendency(physics%held_suarez, transform, workspace)
     end if
-    if (physics%radiation%enabled) then
-      if (present(diagnostics)) then
-        call add_dry_radiation_tendency(physics%radiation, transform, workspace, diagnostics)
-      else
-        call add_dry_radiation_tendency(physics%radiation, transform, workspace)
-      end if
+    if (physics%evaporation%enabled) then
+      call add_dry_evaporation_tendency(physics%evaporation, physics%radiation, workspace)
     end if
-    if (physics%convection%enabled) then
-      call add_dry_convection_tendency(physics%convection, workspace)
+    if (physics%radiation%enabled) then
+      call add_dry_radiation_tendency(physics%radiation, transform%mu, workspace)
+    end if
+    if (physics%convection%enabled .or. physics%moist_convection%enabled .or. physics%condensation%enabled) then
+      call add_dry_convection_tendency(physics, interval, workspace)
     end if
 
-    call project_dry_tendency(transform, truncation, workspace, physics%radiation%enabled, rhs)
+    if (present(diagnostics)) call collect_dry_diagnostics(transform%mu, workspace, diagnostics)
+    call project_dry_tendency(transform, truncation, workspace, physics%radiation%enabled, &
+                              physics%moisture%enabled, rhs)
   end subroutine evaluate_dry_tendency
 
 end module dry_tendency_evaluator

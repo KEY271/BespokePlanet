@@ -1,53 +1,73 @@
-!> The dry radiation and slab-ocean cases: five calendar years with daily
-!> global means, monthly zonal means and yearly snapshots.  Each case chooses
-!> the surface physics, planet, and calendar boundaries for its output.
+!> The dry radiation, slab-ocean and moist slab-ocean cases: five calendar
+!> years with daily global means, monthly zonal means and yearly snapshots.
+!> Each case chooses the surface physics, planet, resolution and calendar
+!> boundaries for its output.
 module radiation_case
   use iso_fortran_env, only: real64, int64
+  use harmonics, only: harmonic_transform
   use planet_parameters, only: planet_config
   use numerics_config, only: model_numerics_config
   use dry_physics_config, only: dry_model_physics_config, radiation_days_per_year, radiation_orbital_period
   use dry_atmosphere, only: dry_atmosphere_solver
-  use dry_case_initial_conditions, only: radiation_case_physics, slab_ocean_case_physics, &
+  use dry_case_initial_conditions, only: radiation_case_physics, slab_ocean_case_physics, moist_case_physics, &
                                          radiation_case_planet, set_radiation_case_state
   use dry_radiation, only: radiation_diagnostics, radiation_calendar_date
-  use radiation_diagnostics_collector, only: radiation_case_diagnostics
+  use radiation_diagnostics_collector, only: radiation_case_diagnostics, radiation_monthly_means
   use filesystem, only: make_directory
-  use radiation_case_output, only: initialize_radiation_daily_output, append_radiation_daily_output, &
-                                    write_radiation_monthly_output, write_radiation_yearly_snapshot, &
-                                    write_radiation_metadata
+  use radiation_case_output, only: radiation_output_options, initialize_radiation_daily_output, &
+                                    append_radiation_daily_output, write_radiation_monthly_output, &
+                                    write_radiation_yearly_snapshot, write_radiation_metadata
   use case_runtime, only: case_context, ensure_context, dt, write_case_header, write_progress, &
                           elapsed_seconds
   implicit none
   private
-  public :: run_radiation_case, run_slab_ocean_case
+  public :: run_radiation_case, run_slab_ocean_case, run_moist_case
 
   real(real64), parameter :: radiation_time_step = dt
   integer, parameter :: radiation_number_of_years = 5
+  !> The moist case is first run at a lower resolution than the other cases (docs/cases/moist.md).
+  integer, parameter, public :: moist_case_truncation = 31
+
+  integer, parameter :: ground_variant = 1, slab_ocean_variant = 2, moist_variant = 3
 
 contains
 
   subroutine run_radiation_case(context)
     type(case_context), intent(inout) :: context
-    call run_radiative_surface_case(context, .false.)
+    call ensure_context(context)
+    call run_radiative_surface_case(context, context%transform, context%nlon, ground_variant)
   end subroutine run_radiation_case
 
   subroutine run_slab_ocean_case(context)
     type(case_context), intent(inout) :: context
-    call run_radiative_surface_case(context, .true.)
+    call ensure_context(context)
+    call run_radiative_surface_case(context, context%transform, context%nlon, slab_ocean_variant)
   end subroutine run_slab_ocean_case
 
-  subroutine run_radiative_surface_case(context, use_slab_ocean)
+  !> The moist case builds its initial state and output grid on its own, coarser transform.
+  subroutine run_moist_case(context)
     type(case_context), intent(inout) :: context
-    logical, intent(in) :: use_slab_ocean
+    type(harmonic_transform) :: transform
+    integer, allocatable :: nlon(:)
+
+    call ensure_context(context)
+    call transform%init(moist_case_truncation)
+    nlon = transform%get_nlon()
+    call run_radiative_surface_case(context, transform, nlon, moist_variant)
+  end subroutine run_moist_case
+
+  subroutine run_radiative_surface_case(context, transform, nlon, variant)
+    type(case_context), intent(inout) :: context
+    type(harmonic_transform), intent(inout) :: transform
+    integer, intent(in) :: nlon(:), variant
     type(dry_atmosphere_solver) :: solver
     type(model_numerics_config) :: numerics
     type(dry_model_physics_config) :: physics
     type(planet_config) :: planet
     type(radiation_case_diagnostics) :: diagnostics
     type(radiation_diagnostics) :: sample, daily_means
-    real(real64), allocatable :: monthly_surface_temperature(:, :), monthly_surface_pressure(:, :)
-    real(real64), allocatable :: zonal_temperature(:, :), zonal_u(:, :), zonal_v(:, :)
-    real(real64), allocatable :: eddy_uv(:, :), eddy_vt(:, :)
+    type(radiation_monthly_means) :: monthly_means
+    type(radiation_output_options) :: options
     real(real64), allocatable :: pressure_half(:), delta_pressure(:), layer_l(:), alpha(:)
     real(real64), allocatable :: reference_temperature(:), a_half(:), b_half(:)
     character(len=:), allocatable :: case_directory, case_name
@@ -57,16 +77,28 @@ contains
     integer(int64) :: start_count
     real(real64) :: cfl, maximum_cfl, elapsed_wall_seconds, seconds_of_day, solar_day, radiation_duration
 
-    call ensure_context(context)
     numerics = context%numerics
     numerics%time_step = radiation_time_step
-    if (use_slab_ocean) then
-      physics = slab_ocean_case_physics()
-      case_name = 'dry_slab_ocean'
-    else
+    select case (variant)
+    case (ground_variant)
       physics = radiation_case_physics()
       case_name = 'dry_radiation'
-    end if
+      options%include_deep_temperature = .true.
+      options%include_moisture = .false.
+    case (slab_ocean_variant)
+      physics = slab_ocean_case_physics()
+      case_name = 'dry_slab_ocean'
+      options%include_deep_temperature = .false.
+      options%include_moisture = .false.
+    case (moist_variant)
+      physics = moist_case_physics()
+      case_name = 'moist_slab_ocean'
+      numerics%truncation = moist_case_truncation
+      options%include_deep_temperature = .false.
+      options%include_moisture = .true.
+    case default
+      error stop 'unknown radiative surface case variant'
+    end select
     planet = radiation_case_planet(physics)
     solar_day = physics%radiation%solar_day
     days_per_month = physics%radiation%days_per_month
@@ -76,11 +108,11 @@ contains
     call write_case_header(case_name, radiation_duration, numerics%time_step)
     case_directory = context%output_root//'/'//case_name
     call make_directory(case_directory)
-    call initialize_radiation_daily_output(case_directory, .not. use_slab_ocean)
+    call initialize_radiation_daily_output(case_directory, options)
     call solver%init_with_config(numerics)
-    call set_radiation_case_state(solver, context%transform, physics, planet)
+    call set_radiation_case_state(solver, transform, physics, planet)
     call diagnostics%reset()
-    call write_current_radiation_snapshot(solver, case_directory, 1, context%nlon, .not. use_slab_ocean)
+    call write_current_radiation_snapshot(solver, case_directory, 1, nlon, options)
     number_of_steps = nint(radiation_duration/numerics%time_step)
     daily_interval_steps = nint(solar_day/numerics%time_step)
     if (abs(real(daily_interval_steps, real64)*numerics%time_step - solar_day) > 1.0e-12_real64) then
@@ -105,14 +137,12 @@ contains
         call radiation_calendar_date(physics%radiation, daily_means%time_seconds, calendar_year, &
                                      calendar_month, calendar_day, seconds_of_day)
         call append_radiation_daily_output(case_directory, daily_means, daily_means%time_seconds/solar_day, &
-                                           calendar_year, calendar_month, calendar_day, .not. use_slab_ocean)
+                                           calendar_year, calendar_month, calendar_day, options)
       end if
 
       if (completed_step == month_boundary_step) then
-        call diagnostics%take_monthly(monthly_surface_temperature, monthly_surface_pressure, &
-          zonal_temperature, zonal_u, zonal_v, eddy_uv, eddy_vt)
-        call write_radiation_monthly_output(case_directory, month, context%nlon, monthly_surface_temperature, &
-          monthly_surface_pressure, zonal_temperature, zonal_u, zonal_v, eddy_uv, eddy_vt)
+        call diagnostics%take_monthly(monthly_means)
+        call write_radiation_monthly_output(case_directory, month, nlon, monthly_means, options)
         month = month + 1
         if (month <= radiation_number_of_years*physics%radiation%months_per_year) then
           month_boundary_step = month*days_per_month*daily_interval_steps
@@ -120,7 +150,7 @@ contains
       end if
 
       if (completed_step == year_boundary_step) then
-        call write_current_radiation_snapshot(solver, case_directory, year, context%nlon, .not. use_slab_ocean)
+        call write_current_radiation_snapshot(solver, case_directory, year, nlon, options)
         year = year + 1
         if (year <= radiation_number_of_years + 1) then
           year_boundary_step = (year - 1)*days_per_year*daily_interval_steps
@@ -136,33 +166,49 @@ contains
     elapsed_wall_seconds = elapsed_seconds(start_count)
     call solver%get_reference_atmosphere(pressure_half, delta_pressure, layer_l, alpha, &
                                          reference_temperature, a_half, b_half)
-    call write_radiation_metadata(case_directory, case_name, physics%radiation, physics%convection, planet, &
+    call write_radiation_metadata(case_directory, case_name, physics, planet, &
                                   numerics%truncation, numerics%time_step, radiation_duration, number_of_steps, &
-                                  maximum_cfl, elapsed_wall_seconds, context%nlon, context%transform%mu, &
+                                  maximum_cfl, elapsed_wall_seconds, nlon, transform%mu, &
                                   pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
-                                  a_half, b_half)
+                                  a_half, b_half, options)
   end subroutine run_radiative_surface_case
 
-  subroutine write_current_radiation_snapshot(solver, case_directory, year, ring_nlon, write_deep_temperature)
+  subroutine write_current_radiation_snapshot(solver, case_directory, year, ring_nlon, options)
     type(dry_atmosphere_solver), intent(inout) :: solver
     character(*), intent(in) :: case_directory
     integer, intent(in) :: year, ring_nlon(:)
-    logical, intent(in) :: write_deep_temperature
+    type(radiation_output_options), intent(in) :: options
     complex(real64), allocatable :: zeta_spectral(:, :, :), delta_spectral(:, :, :)
     complex(real64), allocatable :: temperature_spectral(:, :, :), log_ps_spectral(:, :)
+    complex(real64), allocatable :: humidity_spectral(:, :, :), surface_temperature_spectral(:, :)
     real(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     real(real64), allocatable :: surface_pressure(:, :), log_surface_pressure(:, :)
-    real(real64), allocatable :: u(:, :, :), v(:, :, :)
+    real(real64), allocatable :: u(:, :, :), v(:, :, :), humidity(:, :, :)
     real(real64), allocatable :: surface_temperature(:, :), deep_temperature(:, :)
 
-    call solver%get_spectral_state(zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral)
-    call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
-                           surface_temperature=surface_temperature, deep_temperature=deep_temperature)
-    log_surface_pressure = log(surface_pressure)
-    call write_radiation_yearly_snapshot(case_directory, year, ring_nlon, &
-      zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
-      zeta, delta, temperature, u, v, log_surface_pressure, surface_temperature, deep_temperature, &
-      write_deep_temperature)
+    if (options%include_moisture) then
+      call solver%get_spectral_state(zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
+                                     specific_humidity=humidity_spectral, &
+                                     surface_temperature=surface_temperature_spectral)
+      call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
+                             surface_temperature=surface_temperature, deep_temperature=deep_temperature, &
+                             specific_humidity=humidity)
+      log_surface_pressure = log(surface_pressure)
+      call write_radiation_yearly_snapshot(case_directory, year, ring_nlon, &
+        zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
+        zeta, delta, temperature, u, v, log_surface_pressure, surface_temperature, deep_temperature, &
+        options, humidity_spectral=humidity_spectral, humidity=humidity, &
+        surface_temperature_spectral=surface_temperature_spectral, time_seconds=solver%get_time(), &
+        step=solver%get_step())
+    else
+      call solver%get_spectral_state(zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral)
+      call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
+                             surface_temperature=surface_temperature, deep_temperature=deep_temperature)
+      log_surface_pressure = log(surface_pressure)
+      call write_radiation_yearly_snapshot(case_directory, year, ring_nlon, &
+        zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
+        zeta, delta, temperature, u, v, log_surface_pressure, surface_temperature, deep_temperature, options)
+    end if
   end subroutine write_current_radiation_snapshot
 
 end module radiation_case

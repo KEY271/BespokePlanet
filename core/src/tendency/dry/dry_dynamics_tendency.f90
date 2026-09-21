@@ -1,5 +1,8 @@
-!> Adiabatic dry dynamics: the contribution of advection, the pressure-gradient
-!> term and the thermodynamic equation to the grid-space right-hand side.
+!> Adiabatic dynamics: the contribution of advection, the pressure-gradient
+!> term, the thermodynamic equation and (when moisture is carried) the
+!> specific-humidity advection to the grid-space right-hand side.  The
+!> pressure-gradient term and the adiabatic heating use the virtual
+!> temperature, which equals the temperature in a dry atmosphere.
 !>
 !> This is the first tendency the evaluator adds, so it writes the dynamical
 !> part into the accumulators that the physical tendencies then add to.
@@ -16,7 +19,7 @@ module dry_dynamics_tendency
 
 contains
 
-  !> With the momentum forcing F = -(vertical advection) - R T (pressure-gradient term),
+  !> With the momentum forcing F = -(vertical advection) - R T_v (pressure-gradient term),
   !>   d(zeta)/dt = -div((zeta+f) u) + curl F,   d(delta)/dt = curl((zeta+f) u) + div F - lap(K+Phi).
   !> Since -div(A u, A v) = curl(A v, -A u) and curl(A u, A v) = div(A v, -A u), both
   !> tendencies are the curl and divergence of the single vector stored in
@@ -39,7 +42,7 @@ contains
       call add_momentum_forcing(workspace%nx, workspace%ny, workspace%ring_nlon, transform%mu, &
         workspace%active_rotation_rate, workspace%zeta_grid(:, :, k), workspace%u(:, :, k), &
         workspace%v(:, :, k), workspace%vertical_u(:, :, k), workspace%vertical_v(:, :, k), &
-        workspace%temperature_grid(:, :, k), workspace%pressure_gradient_u(:, :, k), &
+        workspace%virtual_temperature_grid(:, :, k), workspace%pressure_gradient_u(:, :, k), &
         workspace%pressure_gradient_v(:, :, k), workspace%geopotential(:, :, k), &
         workspace%forcing_u(:, :, k), workspace%forcing_v(:, :, k), &
         workspace%kinetic_geopotential(:, :, k), level_maximum_speed_squared)
@@ -48,11 +51,18 @@ contains
       call transform%gradient_to_grid(state%temperature(:, :, k), workspace%dtdlambda, workspace%dtdphi)
       call add_thermodynamic_forcing(workspace%nx, workspace%ny, workspace%ring_nlon, transform%mu, &
         workspace%u(:, :, k), workspace%v(:, :, k), workspace%dtdlambda, workspace%dtdphi, &
-        workspace%temperature_grid(:, :, k), workspace%pressure_gradient_u(:, :, k), &
+        workspace%virtual_temperature_grid(:, :, k), workspace%pressure_gradient_u(:, :, k), &
         workspace%pressure_gradient_v(:, :, k), workspace%vertical_t(:, :, k), &
         workspace%layer_l(:, :, k), workspace%alpha(:, :, k), workspace%delta_p(:, :, k), &
         workspace%cumulative(:, :, k - 1), workspace%mass_divergence(:, :, k), &
         workspace%forcing_temperature(:, :, k))
+      if (workspace%moisture_grids_ready) then
+        ! Water vapour is a tracer of the dynamics: -u.grad(q) - W_k(q), on the signed grid humidity.
+        call transform%gradient_to_grid(state%specific_humidity(:, :, k), workspace%dtdlambda, workspace%dtdphi)
+        call add_scalar_advection(workspace%nx, workspace%ny, workspace%ring_nlon, transform%mu, &
+          workspace%u(:, :, k), workspace%v(:, :, k), workspace%dtdlambda, workspace%dtdphi, &
+          workspace%vertical_q(:, :, k), workspace%forcing_humidity(:, :, k))
+      end if
     end do
     maximum_speed = sqrt(maximum_speed_squared)
 
@@ -90,14 +100,15 @@ contains
     end do
   end subroutine add_momentum_forcing
 
+  !> Advection of T and the adiabatic heating kappa T_v (D ln p/Dt)_k.
   subroutine add_thermodynamic_forcing(nx, ny, ring_nlon, mu, u, v, dtdlambda, dtdphi, &
-                                       temperature_grid, pressure_gradient_u, pressure_gradient_v, &
+                                       virtual_temperature_grid, pressure_gradient_u, pressure_gradient_v, &
                                        vertical_t, layer_l, alpha, delta_p, cumulative_above, &
                                        mass_divergence, forcing_temperature)
     integer, intent(in) :: nx, ny, ring_nlon(ny)
     real(real64), intent(in) :: mu(ny)
     real(real64), intent(in) :: u(nx, ny), v(nx, ny), dtdlambda(nx, ny), dtdphi(nx, ny)
-    real(real64), intent(in) :: temperature_grid(nx, ny)
+    real(real64), intent(in) :: virtual_temperature_grid(nx, ny)
     real(real64), intent(in) :: pressure_gradient_u(nx, ny), pressure_gradient_v(nx, ny)
     real(real64), intent(in) :: vertical_t(nx, ny), layer_l(nx, ny), alpha(nx, ny), delta_p(nx, ny)
     real(real64), intent(in) :: cumulative_above(nx, ny), mass_divergence(nx, ny)
@@ -113,10 +124,28 @@ contains
         forcing_temperature(i, j) = forcing_temperature(i, j) + &
           (-u(i, j)*dtdlambda(i, j)/(earth_radius*cosphi) - &
            v(i, j)*dtdphi(i, j)/earth_radius - vertical_t(i, j) + &
-           dry_air_kappa*temperature_grid(i, j)*thermodynamic_q)
+           dry_air_kappa*virtual_temperature_grid(i, j)*thermodynamic_q)
       end do
     end do
   end subroutine add_thermodynamic_forcing
+
+  !> -u.grad(X) - W_k(X) of one advected scalar, given its spectral gradient on the grid.
+  subroutine add_scalar_advection(nx, ny, ring_nlon, mu, u, v, dxdlambda, dxdphi, vertical_x, forcing_x)
+    integer, intent(in) :: nx, ny, ring_nlon(ny)
+    real(real64), intent(in) :: mu(ny)
+    real(real64), intent(in) :: u(nx, ny), v(nx, ny), dxdlambda(nx, ny), dxdphi(nx, ny), vertical_x(nx, ny)
+    real(real64), intent(inout) :: forcing_x(nx, ny)
+    integer :: i, j
+    real(real64) :: cosphi
+
+    do j = 1, ny
+      cosphi = sqrt(max(0.0_real64, 1.0_real64 - mu(j)**2))
+      do i = 1, ring_nlon(j)
+        forcing_x(i, j) = forcing_x(i, j) - u(i, j)*dxdlambda(i, j)/(earth_radius*cosphi) - &
+          v(i, j)*dxdphi(i, j)/earth_radius - vertical_x(i, j)
+      end do
+    end do
+  end subroutine add_scalar_advection
 
   subroutine add_surface_pressure_forcing(nx, ny, ring_nlon, cumulative_bottom, ps, forcing_log_ps)
     integer, intent(in) :: nx, ny, ring_nlon(ny)

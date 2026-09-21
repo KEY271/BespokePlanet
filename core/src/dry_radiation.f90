@@ -1,13 +1,16 @@
 module dry_radiation
   use iso_fortran_env, only: real64
-  use dry_vertical_coordinate, only: dry_air_gas_constant
   use dry_physics_config, only: radiation_config, radiation_orbital_period, radiation_planet_rotation_rate, &
                                 radiation_surface_heat_capacity
+  use surface_exchange, only: surface_sensible_heat_flux
   implicit none
   private
 
   real(real64), parameter :: pi = acos(-1.0_real64)
 
+  !> One instantaneous sample of the global and zonal diagnostics that the
+  !> radiation, slab-ocean and moist cases aggregate.  The moist fields are zero
+  !> and unallocated unless the moist processes are active.
   type, public :: radiation_diagnostics
     real(real64) :: time_seconds = 0.0_real64
     real(real64) :: mean_atmospheric_temperature = 0.0_real64
@@ -18,6 +21,20 @@ module dry_radiation
     real(real64) :: mean_incoming_shortwave = 0.0_real64
     real(real64) :: mean_reflected_shortwave = 0.0_real64
     real(real64) :: mean_outgoing_longwave = 0.0_real64
+    !> Water budget in kg m^-2 s^-1 (precipitation, evaporation) and kg m^-2 (column water).
+    real(real64) :: mean_convective_precipitation = 0.0_real64
+    real(real64) :: mean_large_scale_precipitation = 0.0_real64
+    real(real64) :: mean_evaporation = 0.0_real64
+    real(real64) :: mean_latent_heat_flux = 0.0_real64
+    real(real64) :: mean_precipitable_water = 0.0_real64
+    real(real64) :: mean_signed_column_water = 0.0_real64
+    real(real64) :: mean_negative_column_water = 0.0_real64
+    !> Largest wind speed of the sample over all grid points and levels, and where it occurs.
+    real(real64) :: maximum_wind_speed = 0.0_real64
+    real(real64) :: maximum_wind_longitude_degrees = 0.0_real64
+    real(real64) :: maximum_wind_latitude_degrees = 0.0_real64
+    integer :: maximum_wind_level = 0
+    real(real64) :: maximum_wind_eta = 0.0_real64
     real(real64), allocatable :: surface_temperature(:, :)
     real(real64), allocatable :: surface_pressure(:, :)
     real(real64), allocatable :: zonal_temperature(:, :)
@@ -25,6 +42,12 @@ module dry_radiation
     real(real64), allocatable :: zonal_v(:, :)
     real(real64), allocatable :: zonal_uv(:, :)
     real(real64), allocatable :: zonal_vt(:, :)
+    !> Moist grid fields: total precipitation and evaporation (kg m^-2 s^-1), precipitable water (kg m^-2).
+    real(real64), allocatable :: precipitation(:, :)
+    real(real64), allocatable :: evaporation(:, :)
+    real(real64), allocatable :: precipitable_water(:, :)
+    real(real64), allocatable :: zonal_humidity(:, :)
+    real(real64), allocatable :: zonal_vq(:, :)
   end type radiation_diagnostics
 
   public :: shortwave_downward_flux
@@ -50,6 +73,23 @@ contains
     destination%mean_incoming_shortwave = source%mean_incoming_shortwave
     destination%mean_reflected_shortwave = source%mean_reflected_shortwave
     destination%mean_outgoing_longwave = source%mean_outgoing_longwave
+    destination%mean_convective_precipitation = source%mean_convective_precipitation
+    destination%mean_large_scale_precipitation = source%mean_large_scale_precipitation
+    destination%mean_evaporation = source%mean_evaporation
+    destination%mean_latent_heat_flux = source%mean_latent_heat_flux
+    destination%mean_precipitable_water = source%mean_precipitable_water
+    destination%mean_signed_column_water = source%mean_signed_column_water
+    destination%mean_negative_column_water = source%mean_negative_column_water
+    destination%maximum_wind_speed = source%maximum_wind_speed
+    destination%maximum_wind_longitude_degrees = source%maximum_wind_longitude_degrees
+    destination%maximum_wind_latitude_degrees = source%maximum_wind_latitude_degrees
+    destination%maximum_wind_level = source%maximum_wind_level
+    destination%maximum_wind_eta = source%maximum_wind_eta
+    if (allocated(source%precipitation)) call move_alloc(source%precipitation, destination%precipitation)
+    if (allocated(source%evaporation)) call move_alloc(source%evaporation, destination%evaporation)
+    if (allocated(source%precipitable_water)) call move_alloc(source%precipitable_water, destination%precipitable_water)
+    if (allocated(source%zonal_humidity)) call move_alloc(source%zonal_humidity, destination%zonal_humidity)
+    if (allocated(source%zonal_vq)) call move_alloc(source%zonal_vq, destination%zonal_vq)
     if (allocated(source%surface_temperature)) call move_alloc(source%surface_temperature, destination%surface_temperature)
     if (allocated(source%surface_pressure)) call move_alloc(source%surface_pressure, destination%surface_pressure)
     if (allocated(source%zonal_temperature)) call move_alloc(source%zonal_temperature, destination%zonal_temperature)
@@ -150,12 +190,16 @@ contains
   !>
   !> The caller supplies one internally consistent RAW-filtered previous-time column for every
   !> state-dependent term.  Solar geometry is evaluated at time_seconds because it is prescribed
-  !> rather than prognostic.
+  !> rather than prognostic.  The sensible heat flux compares the surface with the lowest level
+  !> extrapolated dry-adiabatically to the surface pressure, so a neutral column exchanges none.
+  !> An optional latent heat flux L E (W m^-2, upward) is taken from the surface budget; the
+  !> matching water vapour source is added to the atmosphere by the evaporation tendency.
   subroutine radiation_tendency(config, pressure_half, temperature, surface_temperature, &
                                 deep_temperature, lowest_u, lowest_v, sin_latitude, &
                                 longitude, time_seconds, temperature_tendency, &
                                 surface_temperature_tendency, deep_temperature_tendency, &
-                                incoming_shortwave, reflected_shortwave, outgoing_longwave)
+                                incoming_shortwave, reflected_shortwave, outgoing_longwave, &
+                                latent_heat_flux)
     type(radiation_config), intent(in) :: config
     real(real64), intent(in) :: pressure_half(0:), temperature(:)
     real(real64), intent(in) :: surface_temperature, deep_temperature
@@ -164,6 +208,7 @@ contains
     real(real64), intent(out) :: temperature_tendency(:)
     real(real64), intent(out) :: surface_temperature_tendency, deep_temperature_tendency
     real(real64), intent(out) :: incoming_shortwave, reflected_shortwave, outgoing_longwave
+    real(real64), intent(in), optional :: latent_heat_flux
     real(real64) :: upward_longwave(0:size(temperature)), downward_longwave(0:size(temperature))
     real(real64) :: transmission(size(temperature)), emission(size(temperature))
     real(real64) :: net_longwave(0:size(temperature))
@@ -171,9 +216,11 @@ contains
     real(real64) :: layer_shortwave_optical_depth, shortwave_transmission
     real(real64) :: shortwave_downward, ultraviolet_downward, non_ultraviolet_downward, shortwave_absorbed
     real(real64) :: stefan_boltzmann_constant, dry_gravity_acceleration, dry_air_specific_heat
-    real(real64) :: surface_heat_capacity
+    real(real64) :: surface_heat_capacity, surface_latent_heat
     integer :: k, number_of_levels
 
+    surface_latent_heat = 0.0_real64
+    if (present(latent_heat_flux)) surface_latent_heat = latent_heat_flux
     stefan_boltzmann_constant = config%stefan_boltzmann_constant
     dry_gravity_acceleration = config%gravity_acceleration
     dry_air_specific_heat = config%dry_air_specific_heat
@@ -237,10 +284,8 @@ contains
       shortwave_downward = non_ultraviolet_downward + ultraviolet_downward
     end if
 
-    sensible_heat = pressure_half(number_of_levels)/(dry_air_gas_constant*temperature(number_of_levels))* &
-      dry_air_specific_heat*config%surface_exchange_coefficient* &
-      sqrt(lowest_u**2 + lowest_v**2 + config%gustiness_speed**2)* &
-      (surface_temperature - temperature(number_of_levels))
+    sensible_heat = surface_sensible_heat_flux(config, pressure_half, temperature(number_of_levels), &
+                                               surface_temperature, lowest_u, lowest_v)
     pressure_thickness = pressure_half(number_of_levels) - pressure_half(number_of_levels - 1)
     temperature_tendency(number_of_levels) = temperature_tendency(number_of_levels) + &
       dry_gravity_acceleration/(dry_air_specific_heat*pressure_thickness)*sensible_heat
@@ -257,7 +302,7 @@ contains
     ! The surface loses exactly the upward longwave the lowest layer sees, so the column budget closes.
     surface_temperature_tendency = (shortwave_downward - reflected_shortwave + &
       downward_longwave(number_of_levels) - upward_longwave(number_of_levels) - &
-      surface_deep_heat - sensible_heat)/surface_heat_capacity
+      surface_deep_heat - sensible_heat - surface_latent_heat)/surface_heat_capacity
     if (config%slab_ocean_enabled) then
       deep_temperature_tendency = 0.0_real64
     else

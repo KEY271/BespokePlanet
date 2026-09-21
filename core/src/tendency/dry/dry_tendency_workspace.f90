@@ -1,5 +1,5 @@
-!> Shared diagnostic fields and right-hand-side accumulators of one dry tendency
-!> evaluation.
+!> Shared diagnostic fields and right-hand-side accumulators of one dry (or
+!> moist) tendency evaluation.
 !>
 !> Every array is allocated once, when the model is initialized, and reused on
 !> each step.  Splitting the dry tendency into separate modules must not add
@@ -9,6 +9,11 @@
 !> The forcing_* components are the grid-space right-hand side.  Tendency
 !> modules add into them; dry_tendency_projection turns them into spectral
 !> tendencies with the same number of transforms the single kernel used.
+!>
+!> With moisture enabled the virtual temperature T_v = (1 + delta_v q^+) T
+!> replaces T in the hydrostatic relation, the pressure-gradient term and the
+!> adiabatic heating; without it virtual_temperature_grid is a copy of
+!> temperature_grid and the dry equations are reproduced exactly.
 module dry_tendency_workspace
   use iso_fortran_env, only: real64
   use harmonics, only: harmonic_transform
@@ -17,6 +22,7 @@ module dry_tendency_workspace
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate, dry_air_gas_constant
   use dry_state, only: dry_state_type
   use dry_physics_config, only: dry_model_physics_config
+  use moist_thermodynamics, only: virtual_temperature_coefficient
   implicit none
   private
 
@@ -27,9 +33,12 @@ module dry_tendency_workspace
     integer :: ny = 0
     integer, allocatable :: ring_nlon(:)
     real(real64), allocatable :: gaussian_weights(:)
+    !> Full-level eta of the vertical coordinate, for the wind-maximum diagnostic.
+    real(real64), allocatable :: full_level_eta(:)
 
     !> Current state on the grid.
     real(real64), allocatable :: zeta_grid(:, :, :), delta_grid(:, :, :), temperature_grid(:, :, :)
+    real(real64), allocatable :: humidity_grid(:, :, :), virtual_temperature_grid(:, :, :)
     real(real64), allocatable :: u(:, :, :), v(:, :, :)
     real(real64), allocatable :: log_ps(:, :), ps(:, :)
     real(real64), allocatable :: dlogps_dlambda(:, :), dlogps_dphi(:, :)
@@ -40,10 +49,12 @@ module dry_tendency_workspace
     real(real64), allocatable :: mass_divergence(:, :, :), cumulative(:, :, :), mass_flux(:, :, :)
     real(real64), allocatable :: pressure_gradient_u(:, :, :), pressure_gradient_v(:, :, :)
     real(real64), allocatable :: vertical_u(:, :, :), vertical_v(:, :, :), vertical_t(:, :, :)
+    real(real64), allocatable :: vertical_q(:, :, :)
 
     !> RAW-filtered previous time level; every prescribed physical tendency
     !> evaluates on this state, which is why it is diagnosed once here.
     real(real64), allocatable :: previous_temperature_grid(:, :, :)
+    real(real64), allocatable :: previous_humidity_grid(:, :, :)
     real(real64), allocatable :: previous_u(:, :, :), previous_v(:, :, :)
     real(real64), allocatable :: previous_log_ps(:, :), previous_ps(:, :)
     real(real64), allocatable :: previous_pressure_half(:, :, :), previous_alpha(:, :, :)
@@ -59,9 +70,16 @@ module dry_tendency_workspace
     !> give the vorticity and divergence tendencies in one pair of transforms.
     real(real64), allocatable :: forcing_u(:, :, :), forcing_v(:, :, :)
     real(real64), allocatable :: forcing_temperature(:, :, :)
+    real(real64), allocatable :: forcing_humidity(:, :, :)
     real(real64), allocatable :: kinetic_geopotential(:, :, :)
     real(real64), allocatable :: forcing_log_ps(:, :)
     real(real64), allocatable :: forcing_surface_temperature(:, :), forcing_deep_temperature(:, :)
+
+    !> Column fluxes of the physical processes, kept for the diagnostics sample.
+    !> The latent heat flux L E is what the radiation tendency takes from the surface.
+    real(real64), allocatable :: incoming_shortwave(:, :), reflected_shortwave(:, :), outgoing_longwave(:, :)
+    real(real64), allocatable :: evaporation(:, :), latent_heat_flux(:, :)
+    real(real64), allocatable :: convective_precipitation(:, :), large_scale_precipitation(:, :)
 
     !> Scratch reused within a level.
     real(real64), allocatable :: temporary_grid(:, :), temporary_u(:, :), temporary_v(:, :)
@@ -73,6 +91,7 @@ module dry_tendency_workspace
     logical :: physics_grids_ready = .false.
     logical :: held_suarez_grids_ready = .false.
     logical :: radiation_grids_ready = .false.
+    logical :: moisture_grids_ready = .false.
   contains
     procedure, public :: initialize => initialize_workspace
     procedure, public :: prepare => prepare_workspace
@@ -98,9 +117,12 @@ contains
     this%ny = ny
     this%ring_nlon = transform%get_nlon()
     this%gaussian_weights = transform%get_gaussian_weights()
+    allocate (this%full_level_eta(levels))
+    this%full_level_eta = 0.0_real64
 
     allocate (this%zeta_grid(nx, ny, levels), this%delta_grid(nx, ny, levels))
     allocate (this%temperature_grid(nx, ny, levels))
+    allocate (this%humidity_grid(nx, ny, levels), this%virtual_temperature_grid(nx, ny, levels))
     allocate (this%u(nx, ny, levels), this%v(nx, ny, levels))
     allocate (this%log_ps(nx, ny), this%ps(nx, ny))
     allocate (this%dlogps_dlambda(nx, ny), this%dlogps_dphi(nx, ny))
@@ -113,9 +135,10 @@ contains
     allocate (this%mass_flux(nx, ny, 0:levels))
     allocate (this%pressure_gradient_u(nx, ny, levels), this%pressure_gradient_v(nx, ny, levels))
     allocate (this%vertical_u(nx, ny, levels), this%vertical_v(nx, ny, levels))
-    allocate (this%vertical_t(nx, ny, levels))
+    allocate (this%vertical_t(nx, ny, levels), this%vertical_q(nx, ny, levels))
 
     allocate (this%previous_temperature_grid(nx, ny, levels))
+    allocate (this%previous_humidity_grid(nx, ny, levels))
     allocate (this%previous_u(nx, ny, levels), this%previous_v(nx, ny, levels))
     allocate (this%previous_log_ps(nx, ny), this%previous_ps(nx, ny))
     allocate (this%previous_pressure_half(nx, ny, 0:levels))
@@ -126,27 +149,42 @@ contains
     allocate (this%surface_temperature_grid(nx, ny), this%deep_temperature_grid(nx, ny))
 
     allocate (this%forcing_u(nx, ny, levels), this%forcing_v(nx, ny, levels))
-    allocate (this%forcing_temperature(nx, ny, levels))
+    allocate (this%forcing_temperature(nx, ny, levels), this%forcing_humidity(nx, ny, levels))
     allocate (this%kinetic_geopotential(nx, ny, levels))
     allocate (this%forcing_log_ps(nx, ny))
     allocate (this%forcing_surface_temperature(nx, ny), this%forcing_deep_temperature(nx, ny))
 
+    allocate (this%incoming_shortwave(nx, ny), this%reflected_shortwave(nx, ny), this%outgoing_longwave(nx, ny))
+    allocate (this%evaporation(nx, ny), this%latent_heat_flux(nx, ny))
+    allocate (this%convective_precipitation(nx, ny), this%large_scale_precipitation(nx, ny))
+
     allocate (this%temporary_grid(nx, ny), this%temporary_u(nx, ny), this%temporary_v(nx, ny))
     allocate (this%dtdlambda(nx, ny), this%dtdphi(nx, ny))
+    this%humidity_grid = 0.0_real64
+    this%previous_humidity_grid = 0.0_real64
+    this%vertical_q = 0.0_real64
   end subroutine initialize_workspace
 
-  !> Zeroes the grid-space right-hand side.  Points outside a reduced-grid ring
-  !> are never written by a tendency, so they must start at zero.
+  !> Zeroes the grid-space right-hand side and the flux records.  Points outside a
+  !> reduced-grid ring are never written by a tendency, so they must start at zero.
   subroutine zero_forcing(this)
     class(dry_workspace_type), intent(inout) :: this
 
     this%forcing_u = 0.0_real64
     this%forcing_v = 0.0_real64
     this%forcing_temperature = 0.0_real64
+    this%forcing_humidity = 0.0_real64
     this%kinetic_geopotential = 0.0_real64
     this%forcing_log_ps = 0.0_real64
     this%forcing_surface_temperature = 0.0_real64
     this%forcing_deep_temperature = 0.0_real64
+    this%incoming_shortwave = 0.0_real64
+    this%reflected_shortwave = 0.0_real64
+    this%outgoing_longwave = 0.0_real64
+    this%evaporation = 0.0_real64
+    this%latent_heat_flux = 0.0_real64
+    this%convective_precipitation = 0.0_real64
+    this%large_scale_precipitation = 0.0_real64
   end subroutine zero_forcing
 
   !> Diagnoses every grid field that more than one tendency needs.
@@ -170,11 +208,15 @@ contains
       error stop 'dry nonlinear state has the wrong number of vertical levels'
     end if
     this%evaluation_time = evaluation_time
+    this%full_level_eta = coordinate%full_level_eta
     this%physics_grids_ready = physics%held_suarez%enabled .or. physics%surface_friction%enabled .or. &
                                physics%rayleigh_friction%enabled .or. physics%radiation%enabled .or. &
-                               physics%convection%enabled
-    this%held_suarez_grids_ready = physics%held_suarez%enabled .or. physics%surface_friction%enabled
+                               physics%convection%enabled .or. physics%moist_convection%enabled .or. &
+                               physics%condensation%enabled .or. physics%evaporation%enabled
+    this%held_suarez_grids_ready = physics%held_suarez%enabled .or. physics%surface_friction%enabled .or. &
+                                   physics%moist_convection%enabled .or. physics%condensation%enabled
     this%radiation_grids_ready = physics%radiation%enabled
+    this%moisture_grids_ready = physics%moisture%enabled
     this%active_rotation_rate = rotation_rate
 
     this%zeta_grid = 0.0_real64
@@ -182,6 +224,7 @@ contains
     this%temperature_grid = 0.0_real64
     this%u = 0.0_real64
     this%v = 0.0_real64
+    if (this%moisture_grids_ready) this%humidity_grid = 0.0_real64
     do k = 1, levels
       call transform%spectral_to_grid(state%zeta(:, :, k), this%temporary_grid)
       this%zeta_grid(:, :, k) = this%temporary_grid
@@ -193,6 +236,14 @@ contains
                                         state%delta(:, :, k), this%temporary_u, this%temporary_v)
       this%u(:, :, k) = this%temporary_u
       this%v(:, :, k) = this%temporary_v
+      if (this%moisture_grids_ready) then
+        call transform%spectral_to_grid(state%specific_humidity(:, :, k), this%temporary_grid)
+        this%humidity_grid(:, :, k) = this%temporary_grid
+        this%virtual_temperature_grid(:, :, k) = (1.0_real64 + virtual_temperature_coefficient* &
+          max(this%humidity_grid(:, :, k), 0.0_real64))*this%temperature_grid(:, :, k)
+      else
+        this%virtual_temperature_grid(:, :, k) = this%temperature_grid(:, :, k)
+      end if
       if (this%physics_grids_ready) then
         call transform%spectral_to_grid(physics_state%temperature(:, :, k), this%temporary_grid)
         this%previous_temperature_grid(:, :, k) = this%temporary_grid
@@ -200,6 +251,10 @@ contains
                                           physics_state%delta(:, :, k), this%temporary_u, this%temporary_v)
         this%previous_u(:, :, k) = this%temporary_u
         this%previous_v(:, :, k) = this%temporary_v
+        if (this%moisture_grids_ready) then
+          call transform%spectral_to_grid(physics_state%specific_humidity(:, :, k), this%temporary_grid)
+          this%previous_humidity_grid(:, :, k) = this%temporary_grid
+        end if
       end if
     end do
     call transform%spectral_to_grid(state%log_surface_pressure, this%log_ps)
@@ -247,13 +302,14 @@ contains
     end do
 
     ! The surface geopotential is a fixed lower boundary condition, not a prognostic field.
+    ! The hydrostatic integration uses the virtual temperature.
     call transform%spectral_to_grid(surface_geopotential, this%surface_geopotential_grid)
     this%geopotential_half(:, :, levels) = this%surface_geopotential_grid
     do k = levels, 1, -1
       this%geopotential(:, :, k) = this%geopotential_half(:, :, k) + &
-        this%alpha(:, :, k)*dry_air_gas_constant*this%temperature_grid(:, :, k)
+        this%alpha(:, :, k)*dry_air_gas_constant*this%virtual_temperature_grid(:, :, k)
       this%geopotential_half(:, :, k - 1) = this%geopotential_half(:, :, k) + &
-        dry_air_gas_constant*this%temperature_grid(:, :, k)*this%layer_l(:, :, k)
+        dry_air_gas_constant*this%virtual_temperature_grid(:, :, k)*this%layer_l(:, :, k)
     end do
 
     call accumulate_mass_divergence(this%nx, this%ny, levels, this%ring_nlon, transform%mu, &
@@ -267,6 +323,10 @@ contains
                                     this%u, this%v, this%temperature_grid, this%mass_flux, &
                                     this%pressure_gradient_u, this%pressure_gradient_v, &
                                     this%vertical_u, this%vertical_v, this%vertical_t)
+    if (this%moisture_grids_ready) then
+      call compute_vertical_scalar_advection(this%nx, this%ny, levels, this%ring_nlon, this%delta_p, &
+                                             this%humidity_grid, this%mass_flux, this%vertical_q)
+    end if
   end subroutine prepare_workspace
 
   !> The grid loops below are separate procedures with explicit-shape dummies so that the
@@ -357,5 +417,29 @@ contains
       end do
     end do
   end subroutine compute_pressure_gradient_and_vertical_advection
+
+  !> W_k(X) for one more advected scalar (specific humidity), with the same
+  !> discretization as the temperature above.
+  subroutine compute_vertical_scalar_advection(nx, ny, levels, ring_nlon, delta_p, scalar, mass_flux, vertical)
+    integer, intent(in) :: nx, ny, levels, ring_nlon(ny)
+    real(real64), intent(in) :: delta_p(nx, ny, levels), scalar(nx, ny, levels), mass_flux(nx, ny, 0:levels)
+    real(real64), intent(out) :: vertical(nx, ny, levels)
+    integer :: i, j, k
+
+    vertical = 0.0_real64
+    do k = 1, levels
+      do j = 1, ny
+        do i = 1, ring_nlon(j)
+          if (k < levels) then
+            vertical(i, j, k) = vertical(i, j, k) + mass_flux(i, j, k)*(scalar(i, j, k + 1) - scalar(i, j, k))
+          end if
+          if (k > 1) then
+            vertical(i, j, k) = vertical(i, j, k) + mass_flux(i, j, k - 1)*(scalar(i, j, k) - scalar(i, j, k - 1))
+          end if
+          vertical(i, j, k) = vertical(i, j, k)/(2.0_real64*delta_p(i, j, k))
+        end do
+      end do
+    end do
+  end subroutine compute_vertical_scalar_advection
 
 end module dry_tendency_workspace

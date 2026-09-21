@@ -16,6 +16,7 @@ module numerics_config
   real(real64), parameter, public :: default_dry_vorticity_diffusion_seconds = 4.0_real64*3600.0_real64
   real(real64), parameter, public :: default_dry_divergence_diffusion_seconds = 1.0_real64*3600.0_real64
   real(real64), parameter, public :: default_dry_temperature_diffusion_seconds = 4.0_real64*3600.0_real64
+  real(real64), parameter, public :: default_dry_humidity_diffusion_seconds = 4.0_real64*3600.0_real64
 
   type, public :: raw_filter_config
     real(real64) :: epsilon = default_raw_filter_epsilon
@@ -34,6 +35,8 @@ module numerics_config
     real(real64) :: vorticity_timescale_seconds = default_dry_vorticity_diffusion_seconds
     real(real64) :: divergence_timescale_seconds = default_dry_divergence_diffusion_seconds
     real(real64) :: temperature_timescale_seconds = default_dry_temperature_diffusion_seconds
+    !> Specific humidity is damped like temperature (moist atmosphere only).
+    real(real64) :: humidity_timescale_seconds = default_dry_humidity_diffusion_seconds
   end type dry_hyperdiffusion_config
 
   type, public :: model_numerics_config

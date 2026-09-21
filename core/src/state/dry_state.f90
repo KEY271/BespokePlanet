@@ -1,3 +1,7 @@
+!> Spectral prognostic state of the hydrostatic atmosphere: vorticity, divergence,
+!> temperature, specific humidity and log surface pressure on every level, plus
+!> the surface (ground or ocean) and deep-ground temperatures.  Specific
+!> humidity is always carried; it stays zero when the atmosphere is dry.
 module dry_state
   use iso_fortran_env, only: real64
   implicit none
@@ -7,6 +11,7 @@ module dry_state
     complex(real64), allocatable :: zeta(:, :, :)
     complex(real64), allocatable :: delta(:, :, :)
     complex(real64), allocatable :: temperature(:, :, :)
+    complex(real64), allocatable :: specific_humidity(:, :, :)
     complex(real64), allocatable :: log_surface_pressure(:, :)
     complex(real64), allocatable :: surface_temperature(:, :)
     complex(real64), allocatable :: deep_temperature(:, :)
@@ -16,6 +21,7 @@ module dry_state
     complex(real64), allocatable :: zeta(:, :, :)
     complex(real64), allocatable :: delta(:, :, :)
     complex(real64), allocatable :: temperature(:, :, :)
+    complex(real64), allocatable :: specific_humidity(:, :, :)
     complex(real64), allocatable :: log_surface_pressure(:, :)
     complex(real64), allocatable :: surface_temperature(:, :)
     complex(real64), allocatable :: deep_temperature(:, :)
@@ -31,18 +37,20 @@ contains
     type(dry_state_type), intent(inout) :: state
     integer, intent(in) :: truncation, number_of_levels
     if (allocated(state%zeta)) then
-      deallocate (state%zeta, state%delta, state%temperature, state%log_surface_pressure)
+      deallocate (state%zeta, state%delta, state%temperature, state%specific_humidity, state%log_surface_pressure)
       deallocate (state%surface_temperature, state%deep_temperature)
     end if
     allocate (state%zeta(0:truncation + 1, 0:truncation, number_of_levels))
     allocate (state%delta(0:truncation + 1, 0:truncation, number_of_levels))
     allocate (state%temperature(0:truncation + 1, 0:truncation, number_of_levels))
+    allocate (state%specific_humidity(0:truncation + 1, 0:truncation, number_of_levels))
     allocate (state%log_surface_pressure(0:truncation + 1, 0:truncation))
     allocate (state%surface_temperature(0:truncation + 1, 0:truncation))
     allocate (state%deep_temperature(0:truncation + 1, 0:truncation))
     state%zeta = cmplx(0.0_real64, 0.0_real64, kind=real64)
     state%delta = cmplx(0.0_real64, 0.0_real64, kind=real64)
     state%temperature = cmplx(0.0_real64, 0.0_real64, kind=real64)
+    state%specific_humidity = cmplx(0.0_real64, 0.0_real64, kind=real64)
     state%log_surface_pressure = cmplx(0.0_real64, 0.0_real64, kind=real64)
     state%surface_temperature = cmplx(0.0_real64, 0.0_real64, kind=real64)
     state%deep_temperature = cmplx(0.0_real64, 0.0_real64, kind=real64)
@@ -52,12 +60,13 @@ contains
     type(dry_tendency_type), intent(inout) :: tendency
     integer, intent(in) :: truncation, number_of_levels
     if (allocated(tendency%zeta)) then
-      deallocate (tendency%zeta, tendency%delta, tendency%temperature, tendency%log_surface_pressure)
-      deallocate (tendency%surface_temperature, tendency%deep_temperature)
+      deallocate (tendency%zeta, tendency%delta, tendency%temperature, tendency%specific_humidity)
+      deallocate (tendency%log_surface_pressure, tendency%surface_temperature, tendency%deep_temperature)
     end if
     allocate (tendency%zeta(0:truncation + 1, 0:truncation, number_of_levels))
     allocate (tendency%delta(0:truncation + 1, 0:truncation, number_of_levels))
     allocate (tendency%temperature(0:truncation + 1, 0:truncation, number_of_levels))
+    allocate (tendency%specific_humidity(0:truncation + 1, 0:truncation, number_of_levels))
     allocate (tendency%log_surface_pressure(0:truncation + 1, 0:truncation))
     allocate (tendency%surface_temperature(0:truncation + 1, 0:truncation))
     allocate (tendency%deep_temperature(0:truncation + 1, 0:truncation))
@@ -70,6 +79,7 @@ contains
     tendency%zeta = cmplx(0.0_real64, 0.0_real64, kind=real64)
     tendency%delta = cmplx(0.0_real64, 0.0_real64, kind=real64)
     tendency%temperature = cmplx(0.0_real64, 0.0_real64, kind=real64)
+    tendency%specific_humidity = cmplx(0.0_real64, 0.0_real64, kind=real64)
     tendency%log_surface_pressure = cmplx(0.0_real64, 0.0_real64, kind=real64)
     tendency%surface_temperature = cmplx(0.0_real64, 0.0_real64, kind=real64)
     tendency%deep_temperature = cmplx(0.0_real64, 0.0_real64, kind=real64)
@@ -83,6 +93,7 @@ contains
     destination%zeta(:, :, :) = source%zeta
     destination%delta(:, :, :) = source%delta
     destination%temperature(:, :, :) = source%temperature
+    destination%specific_humidity(:, :, :) = source%specific_humidity
     destination%log_surface_pressure(:, :) = source%log_surface_pressure
     destination%surface_temperature(:, :) = source%surface_temperature
     destination%deep_temperature(:, :) = source%deep_temperature
@@ -94,6 +105,7 @@ contains
     call swap_level_field(first%zeta, second%zeta)
     call swap_level_field(first%delta, second%delta)
     call swap_level_field(first%temperature, second%temperature)
+    call swap_level_field(first%specific_humidity, second%specific_humidity)
     call swap_surface_field(first%log_surface_pressure, second%log_surface_pressure)
     call swap_surface_field(first%surface_temperature, second%surface_temperature)
     call swap_surface_field(first%deep_temperature, second%deep_temperature)
@@ -115,6 +127,8 @@ contains
     call move_alloc(temporary, second)
   end subroutine swap_surface_field
 
+  !> Zeroes the global mean of vorticity and divergence and the unused spectral
+  !> entries of every field.  The global mean of specific humidity is not constrained.
   subroutine enforce_dry_state_constraints(state, truncation)
     type(dry_state_type), intent(inout) :: state
     integer, intent(in) :: truncation
@@ -123,6 +137,7 @@ contains
       call enforce_dry_spectral_field(state%zeta(:, :, k), truncation, .true.)
       call enforce_dry_spectral_field(state%delta(:, :, k), truncation, .true.)
       call enforce_dry_spectral_field(state%temperature(:, :, k), truncation, .false.)
+      call enforce_dry_spectral_field(state%specific_humidity(:, :, k), truncation, .false.)
     end do
     call enforce_dry_spectral_field(state%log_surface_pressure, truncation, .false.)
     call enforce_dry_spectral_field(state%surface_temperature, truncation, .false.)

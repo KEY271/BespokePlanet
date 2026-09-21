@@ -123,13 +123,17 @@ contains
     if (collect_diagnostics) then
       if (.not. present(diagnostics)) error stop 'dry stepper diagnostics output is required'
       call evaluate_dry_tendency(transform, truncation, coordinate, planet, current, previous, &
-        surface_geopotential, physics, workspace, evaluation_time, rhs, maximum_speed, diagnostics)
+        surface_geopotential, physics, workspace, evaluation_time, centered_interval, rhs, maximum_speed, &
+        diagnostics)
     else
       call evaluate_dry_tendency(transform, truncation, coordinate, planet, current, previous, &
-        surface_geopotential, physics, workspace, evaluation_time, rhs, maximum_speed)
+        surface_geopotential, physics, workspace, evaluation_time, centered_interval, rhs, maximum_speed)
     end if
 
+    ! Vorticity, specific humidity and the surface temperatures have no gravity-wave part
+    ! and are advanced explicitly; the semi-implicit solve below handles the rest.
     candidate%zeta(:, :, :) = previous%zeta + centered_interval*rhs%zeta
+    candidate%specific_humidity(:, :, :) = previous%specific_humidity + centered_interval*rhs%specific_humidity
     candidate%surface_temperature(:, :) = previous%surface_temperature + centered_interval*rhs%surface_temperature
     candidate%deep_temperature(:, :) = previous%deep_temperature + centered_interval*rhs%deep_temperature
     call solve_dry_gravity_wave(gravity_wave, centered_interval, previous, current, rhs, candidate)
@@ -140,6 +144,8 @@ contains
                                          hyperdiffusion%divergence_timescale_seconds, order)
       call apply_spectral_hyperdiffusion(truncation, centered_interval, candidate%temperature(:, :, k), &
                                          hyperdiffusion%temperature_timescale_seconds, order)
+      call apply_spectral_hyperdiffusion(truncation, centered_interval, candidate%specific_humidity(:, :, k), &
+                                         hyperdiffusion%humidity_timescale_seconds, order)
     end do
 
     if (apply_raw) then
@@ -151,6 +157,9 @@ contains
         call apply_raw_filter(previous%temperature(:, :, k), current%temperature(:, :, k), &
                               candidate%temperature(:, :, k), filtered%temperature(:, :, k), &
                               next%temperature(:, :, k), numerics%raw_filter)
+        call apply_raw_filter(previous%specific_humidity(:, :, k), current%specific_humidity(:, :, k), &
+                              candidate%specific_humidity(:, :, k), filtered%specific_humidity(:, :, k), &
+                              next%specific_humidity(:, :, k), numerics%raw_filter)
       end do
       call apply_raw_filter(previous%log_surface_pressure, current%log_surface_pressure, &
         candidate%log_surface_pressure, filtered%log_surface_pressure, next%log_surface_pressure, &

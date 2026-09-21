@@ -21,6 +21,7 @@ module dry_case_initial_conditions
   public :: held_suarez_case_physics, set_held_suarez_case_state
   public :: radiation_case_physics, slab_ocean_case_physics
   public :: radiation_case_planet, set_radiation_case_state
+  public :: moist_case_physics
 
 contains
 
@@ -90,6 +91,22 @@ contains
     physics%radiation%slab_ocean_enabled = .true.
     physics%radiation%axial_tilt = 0.0_real64
   end function slab_ocean_case_physics
+
+  !> The slab-ocean case with water vapour (docs/cases/moist.md): specific
+  !> humidity, virtual temperature, evaporation from the saturated ocean, moist
+  !> convective adjustment and large-scale condensation.  The upper Rayleigh
+  !> friction is inherited from the slab-ocean case; radiation does not see the
+  !> water vapour.
+  function moist_case_physics() result(physics)
+    type(dry_model_physics_config) :: physics
+
+    physics = slab_ocean_case_physics()
+    physics%moisture%enabled = .true.
+    physics%evaporation%enabled = .true.
+    physics%evaporation%surface_wetness = 1.0_real64
+    physics%moist_convection%enabled = .true.
+    physics%condensation%enabled = .true.
+  end function moist_case_physics
 
   !> The planet of the radiation case rotates with the calendar of its radiation
   !> configuration, so that a solar day is exactly solar_day seconds.

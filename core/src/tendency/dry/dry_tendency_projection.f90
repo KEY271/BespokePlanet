@@ -17,11 +17,13 @@ module dry_tendency_projection
 
 contains
 
-  subroutine project_dry_tendency(transform, truncation, workspace, radiation_enabled, rhs)
+  !> Specific humidity is transformed only when the atmosphere carries moisture;
+  !> a dry run keeps its (zero) humidity tendency without an extra transform.
+  subroutine project_dry_tendency(transform, truncation, workspace, radiation_enabled, moisture_enabled, rhs)
     type(harmonic_transform), intent(inout) :: transform
     integer, intent(in) :: truncation
     type(dry_workspace_type), intent(inout) :: workspace
-    logical, intent(in) :: radiation_enabled
+    logical, intent(in) :: radiation_enabled, moisture_enabled
     type(dry_tendency_type), intent(inout) :: rhs
     complex(real64), allocatable :: curl_spectral(:, :), divergence_spectral(:, :)
     complex(real64), allocatable :: temporary_spectral(:, :)
@@ -43,10 +45,17 @@ contains
 
       call transform%grid_to_spectral(workspace%forcing_temperature(:, :, k), temporary_spectral)
       rhs%temperature(:, :, k) = temporary_spectral
+      if (moisture_enabled) then
+        call transform%grid_to_spectral(workspace%forcing_humidity(:, :, k), temporary_spectral)
+        rhs%specific_humidity(:, :, k) = temporary_spectral
+      else
+        rhs%specific_humidity(:, :, k) = 0.0_real64
+      end if
 
       call enforce_dry_spectral_field(rhs%zeta(:, :, k), truncation, .true.)
       call enforce_dry_spectral_field(rhs%delta(:, :, k), truncation, .true.)
       call enforce_dry_spectral_field(rhs%temperature(:, :, k), truncation, .false.)
+      call enforce_dry_spectral_field(rhs%specific_humidity(:, :, k), truncation, .false.)
     end do
 
     call transform%grid_to_spectral(workspace%forcing_log_ps, temporary_spectral)

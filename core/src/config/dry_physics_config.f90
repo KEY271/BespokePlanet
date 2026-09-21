@@ -80,12 +80,49 @@ module dry_physics_config
     real(real64) :: adjustment_time = 4.0_real64*3600.0_real64
   end type convection_config
 
+  !> Water vapour as a prognostic variable: specific humidity is advected,
+  !> diffused and filtered like temperature, and the virtual temperature enters
+  !> the hydrostatic relation, the pressure-gradient term and the adiabatic
+  !> heating.  The other moist processes require this to be enabled.
+  type, public :: moisture_config
+    logical :: enabled = .false.
+  end type moisture_config
+
+  !> Bulk evaporation from the surface into the lowest model level, with the
+  !> latent heat taken from the surface energy budget.  The bulk coefficient and
+  !> gustiness are shared with the sensible heat flux of radiation_config.
+  type, public :: evaporation_config
+    logical :: enabled = .false.
+    !> Surface wetness beta in [0, 1]; a slab ocean is saturated (1).
+    real(real64) :: surface_wetness = 1.0_real64
+  end type evaporation_config
+
+  !> Simplified Betts-Miller moist convective adjustment (Frierson 2007).
+  type, public :: moist_convection_config
+    logical :: enabled = .false.
+    real(real64) :: adjustment_time = 2.0_real64*3600.0_real64
+    real(real64) :: reference_relative_humidity = 0.7_real64
+  end type moist_convection_config
+
+  !> Grid-scale condensation of supersaturated water vapour; the condensate falls
+  !> out immediately.  The condensation completes within one leapfrog step.
+  type, public :: condensation_config
+    logical :: enabled = .false.
+    !> Relative tolerance of the saturation solve, |q - q_s| <= tolerance*q_s.
+    real(real64) :: saturation_tolerance = 1.0e-4_real64
+    integer :: maximum_iterations = 10
+  end type condensation_config
+
   type, public :: dry_model_physics_config
     type(held_suarez_config) :: held_suarez
     type(surface_friction_config) :: surface_friction
     type(rayleigh_friction_config) :: rayleigh_friction
     type(radiation_config) :: radiation
     type(convection_config) :: convection
+    type(moisture_config) :: moisture
+    type(evaporation_config) :: evaporation
+    type(moist_convection_config) :: moist_convection
+    type(condensation_config) :: condensation
   end type dry_model_physics_config
 
   public :: radiation_days_per_year, radiation_orbital_period, radiation_planet_rotation_rate

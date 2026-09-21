@@ -14,7 +14,8 @@ program check_dry_atmosphere
                            ozone_layer_optical_depth, ozone_longwave_layer_optical_depth, &
                            radiation_calendar_date, radiation_diagnostics
   use dry_rayleigh_friction_tendency, only: dry_rayleigh_friction_rate
-  use radiation_diagnostics_collector, only: radiation_case_diagnostics, radiation_daily_accumulator
+  use radiation_diagnostics_collector, only: radiation_case_diagnostics, radiation_daily_accumulator, &
+                                            radiation_monthly_means
   use dry_case_initial_conditions, only: set_jablonowski_williamson_case_state, &
                                          held_suarez_case_physics, set_held_suarez_case_state, &
                                          radiation_case_physics, slab_ocean_case_physics, &
@@ -219,7 +220,7 @@ contains
     real(real64) :: temperature_tendency(2), expected_temperature_tendency(2), surface_tendency, deep_tendency
     real(real64) :: transmission(2), emission(2), upward_longwave(0:2), downward_longwave(0:2), net_longwave(0:2)
     real(real64) :: surface_shortwave, absorbed_shortwave, sensible_heat, pressure_thickness
-    real(real64) :: total_energy_tendency
+    real(real64) :: total_energy_tendency, lowest_alpha, lowest_pressure
     real(real64) :: incoming_shortwave, reflected_shortwave, outgoing_longwave
     integer :: k
 
@@ -253,9 +254,12 @@ contains
     end do
     expected_temperature_tendency(1) = expected_temperature_tendency(1) + &
       radiation%gravity_acceleration/(radiation%dry_air_specific_heat*(pressure_half(1) - pressure_half(0)))*absorbed_shortwave
-    sensible_heat = pressure_half(2)/(dry_air_gas_constant*temperature(2))* &
+    ! Bulk flux with the lowest-level density and the lowest level extrapolated to the surface pressure.
+    lowest_alpha = 1.0_real64 - pressure_half(1)*log(pressure_half(2)/pressure_half(1))/(pressure_half(2) - pressure_half(1))
+    lowest_pressure = pressure_half(2)*exp(-lowest_alpha)
+    sensible_heat = lowest_pressure/(dry_air_gas_constant*temperature(2))* &
       radiation%dry_air_specific_heat*radiation%surface_exchange_coefficient*sqrt(3.0_real64**2 + 4.0_real64**2 + &
-      radiation%gustiness_speed**2)*(surface_temperature - temperature(2))
+      radiation%gustiness_speed**2)*(surface_temperature - temperature(2)*(pressure_half(2)/lowest_pressure)**dry_air_kappa)
     expected_temperature_tendency(2) = expected_temperature_tendency(2) + &
       radiation%gravity_acceleration/(radiation%dry_air_specific_heat*(pressure_half(2) - pressure_half(1)))*sensible_heat
     if (maxval(abs(temperature_tendency - expected_temperature_tendency)) > 1.0e-16_real64 .or. &
@@ -389,8 +393,7 @@ contains
     real(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     real(real64), allocatable :: surface_pressure(:, :), u(:, :, :), v(:, :, :)
     real(real64), allocatable :: surface_temperature(:, :), deep_temperature(:, :)
-    real(real64), allocatable :: monthly_surface_temperature(:, :), monthly_surface_pressure(:, :)
-    real(real64), allocatable :: zonal_temperature(:, :), zonal_u(:, :), zonal_v(:, :), eddy_uv(:, :), eddy_vt(:, :)
+    type(radiation_monthly_means) :: monthly
     complex(real64), allocatable :: snapshot_zeta_spectral(:, :, :), snapshot_delta_spectral(:, :, :)
     complex(real64), allocatable :: snapshot_temperature_spectral(:, :, :), snapshot_log_ps_spectral(:, :)
     integer, allocatable :: nlon(:)
@@ -445,8 +448,7 @@ contains
             mean_surface_pressure, mean_outgoing_longwave) <= 0.0_real64 .or. mean_kinetic_energy < 0.0_real64) then
       error stop 'radiation daily diagnostics are incorrect'
     end if
-    call diagnostics%take_monthly(monthly_surface_temperature, monthly_surface_pressure, &
-                                             zonal_temperature, zonal_u, zonal_v, eddy_uv, eddy_vt)
+    call diagnostics%take_monthly(monthly)
     call solver%get_spectral_state(snapshot_zeta_spectral, snapshot_delta_spectral, &
                                    snapshot_temperature_spectral, snapshot_log_ps_spectral)
     if (.not. all(ieee_is_finite(real(snapshot_temperature_spectral, real64))) .or. &
@@ -459,12 +461,13 @@ contains
         .not. all(ieee_is_finite(deep_temperature))) then
       error stop 'radiation state produced a non-finite temperature'
     end if
-    if (.not. all(ieee_is_finite(monthly_surface_temperature)) .or. &
-        .not. all(ieee_is_finite(monthly_surface_pressure)) .or. &
-        .not. all(ieee_is_finite(zonal_temperature)) .or. .not. all(ieee_is_finite(eddy_uv)) .or. &
-        .not. all(ieee_is_finite(eddy_vt))) then
+    if (.not. all(ieee_is_finite(monthly%surface_temperature)) .or. &
+        .not. all(ieee_is_finite(monthly%surface_pressure)) .or. &
+        .not. all(ieee_is_finite(monthly%zonal_temperature)) .or. .not. all(ieee_is_finite(monthly%eddy_uv)) .or. &
+        .not. all(ieee_is_finite(monthly%eddy_vt))) then
       error stop 'radiation monthly diagnostics produced a non-finite value'
     end if
+    if (allocated(monthly%precipitation)) error stop 'dry radiation diagnostics carry moist fields'
   end subroutine check_radiation_state
 
   subroutine check_reference_atmosphere()
@@ -883,26 +886,26 @@ contains
 
     physics = dry_model_physics_config()
     call evaluate_dry_tendency(transform, truncation, coordinate, planet_config(), state, state, surface_geopotential, &
-                               physics, workspace, 0.0_real64, base, speed_base)
+                               physics, workspace, 0.0_real64, 2.0_real64*time_step, base, speed_base)
     physics%held_suarez%enabled = .true.
     physics%surface_friction%enabled = .true.
     call evaluate_dry_tendency(transform, truncation, coordinate, planet_config(), state, state, surface_geopotential, &
-                               physics, workspace, 0.0_real64, held, speed_held)
+                               physics, workspace, 0.0_real64, 2.0_real64*time_step, held, speed_held)
     physics = dry_model_physics_config()
     physics%convection%enabled = .true.
     call evaluate_dry_tendency(transform, truncation, coordinate, planet_config(), state, state, surface_geopotential, &
-                               physics, workspace, 0.0_real64, convective, speed_convective)
+                               physics, workspace, 0.0_real64, 2.0_real64*time_step, convective, speed_convective)
     physics%held_suarez%enabled = .true.
     physics%surface_friction%enabled = .true.
     call evaluate_dry_tendency(transform, truncation, coordinate, planet_config(), state, state, surface_geopotential, &
-                               physics, workspace, 0.0_real64, held_and_convective, speed_both)
+                               physics, workspace, 0.0_real64, 2.0_real64*time_step, held_and_convective, speed_both)
     physics = dry_model_physics_config()
     physics%radiation%enabled = .true.
     call evaluate_dry_tendency(transform, truncation, coordinate, planet_config(), state, state, surface_geopotential, &
-                               physics, workspace, 0.0_real64, radiative, speed_radiative)
+                               physics, workspace, 0.0_real64, 2.0_real64*time_step, radiative, speed_radiative)
     physics%convection%enabled = .true.
     call evaluate_dry_tendency(transform, truncation, coordinate, planet_config(), state, state, surface_geopotential, &
-                               physics, workspace, 0.0_real64, radiative_and_convective, &
+                               physics, workspace, 0.0_real64, 2.0_real64*time_step, radiative_and_convective, &
                                speed_radiative_convective)
 
     ! The largest wind speed describes the state, not the forcing.

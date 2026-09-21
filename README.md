@@ -25,7 +25,7 @@ brew install gcc fpm fftw lapack openblas pkg-config just node
 # テストを実行
 just test
 
-# モデルを実行（shallow-water / barotropic / dry / held-suarez / radiation / slab-ocean / all、省略時は dry）
+# モデルを実行（shallow-water / barotropic / dry / held-suarez / radiation / slab-ocean / moist / all、省略時は dry）
 just run dry
 
 # Held–Suarez 強制を 200 日間実行（5 日ごとに出力）
@@ -36,6 +36,9 @@ just run radiation
 
 # 地軸傾斜0・深さ30 mのslab oceanを持つ放射ケースを5年間実行
 just run slab-ocean
+
+# slab ocean ケースに水蒸気（蒸発・湿潤対流調節・大規模凝結）を加えた湿潤ケースを T31 で5年間実行
+just run moist
 
 # ビジュアライザを起動し、http://127.0.0.1:8000 を開く
 just viz
