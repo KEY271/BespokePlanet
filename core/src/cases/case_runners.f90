@@ -6,7 +6,7 @@ module case_runners
   use shallow_water_case, only: run_shallow_water_case
   use dry_case, only: run_dry_case
   use radiation_case, only: run_radiation_case, run_slab_ocean_case, run_moist_case, &
-                            run_land_case, run_land_t63_case
+                            run_land_case, run_land_t63_case, run_land_earth_case, run_land_earth_t63_case
   implicit none
   private
 
@@ -41,6 +41,10 @@ contains
       call run_land_case(context)
     case ('land-t63', '--land-t63', 'land_t63')
       call run_land_t63_case(context)
+    case ('land-earth', '--land-earth', 'land_earth')
+      call run_land_earth_case(context)
+    case ('land-earth-t63', '--land-earth-t63', 'land_earth_t63')
+      call run_land_earth_t63_case(context)
     case ('all')
       call run_dry_case(context, 'dry_jablonowski_williamson_steady', .false.)
       call run_dry_case(context, 'dry_jablonowski_williamson_perturbed', .true.)
@@ -55,6 +59,8 @@ contains
       call run_moist_case(context)
       call run_land_case(context)
       call run_land_t63_case(context)
+      call run_land_earth_case(context)
+      call run_land_earth_t63_case(context)
     case ('--help', '-h', 'help')
       call print_usage()
     case default
@@ -65,7 +71,8 @@ contains
 
   subroutine print_usage()
     write (*, '(a)') &
-      'Usage: core [shallow-water|barotropic|dry|held-suarez|radiation|slab-ocean|moist|land|land-t63|all]'
+      'Usage: core [shallow-water|barotropic|dry|held-suarez|radiation|slab-ocean|moist|land|land-t63|'// &
+      'land-earth|land-earth-t63|all]'
     write (*, '(a)') '  shallow-water:           run the mountain and single-harmonic height cases'
     write (*, '(a)') '  barotropic:             run the three barotropic-vorticity cases'
     write (*, '(a)') '  dry (default):          run the 10-day Jablonowski-Williamson dry-atmosphere cases'
@@ -76,6 +83,8 @@ contains
     write (*, '(a)') '  moist:                  run the slab-ocean case with water vapour and the seasonal cycle'
     write (*, '(a)') '                          (T31 aquaplanet)'
     write (*, '(a)') '  land / land-t63:       run the moist land--sea planet at T31 / T63'
+    write (*, '(a)') '  land-earth / land-earth-t63:'
+    write (*, '(a)') '                          run the moist land--sea case with Earth topography at T31 / T63'
     write (*, '(a)') '  all:                    run every case'
   end subroutine print_usage
 

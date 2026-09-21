@@ -16,6 +16,7 @@ module radiation_case_output
                                   reference_saturation_vapor_pressure, saturation_reference_temperature, &
                                   dry_air_specific_heat
   use topography, only: topography_config, topography_diagnostics
+  use earth_topography, only: earth_topography_config, earth_topography_diagnostics
   implicit none
   private
 
@@ -289,7 +290,8 @@ contains
   subroutine write_radiation_metadata(case_directory, case_name, physics, planet, truncation, time_step, &
                                       duration, number_of_steps, maximum_cfl, elapsed_wall_seconds, nlon, mu, &
                                       pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
-                                      a_half, b_half, options, terrain, terrain_diagnostics)
+                                      a_half, b_half, options, terrain, terrain_diagnostics, &
+                                      earth_terrain, earth_terrain_diagnostics)
     character(*), intent(in) :: case_directory, case_name
     type(dry_model_physics_config), intent(in) :: physics
     type(planet_config), intent(in) :: planet
@@ -301,12 +303,16 @@ contains
     type(radiation_output_options), intent(in) :: options
     type(topography_config), intent(in), optional :: terrain
     type(topography_diagnostics), intent(in), optional :: terrain_diagnostics
+    type(earth_topography_config), intent(in), optional :: earth_terrain
+    type(earth_topography_diagnostics), intent(in), optional :: earth_terrain_diagnostics
     type(radiation_config) :: radiation
+    logical :: earth
     integer :: unit
     real(real64) :: orbital_period
 
     radiation = physics%radiation
     orbital_period = radiation_orbital_period(radiation)
+    earth = present(earth_terrain) .and. present(earth_terrain_diagnostics)
     open (newunit=unit, file=trim(case_directory)//'/metadata.json', status='replace', action='write')
     write (unit, '(a)') '{'
     write (unit, '(a)') '  "schema_version": 3,'
@@ -316,7 +322,11 @@ contains
     else
       write (unit, '(a)') '  "equation": "dry_hydrostatic_atmosphere",'
     end if
-    if (radiation%land_sea_mixing_enabled) then
+    if (radiation%land_sea_mixing_enabled .and. earth) then
+      write (unit, '(a)') '  "initial_condition": '// &
+        '"pressure-coordinate Jablonowski-Williamson basic state over smoothed, truncated ETOPO 2022 terrain, '// &
+        'mixed land and ocean",'
+    else if (radiation%land_sea_mixing_enabled) then
       write (unit, '(a)') '  "initial_condition": '// &
         '"pressure-coordinate Jablonowski-Williamson basic state over analytic truncated terrain, mixed land and ocean",'
     else if (physics%moisture%enabled) then
@@ -472,7 +482,7 @@ contains
       write (unit, '(a)') '  },'
     end if
     if (radiation%land_sea_mixing_enabled) then
-      if (.not. present(terrain) .or. .not. present(terrain_diagnostics)) then
+      if (.not. earth .and. (.not. present(terrain) .or. .not. present(terrain_diagnostics))) then
         error stop 'land-sea metadata requires terrain configuration and diagnostics'
       end if
       write (unit, '(a)') '  "land_sea_surface": {'
@@ -489,40 +499,44 @@ contains
       write (unit, '(a,es24.16e3,a)') '    "land_wetness": ', physics%evaporation%land_surface_wetness, ','
       write (unit, '(a,es24.16e3)') '    "ocean_wetness": ', physics%evaporation%ocean_surface_wetness
       write (unit, '(a)') '  },'
-      write (unit, '(a)') '  "topography": {'
-      write (unit, '(a)') '    "shapes": "three ellipse continents, one south polar cap, two mountain ranges",'
-      write (unit, '(a,es24.16e3,a)') '    "coast_width_degrees": ', terrain%coast_width_degrees, ','
-      write (unit, '(a,es24.16e3,a)') '    "base_height_m": ', terrain%base_height_metres, ','
-      write (unit, '(a,es24.16e3,4(",",es24.16e3),a)') '    "continent_a_lon_lat_a_b_theta_deg": [', &
-        terrain%continent_a%longitude_degrees, terrain%continent_a%latitude_degrees, &
-        terrain%continent_a%semi_axis_east_degrees, terrain%continent_a%semi_axis_north_degrees, &
-        terrain%continent_a%orientation_degrees, '],'
-      write (unit, '(a,es24.16e3,4(",",es24.16e3),a)') '    "continent_b_lon_lat_a_b_theta_deg": [', &
-        terrain%continent_b%longitude_degrees, terrain%continent_b%latitude_degrees, &
-        terrain%continent_b%semi_axis_east_degrees, terrain%continent_b%semi_axis_north_degrees, &
-        terrain%continent_b%orientation_degrees, '],'
-      write (unit, '(a,es24.16e3,4(",",es24.16e3),a)') '    "continent_c_lon_lat_a_b_theta_deg": [', &
-        terrain%continent_c%longitude_degrees, terrain%continent_c%latitude_degrees, &
-        terrain%continent_c%semi_axis_east_degrees, terrain%continent_c%semi_axis_north_degrees, &
-        terrain%continent_c%orientation_degrees, '],'
-      write (unit, '(a,es24.16e3,a,i0,a)') '    "south_polar_cap_edge_deg_sign": [', &
-        terrain%south_polar_cap%edge_latitude_degrees, ',', terrain%south_polar_cap%hemisphere_sign, '],'
-      write (unit, '(a,es24.16e3,5(",",es24.16e3),a)') '    "mountain_a_lon_lat_length_width_theta_height": [', &
-        terrain%mountain_a%longitude_degrees, terrain%mountain_a%latitude_degrees, &
-        terrain%mountain_a%length_degrees, terrain%mountain_a%half_width_degrees, &
-        terrain%mountain_a%orientation_degrees, terrain%mountain_a%height_metres, '],'
-      write (unit, '(a,es24.16e3,5(",",es24.16e3),a)') '    "mountain_b_lon_lat_length_width_theta_height": [', &
-        terrain%mountain_b%longitude_degrees, terrain%mountain_b%latitude_degrees, &
-        terrain%mountain_b%length_degrees, terrain%mountain_b%half_width_degrees, &
-        terrain%mountain_b%orientation_degrees, terrain%mountain_b%height_metres, '],'
-      write (unit, '(a,es24.16e3,a)') '    "global_land_fraction": ', &
-        terrain_diagnostics%global_land_fraction, ','
-      write (unit, '(a,es24.16e3,a)') '    "minimum_truncated_height_m": ', &
-        terrain_diagnostics%minimum_truncated_height_metres, ','
-      write (unit, '(a,es24.16e3,a)') '    "maximum_truncated_height_m": ', &
-        terrain_diagnostics%maximum_truncated_height_metres, ','
-      write (unit, '(a,es24.16e3)') '    "height_rms_error_m": ', &
-        terrain_diagnostics%height_rms_error_metres
+      if (earth) then
+        call write_earth_topography_metadata(unit, earth_terrain, earth_terrain_diagnostics)
+      else
+        write (unit, '(a)') '  "topography": {'
+        write (unit, '(a)') '    "shapes": "three ellipse continents, one south polar cap, two mountain ranges",'
+        write (unit, '(a,es24.16e3,a)') '    "coast_width_degrees": ', terrain%coast_width_degrees, ','
+        write (unit, '(a,es24.16e3,a)') '    "base_height_m": ', terrain%base_height_metres, ','
+        write (unit, '(a,es24.16e3,4(",",es24.16e3),a)') '    "continent_a_lon_lat_a_b_theta_deg": [', &
+          terrain%continent_a%longitude_degrees, terrain%continent_a%latitude_degrees, &
+          terrain%continent_a%semi_axis_east_degrees, terrain%continent_a%semi_axis_north_degrees, &
+          terrain%continent_a%orientation_degrees, '],'
+        write (unit, '(a,es24.16e3,4(",",es24.16e3),a)') '    "continent_b_lon_lat_a_b_theta_deg": [', &
+          terrain%continent_b%longitude_degrees, terrain%continent_b%latitude_degrees, &
+          terrain%continent_b%semi_axis_east_degrees, terrain%continent_b%semi_axis_north_degrees, &
+          terrain%continent_b%orientation_degrees, '],'
+        write (unit, '(a,es24.16e3,4(",",es24.16e3),a)') '    "continent_c_lon_lat_a_b_theta_deg": [', &
+          terrain%continent_c%longitude_degrees, terrain%continent_c%latitude_degrees, &
+          terrain%continent_c%semi_axis_east_degrees, terrain%continent_c%semi_axis_north_degrees, &
+          terrain%continent_c%orientation_degrees, '],'
+        write (unit, '(a,es24.16e3,a,i0,a)') '    "south_polar_cap_edge_deg_sign": [', &
+          terrain%south_polar_cap%edge_latitude_degrees, ',', terrain%south_polar_cap%hemisphere_sign, '],'
+        write (unit, '(a,es24.16e3,5(",",es24.16e3),a)') '    "mountain_a_lon_lat_length_width_theta_height": [', &
+          terrain%mountain_a%longitude_degrees, terrain%mountain_a%latitude_degrees, &
+          terrain%mountain_a%length_degrees, terrain%mountain_a%half_width_degrees, &
+          terrain%mountain_a%orientation_degrees, terrain%mountain_a%height_metres, '],'
+        write (unit, '(a,es24.16e3,5(",",es24.16e3),a)') '    "mountain_b_lon_lat_length_width_theta_height": [', &
+          terrain%mountain_b%longitude_degrees, terrain%mountain_b%latitude_degrees, &
+          terrain%mountain_b%length_degrees, terrain%mountain_b%half_width_degrees, &
+          terrain%mountain_b%orientation_degrees, terrain%mountain_b%height_metres, '],'
+        write (unit, '(a,es24.16e3,a)') '    "global_land_fraction": ', &
+          terrain_diagnostics%global_land_fraction, ','
+        write (unit, '(a,es24.16e3,a)') '    "minimum_truncated_height_m": ', &
+          terrain_diagnostics%minimum_truncated_height_metres, ','
+        write (unit, '(a,es24.16e3,a)') '    "maximum_truncated_height_m": ', &
+          terrain_diagnostics%maximum_truncated_height_metres, ','
+        write (unit, '(a,es24.16e3)') '    "height_rms_error_m": ', &
+          terrain_diagnostics%height_rms_error_metres
+      end if
       write (unit, '(a)') '  },'
     else if (radiation%slab_ocean_enabled) then
       write (unit, '(a)') '  "slab_ocean": {'
@@ -653,5 +667,42 @@ contains
     write (unit, '(a)') '}'
     close (unit)
   end subroutine write_radiation_metadata
+
+  !> The "topography" block of an Earth-terrain run (docs/dynamics/earth-topography.md).
+  subroutine write_earth_topography_metadata(unit, terrain, diagnostics)
+    integer, intent(in) :: unit
+    type(earth_topography_config), intent(in) :: terrain
+    type(earth_topography_diagnostics), intent(in) :: diagnostics
+
+    write (unit, '(a)') '  "topography": {'
+    write (unit, '(a)') '    "source": "ETOPO 2022 v1 60 arc-second ice surface (NOAA NCEI, doi:10.25921/fd45-gt74), '// &
+      '6 arc-minute point samples aggregated to 0.5 degree cells by scripts/prepare_earth_topography.py",'
+    write (unit, '(a)') '    "data_file": "'//trim(diagnostics%resolved_data_path)//'",'
+    write (unit, '(a)') '    "data_description": "core/data/earth_topography_0p5deg.json",'
+    write (unit, '(a)') '    "land_definition": "ETOPO surface elevation > 0 m",'
+    write (unit, '(a)') '    "method": "Gaussian kernel exp(-(theta/s)^2) in great-circle angle, '// &
+      'cut at window_factor * s, applied to land fraction and land height; g z_s truncated at T; '// &
+      'land fraction kept on the grid",'
+    write (unit, '(a,es24.16e3,a)') '    "kernel_scale_factor": ', terrain%kernel_scale_factor, ','
+    write (unit, '(a,es24.16e3,a)') '    "kernel_half_width_degrees": ', diagnostics%kernel_half_width_degrees, ','
+    write (unit, '(a,es24.16e3,a)') '    "window_factor": ', terrain%window_factor, ','
+    write (unit, '(a,es24.16e3,a)') '    "residual_filter_strength": ', terrain%residual_filter_strength, ','
+    write (unit, '(a,es24.16e3,a)') '    "open_ocean_land_fraction": ', terrain%open_ocean_land_fraction, ','
+    write (unit, '(a,es24.16e3,a)') '    "source_global_land_fraction": ', diagnostics%source_land_fraction, ','
+    write (unit, '(a,es24.16e3,a)') '    "source_maximum_height_m": ', diagnostics%source_maximum_height_metres, ','
+    write (unit, '(a,es24.16e3,a)') '    "global_land_fraction": ', diagnostics%global_land_fraction, ','
+    write (unit, '(a,es24.16e3,a)') '    "minimum_truncated_height_m": ', &
+      diagnostics%minimum_truncated_height_metres, ','
+    write (unit, '(a,es24.16e3,a,es24.16e3,a)') '    "minimum_truncated_height_lon_lat_deg": [', &
+      diagnostics%minimum_longitude_degrees, ',', diagnostics%minimum_latitude_degrees, '],'
+    write (unit, '(a,es24.16e3,a)') '    "maximum_truncated_height_m": ', &
+      diagnostics%maximum_truncated_height_metres, ','
+    write (unit, '(a,es24.16e3,a,es24.16e3,a)') '    "maximum_truncated_height_lon_lat_deg": [', &
+      diagnostics%maximum_longitude_degrees, ',', diagnostics%maximum_latitude_degrees, '],'
+    write (unit, '(a,es24.16e3,a)') '    "truncation_rms_error_m": ', diagnostics%truncation_rms_metres, ','
+    write (unit, '(a,es24.16e3,a)') '    "total_rms_error_m": ', diagnostics%total_rms_metres, ','
+    write (unit, '(a,es24.16e3,a)') '    "open_ocean_rms_m": ', diagnostics%open_ocean_rms_metres, ','
+    write (unit, '(a,es24.16e3)') '    "open_ocean_minimum_m": ', diagnostics%open_ocean_minimum_metres
+  end subroutine write_earth_topography_metadata
 
 end module radiation_case_output

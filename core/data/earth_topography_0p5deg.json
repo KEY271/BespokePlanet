@@ -1,0 +1,30 @@
+{
+  "source": "ETOPO 2022 v1, 60 arc-second, ice surface (NOAA NCEI)",
+  "source_url": "https://www.ngdc.noaa.gov/thredds/dodsC/global/ETOPO2022/60s/60s_surface_elev_netcdf/ETOPO_2022_v1_60s_N90W180_surface.nc",
+  "source_doi": "10.25921/fd45-gt74",
+  "access": "OPeNDAP, every 6th pixel in latitude and longitude (6 arc-minute point samples)",
+  "land_definition": "surface elevation z > 0 m",
+  "cell_degrees": 0.5,
+  "samples_per_cell": 25,
+  "shape_lon_lat": [
+    720,
+    360
+  ],
+  "layout": "real64 little-endian; land_fraction block then land_height block; longitude varies fastest; latitude south to north; cell centres lon=(i-1/2)*0.5 deg, lat=-90+(j-1/2)*0.5 deg",
+  "land_height_units": "m, mean of max(z,0) over the cell (ocean counted as 0)",
+  "generated": "2026-09-22",
+  "sha256": "311b0dea7e083e9e803da337d19865fd705ac485fb574bc3ae1147d29fbbb23a",
+  "global_land_fraction": 0.29075892015195176,
+  "maximum_land_height_m": 5624.38328125,
+  "maximum_land_height_lon_lat": [
+    80.75,
+    35.25
+  ],
+  "landmarks_m": {
+    "Tibet": 4967.25279296875,
+    "Andes (Altiplano)": 3958.390673828125,
+    "Antarctica": 3798.180302734375,
+    "Greenland": 3058.946142578125,
+    "central Pacific": 0.0
+  }
+}

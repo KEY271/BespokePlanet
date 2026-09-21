@@ -10,6 +10,7 @@
 | ビジュアライザ（`viz/`） | Python 3（外部パッケージ不要）、Node.js / npm（Three.js の取得に使用） |
 | タスクランナー | [just](https://github.com/casey/just) |
 | `scripts/check_hybrid_sigma.py` | matplotlib |
+| `scripts/analyze_*.R` | R（標準パッケージのみ） |
 
 macOS（Homebrew）の場合のインストール例:
 
@@ -25,7 +26,7 @@ brew install gcc fpm fftw lapack openblas pkg-config just node
 # テストを実行
 just test
 
-# モデルを実行（shallow-water / barotropic / dry / held-suarez / radiation / slab-ocean / moist / land / land-t63 / all、省略時は dry）
+# モデルを実行（shallow-water / barotropic / dry / held-suarez / radiation / slab-ocean / moist / land / land-t63 / land-earth / land-earth-t63 / all、省略時は dry）
 just run dry
 
 # Held–Suarez 強制を 200 日間実行（5 日ごとに出力）
@@ -45,8 +46,22 @@ just run moist
 just run land
 just run land-t63
 
+# 陸海ケースの地形を ETOPO 2022 から作った地球の地形に置き換えて T31 / T63 で5年間実行
+just run land-earth
+just run land-earth-t63
+
 # ビジュアライザを起動し、http://127.0.0.1:8000 を開く
 just viz
+```
+
+計算結果の解析は `scripts/` の R スクリプトで行う。最終年の月平均から雨温図・ケッペンの気候区分・帯状平均・質量流線関数などを作り、`output/<ケース>/analysis/` に図と CSV を書く。
+
+```sh
+# 陸海ケース（解析的な大陸）
+Rscript scripts/analyze_moist_land_sea.R
+
+# 地球地形の陸海ケース（第2引数で出力先、第3引数で比較対象のケースを変えられる）
+Rscript scripts/analyze_moist_land_sea_earth.R output/moist_land_sea_earth_t31
 ```
 
 ソルバーはスペクトル変換の鉛直層ループと物理過程の格子列ループを OpenMP で並列化している。スレッド数は既定でコア数で、`OMP_NUM_THREADS=4 just run moist` のように環境変数で変えられる。スレッド数を変えても結果はビット単位で同一である。
@@ -68,6 +83,7 @@ just viz
 - [湿潤大気](./docs/dynamics/moist.md)
 - [Jablonowski–Williamson の初期状態](./docs/dynamics/Jablonowski-Williamson.md)
 - [地形](./docs/dynamics/topography.md)
+- [地球の地形](./docs/dynamics/earth-topography.md)
 
 ### 傾向
 
@@ -99,6 +115,7 @@ just viz
 - [Slab ocean ケース](./docs/cases/slab-ocean.md)
 - [湿潤ケース](./docs/cases/moist.md)
 - [陸海ケース](./docs/cases/land-sea.md)
+- [地球地形の陸海ケース](./docs/cases/land-sea-earth.md)
 
 ## ライセンス
 

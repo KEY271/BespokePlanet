@@ -13,6 +13,7 @@ module radiation_case
                                          land_sea_case_physics, radiation_case_planet, set_radiation_case_state, &
                                          set_land_sea_case_state
   use topography, only: topography_config, topography_diagnostics, generate_topography
+  use earth_topography, only: earth_topography_config, earth_topography_diagnostics, generate_earth_topography
   use field_binary_writer, only: write_field
   use dry_radiation, only: radiation_diagnostics, radiation_calendar_date
   use radiation_diagnostics_collector, only: radiation_case_diagnostics, radiation_monthly_means
@@ -25,6 +26,7 @@ module radiation_case
   implicit none
   private
   public :: run_radiation_case, run_slab_ocean_case, run_moist_case, run_land_case, run_land_t63_case
+  public :: run_land_earth_case, run_land_earth_t63_case
 
   real(real64), parameter :: radiation_time_step = dt
   integer, parameter :: radiation_number_of_years = 5
@@ -32,6 +34,7 @@ module radiation_case
   integer, parameter, public :: moist_case_truncation = 31
 
   integer, parameter :: ground_variant = 1, slab_ocean_variant = 2, moist_variant = 3, land_variant = 4
+  integer, parameter :: land_earth_variant = 5
 
 contains
 
@@ -69,16 +72,30 @@ contains
     call run_land_case_at_truncation(context, 63)
   end subroutine run_land_t63_case
 
-  subroutine run_land_case_at_truncation(context, truncation)
+  subroutine run_land_earth_case(context)
+    type(case_context), intent(inout) :: context
+    call run_land_case_at_truncation(context, 31, land_earth_variant)
+  end subroutine run_land_earth_case
+
+  subroutine run_land_earth_t63_case(context)
+    type(case_context), intent(inout) :: context
+    call run_land_case_at_truncation(context, 63, land_earth_variant)
+  end subroutine run_land_earth_t63_case
+
+  subroutine run_land_case_at_truncation(context, truncation, variant)
     type(case_context), intent(inout) :: context
     integer, intent(in) :: truncation
+    integer, intent(in), optional :: variant
     type(harmonic_transform) :: transform
     integer, allocatable :: nlon(:)
+    integer :: chosen_variant
 
+    chosen_variant = land_variant
+    if (present(variant)) chosen_variant = variant
     call ensure_context(context)
     call transform%init(truncation)
     nlon = transform%get_nlon()
-    call run_radiative_surface_case(context, transform, nlon, land_variant, truncation)
+    call run_radiative_surface_case(context, transform, nlon, chosen_variant, truncation)
   end subroutine run_land_case_at_truncation
 
   subroutine run_radiative_surface_case(context, transform, nlon, variant, requested_truncation)
@@ -96,6 +113,8 @@ contains
     type(radiation_output_options) :: options
     type(topography_config) :: terrain
     type(topography_diagnostics) :: terrain_diagnostics
+    type(earth_topography_config) :: earth_terrain
+    type(earth_topography_diagnostics) :: earth_terrain_diagnostics
     real(real64), allocatable :: land_fraction(:, :), analytic_height(:, :), truncated_height(:, :)
     complex(real64), allocatable :: surface_geopotential(:, :)
     real(real64), allocatable :: pressure_half(:), delta_pressure(:), layer_l(:), alpha(:)
@@ -126,7 +145,7 @@ contains
       numerics%truncation = moist_case_truncation
       options%include_deep_temperature = .false.
       options%include_moisture = .true.
-    case (land_variant)
+    case (land_variant, land_earth_variant)
       if (.not. present(requested_truncation)) error stop 'land case truncation is required'
       physics = land_sea_case_physics()
       numerics%truncation = requested_truncation
@@ -137,6 +156,7 @@ contains
       else
         error stop 'land case supports only T31 and T63'
       end if
+      if (variant == land_earth_variant) case_name = case_name(1:14)//'_earth'//case_name(15:)
       options%include_deep_temperature = .true.
       options%include_moisture = .true.
       options%include_land_sea = .true.
@@ -154,9 +174,14 @@ contains
     call make_directory(case_directory)
     call initialize_radiation_daily_output(case_directory, options)
     call solver%init_with_config(numerics)
-    if (variant == land_variant) then
-      call generate_topography(transform, terrain, land_fraction, analytic_height, surface_geopotential, &
-                               truncated_height, terrain_diagnostics)
+    if (variant == land_variant .or. variant == land_earth_variant) then
+      if (variant == land_variant) then
+        call generate_topography(transform, terrain, land_fraction, analytic_height, surface_geopotential, &
+                                 truncated_height, terrain_diagnostics)
+      else
+        call generate_earth_topography(transform, earth_terrain, land_fraction, analytic_height, &
+                                       surface_geopotential, truncated_height, earth_terrain_diagnostics)
+      end if
       call set_land_sea_case_state(solver, transform, physics, planet, surface_geopotential, land_fraction)
       call write_field(trim(case_directory)//'/land_fraction.bin', nlon, land_fraction)
       call write_field(trim(case_directory)//'/surface_height.bin', nlon, truncated_height)
@@ -224,6 +249,13 @@ contains
                                     maximum_cfl, elapsed_wall_seconds, nlon, transform%mu, &
                                     pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
                                     a_half, b_half, options, terrain, terrain_diagnostics)
+    else if (variant == land_earth_variant) then
+      call write_radiation_metadata(case_directory, case_name, physics, planet, &
+                                    numerics%truncation, numerics%time_step, radiation_duration, number_of_steps, &
+                                    maximum_cfl, elapsed_wall_seconds, nlon, transform%mu, &
+                                    pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
+                                    a_half, b_half, options, earth_terrain=earth_terrain, &
+                                    earth_terrain_diagnostics=earth_terrain_diagnostics)
     else
       call write_radiation_metadata(case_directory, case_name, physics, planet, &
                                     numerics%truncation, numerics%time_step, radiation_duration, number_of_steps, &
