@@ -313,7 +313,7 @@ contains
     real(real64), parameter :: moistening(5) = [0.0_real64, 0.5_real64, 1.0_real64, 2.0_real64, 4.0_real64]
     integer :: k, levels, factor
 
-    if (abs(radiation%longwave_well_mixed_optical_depth - 0.1627_real64) > 0.0_real64 .or. &
+    if (abs(radiation%longwave_well_mixed_optical_depth - 0.8678_real64) > 0.0_real64 .or. &
         abs(radiation%longwave_water_vapor_optical_depth - 1997.9_real64) > 0.0_real64 .or. &
         abs(radiation%longwave_well_mixed_scaling - 1.0_real64) > 0.0_real64 .or. &
         abs(radiation%longwave_reference_pressure - 1.0e5_real64) > 0.0_real64 .or. &

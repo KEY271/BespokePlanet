@@ -280,7 +280,8 @@ contains
     end if
     if (physics%moisture%enabled) then
       write (unit, '(a)') '  "initial_condition": '// &
-        '"unperturbed Jablonowski-Williamson temperature, balanced wind, flat terrain, slab ocean, dry air (q = 0)",'
+        '"unperturbed Jablonowski-Williamson temperature, balanced wind, flat terrain, slab ocean, '// &
+        'q = initial_relative_humidity * q_s(T, p) at and below initial_humidity_top_pressure, dry above",'
     else if (radiation%slab_ocean_enabled) then
       write (unit, '(a)') '  "initial_condition": '// &
         '"unperturbed Jablonowski-Williamson temperature, balanced wind, flat terrain, slab ocean",'

@@ -55,7 +55,7 @@ module dry_physics_config
     !> Grey longwave optical depth d tau/dp = (a mu + b q)/p_0: a well-mixed
     !> absorber (a mu) plus water vapour (b q), with the Byrne & O'Gorman (2013)
     !> coefficients as implemented in Isca (docs/tendency/longwave-radiation.md).
-    real(real64) :: longwave_well_mixed_optical_depth = 0.1627_real64
+    real(real64) :: longwave_well_mixed_optical_depth = 0.8678_real64
     real(real64) :: longwave_water_vapor_optical_depth = 1997.9_real64
     real(real64) :: longwave_well_mixed_scaling = 1.0_real64
     real(real64) :: longwave_reference_pressure = 1.0e5_real64
