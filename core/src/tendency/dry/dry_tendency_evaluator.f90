@@ -8,9 +8,12 @@
 !> The order of the calls is the order in which the contributions are summed.
 !> Radiation, surface fluxes, friction and the convective processes are all
 !> evaluated independently on the RAW-filtered previous time level; only the
-!> convective adjustments and the condensation are chained through provisional
-!> fields (dry_convection_tendency), and the evaporation is evaluated before the
-!> radiation so that the surface budget can take the same latent heat flux.
+!> convective adjustments, the condensation and the cloud diagnosis are chained
+!> through provisional fields (dry_convection_tendency).  The evaporation is
+!> evaluated before the radiation so that the surface budget can take the same
+!> latent heat flux, and the convective processes before the radiation so that
+!> the shortwave reflection can take the cloud cover of the same evaluation
+!> (docs/dynamics/moist.md, "physical processes").
 module dry_tendency_evaluator
   use iso_fortran_env, only: real64
   use harmonics, only: harmonic_transform
@@ -67,6 +70,9 @@ contains
     if (physics%evaporation%enabled .and. .not. physics%radiation%enabled) then
       error stop 'evaporation requires the radiation surface energy budget'
     end if
+    if (physics%cloud%enabled .and. .not. physics%moisture%enabled) then
+      error stop 'the cloud diagnosis requires the moisture (specific humidity) prognostic variable'
+    end if
 
     call zero_dry_tendency(rhs)
     call workspace%zero_forcing()
@@ -92,11 +98,12 @@ contains
     if (physics%evaporation%enabled) then
       call add_dry_evaporation_tendency(physics%evaporation, physics%radiation, workspace)
     end if
+    if (physics%convection%enabled .or. physics%moist_convection%enabled .or. physics%condensation%enabled .or. &
+        physics%cloud%enabled) then
+      call add_dry_convection_tendency(physics, interval, workspace)
+    end if
     if (physics%radiation%enabled) then
       call add_dry_radiation_tendency(physics%radiation, physics%moisture%enabled, transform%mu, workspace)
-    end if
-    if (physics%convection%enabled .or. physics%moist_convection%enabled .or. physics%condensation%enabled) then
-      call add_dry_convection_tendency(physics, interval, workspace)
     end if
 
     if (present(diagnostics)) call collect_dry_diagnostics(transform%mu, workspace, diagnostics)

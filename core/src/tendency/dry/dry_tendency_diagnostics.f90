@@ -44,6 +44,7 @@ contains
       allocate (diagnostics%zonal_humidity(workspace%ny, levels), diagnostics%zonal_vq(workspace%ny, levels))
       diagnostics%evaporation = workspace%evaporation
       diagnostics%precipitation = workspace%convective_precipitation + workspace%large_scale_precipitation
+      diagnostics%cloud_cover = workspace%cloud_cover
       diagnostics%precipitable_water = 0.0_real64
       diagnostics%zonal_humidity = 0.0_real64
       diagnostics%zonal_vq = 0.0_real64
@@ -129,6 +130,7 @@ contains
           diagnostics%mean_evaporation = diagnostics%mean_evaporation + area_weight*workspace%evaporation(i, j)
           diagnostics%mean_latent_heat_flux = diagnostics%mean_latent_heat_flux + &
             area_weight*workspace%latent_heat_flux(i, j)
+          diagnostics%mean_cloud_cover = diagnostics%mean_cloud_cover + area_weight*workspace%cloud_cover(i, j)
           total_precipitation = workspace%convective_precipitation(i, j) + &
             workspace%large_scale_precipitation(i, j)
           diagnostics%mean_land_precipitation = diagnostics%mean_land_precipitation + &

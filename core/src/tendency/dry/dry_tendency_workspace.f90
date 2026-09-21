@@ -82,6 +82,9 @@ module dry_tendency_workspace
     real(real64), allocatable :: incoming_shortwave(:, :), reflected_shortwave(:, :), outgoing_longwave(:, :)
     real(real64), allocatable :: evaporation(:, :), latent_heat_flux(:, :)
     real(real64), allocatable :: convective_precipitation(:, :), large_scale_precipitation(:, :)
+    !> Effective column cloud cover diagnosed after the convective processes and
+    !> used by the shortwave reflection of the same evaluation (docs/tendency/cloud.md).
+    real(real64), allocatable :: cloud_cover(:, :)
 
     !> Scratch reused within a level.
     real(real64), allocatable :: temporary_grid(:, :), temporary_u(:, :), temporary_v(:, :)
@@ -161,6 +164,8 @@ contains
     allocate (this%incoming_shortwave(nx, ny), this%reflected_shortwave(nx, ny), this%outgoing_longwave(nx, ny))
     allocate (this%evaporation(nx, ny), this%latent_heat_flux(nx, ny))
     allocate (this%convective_precipitation(nx, ny), this%large_scale_precipitation(nx, ny))
+    allocate (this%cloud_cover(nx, ny))
+    this%cloud_cover = 0.0_real64
 
     allocate (this%temporary_grid(nx, ny), this%temporary_u(nx, ny), this%temporary_v(nx, ny))
     allocate (this%dtdlambda(nx, ny), this%dtdphi(nx, ny))
@@ -201,6 +206,7 @@ contains
     this%latent_heat_flux = 0.0_real64
     this%convective_precipitation = 0.0_real64
     this%large_scale_precipitation = 0.0_real64
+    this%cloud_cover = 0.0_real64
   end subroutine zero_forcing
 
   !> Diagnoses every grid field that more than one tendency needs.

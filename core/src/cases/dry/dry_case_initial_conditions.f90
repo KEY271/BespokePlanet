@@ -101,18 +101,22 @@ contains
   !> convective adjustment and large-scale condensation.  The grey longwave
   !> optical depth follows the prognostic water vapour, and the seasonal cycle of
   !> the radiation case (Earth's obliquity) replaces the zero obliquity of the
-  !> slab-ocean case.  The upper Rayleigh friction is inherited.
+  !> slab-ocean case.  The upper Rayleigh friction is inherited.  Clouds are
+  !> diagnosed and reflect shortwave, so the ocean surface takes its own albedo in
+  !> place of the planetary value with clouds folded in (docs/tendency/cloud.md).
   function moist_case_physics() result(physics)
     type(dry_model_physics_config) :: physics
     type(radiation_config) :: seasonal_radiation
 
     physics = slab_ocean_case_physics()
     physics%radiation%axial_tilt = seasonal_radiation%axial_tilt
+    physics%radiation%surface_shortwave_albedo = seasonal_radiation%ocean_shortwave_albedo
     physics%moisture%enabled = .true.
     physics%evaporation%enabled = .true.
     physics%evaporation%surface_wetness = 1.0_real64
     physics%moist_convection%enabled = .true.
     physics%condensation%enabled = .true.
+    physics%cloud%enabled = .true.
   end function moist_case_physics
 
   !> Moist physics with one land--ocean surface budget mixed at every grid point.

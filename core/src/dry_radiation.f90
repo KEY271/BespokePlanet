@@ -35,6 +35,8 @@ module dry_radiation
     real(real64) :: mean_precipitable_water = 0.0_real64
     real(real64) :: mean_signed_column_water = 0.0_real64
     real(real64) :: mean_negative_column_water = 0.0_real64
+    !> Effective column cloud cover (docs/tendency/cloud.md), dimensionless.
+    real(real64) :: mean_cloud_cover = 0.0_real64
     !> Largest wind speed of the sample over all grid points and levels, and where it occurs.
     real(real64) :: maximum_wind_speed = 0.0_real64
     real(real64) :: maximum_wind_longitude_degrees = 0.0_real64
@@ -55,6 +57,7 @@ module dry_radiation
     real(real64), allocatable :: precipitable_water(:, :)
     real(real64), allocatable :: zonal_humidity(:, :)
     real(real64), allocatable :: zonal_vq(:, :)
+    real(real64), allocatable :: cloud_cover(:, :)
   end type radiation_diagnostics
 
   public :: shortwave_downward_flux
@@ -95,6 +98,7 @@ contains
     destination%mean_precipitable_water = source%mean_precipitable_water
     destination%mean_signed_column_water = source%mean_signed_column_water
     destination%mean_negative_column_water = source%mean_negative_column_water
+    destination%mean_cloud_cover = source%mean_cloud_cover
     destination%maximum_wind_speed = source%maximum_wind_speed
     destination%maximum_wind_longitude_degrees = source%maximum_wind_longitude_degrees
     destination%maximum_wind_latitude_degrees = source%maximum_wind_latitude_degrees
@@ -105,6 +109,7 @@ contains
     if (allocated(source%precipitable_water)) call move_alloc(source%precipitable_water, destination%precipitable_water)
     if (allocated(source%zonal_humidity)) call move_alloc(source%zonal_humidity, destination%zonal_humidity)
     if (allocated(source%zonal_vq)) call move_alloc(source%zonal_vq, destination%zonal_vq)
+    if (allocated(source%cloud_cover)) call move_alloc(source%cloud_cover, destination%cloud_cover)
     if (allocated(source%surface_temperature)) call move_alloc(source%surface_temperature, destination%surface_temperature)
     if (allocated(source%deep_temperature)) call move_alloc(source%deep_temperature, destination%deep_temperature)
     if (allocated(source%surface_pressure)) call move_alloc(source%surface_pressure, destination%surface_pressure)
@@ -248,12 +253,16 @@ contains
   !> The grey longwave optical depth of each layer is (a mu + b q^+) dp/p_0 plus ozone, with q
   !> the optional specific humidity column; without it the fixed reference humidity
   !> q_0 (p/p_s)^3 stands in for the water vapour.
+  !> The optional cloud cover C reflects C times the cloud albedo of the downward shortwave
+  !> below the ozone layer once (docs/tendency/shortwave-radiation.md); the rest reaches the
+  !> surface.  Clouds absorb nothing and do not enter the longwave.  reflected_shortwave is
+  !> the cloud plus surface reflection, which leaves at the top of the atmosphere unabsorbed.
   subroutine radiation_tendency(config, pressure_half, temperature, surface_temperature, &
                                 deep_temperature, lowest_u, lowest_v, sin_latitude, &
                                 longitude, time_seconds, temperature_tendency, &
                                 surface_temperature_tendency, deep_temperature_tendency, &
                                 incoming_shortwave, reflected_shortwave, outgoing_longwave, &
-                                latent_heat_flux, specific_humidity, land_fraction)
+                                latent_heat_flux, specific_humidity, cloud_cover, land_fraction)
     type(radiation_config), intent(in) :: config
     real(real64), intent(in) :: pressure_half(0:), temperature(:)
     real(real64), intent(in) :: surface_temperature, deep_temperature
@@ -264,6 +273,7 @@ contains
     real(real64), intent(out) :: incoming_shortwave, reflected_shortwave, outgoing_longwave
     real(real64), intent(in), optional :: latent_heat_flux
     real(real64), intent(in), optional :: specific_humidity(:)
+    real(real64), intent(in), optional :: cloud_cover
     !> Fraction of the grid cell covered by land.  It is required by the mixed
     !> surface path and absent on the legacy ground/slab paths.
     real(real64), intent(in), optional :: land_fraction
@@ -273,6 +283,7 @@ contains
     real(real64) :: pressure_thickness, layer_longwave_optical_depth, layer_humidity, sensible_heat, surface_deep_heat
     real(real64) :: layer_shortwave_optical_depth, shortwave_transmission
     real(real64) :: shortwave_downward, ultraviolet_downward, non_ultraviolet_downward, shortwave_absorbed
+    real(real64) :: cloud_reflected, surface_downward, surface_reflected, cloud
     real(real64) :: stefan_boltzmann_constant, dry_gravity_acceleration, dry_air_specific_heat
     real(real64) :: surface_heat_capacity, surface_latent_heat, surface_albedo
     real(real64) :: ocean_heat_capacity, ground_exchange, land
@@ -281,6 +292,11 @@ contains
 
     surface_latent_heat = 0.0_real64
     if (present(latent_heat_flux)) surface_latent_heat = latent_heat_flux
+    cloud = 0.0_real64
+    if (present(cloud_cover)) then
+      if (cloud_cover < 0.0_real64 .or. cloud_cover > 1.0_real64) error stop 'radiation cloud cover is outside [0,1]'
+      cloud = cloud_cover
+    end if
     stefan_boltzmann_constant = config%stefan_boltzmann_constant
     dry_gravity_acceleration = config%gravity_acceleration
     dry_air_specific_heat = config%dry_air_specific_heat
@@ -388,11 +404,16 @@ contains
     temperature_tendency(number_of_levels) = temperature_tendency(number_of_levels) + &
       dry_gravity_acceleration/(dry_air_specific_heat*pressure_thickness)*sensible_heat
 
-    reflected_shortwave = surface_albedo*shortwave_downward
+    ! The cloud reflects once below the ozone layer; with C = 0 these reduce bit for bit to the
+    ! cloud-free expressions.
+    cloud_reflected = cloud*config%cloud_shortwave_albedo*shortwave_downward
+    surface_downward = (1.0_real64 - cloud*config%cloud_shortwave_albedo)*shortwave_downward
+    surface_reflected = surface_albedo*surface_downward
+    reflected_shortwave = cloud_reflected + surface_reflected
     outgoing_longwave = upward_longwave(0)
     surface_deep_heat = ground_exchange*(surface_temperature - deep_temperature)
     ! The surface loses exactly the upward longwave the lowest layer sees, so the column budget closes.
-    surface_temperature_tendency = (shortwave_downward - reflected_shortwave + &
+    surface_temperature_tendency = (surface_downward - surface_reflected + &
       downward_longwave(number_of_levels) - upward_longwave(number_of_levels) - &
       surface_deep_heat - sensible_heat - surface_latent_heat)/surface_heat_capacity
     if (.not. config%land_sea_mixing_enabled .and. config%slab_ocean_enabled) then

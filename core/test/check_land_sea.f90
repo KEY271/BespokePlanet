@@ -113,7 +113,7 @@ contains
                                                      70000.0_real64, 100000.0_real64]
     real(real64), parameter :: temperature(4) = [220.0_real64, 245.0_real64, 270.0_real64, 285.0_real64]
     real(real64) :: atmospheric_tendency(4), surface_tendency, deep_tendency
-    real(real64) :: incoming, reflected, outgoing, capacity, albedo, wetness, exchange
+    real(real64) :: incoming, reflected, outgoing, capacity, albedo, wetness, exchange, cloudy_reflected
     real(real64) :: capacity0, albedo0, wetness0, exchange0
     real(real64) :: capacity1, albedo1, wetness1, exchange1, total_energy_tendency
     real(real64), parameter :: land = 0.4_real64, latent_heat_flux = 100.0_real64
@@ -140,6 +140,22 @@ contains
       capacity*surface_tendency + physics%radiation%deep_ground_heat_capacity*deep_tendency + latent_heat_flux
     if (abs(total_energy_tendency - (incoming - reflected - outgoing)) > 1.0e-9_real64) then
       error stop 'mixed surface column energy budget does not close'
+    end if
+    if (abs(albedo1 - 0.2_real64) > 0.0_real64 .or. abs(albedo0 - 0.06_real64) > 0.0_real64 .or. &
+        .not. physics%cloud%enabled) then
+      error stop 'land-sea surface albedos or cloud diagnosis differ from docs/cases/land-sea.md'
+    end if
+    ! With clouds the reflection grows and the budget still closes.
+    call radiation_tendency(physics%radiation, pressure_half, temperature, 288.0_real64, 286.0_real64, &
+      3.0_real64, 4.0_real64, 0.0_real64, acos(-1.0_real64), 0.0_real64, atmospheric_tendency, &
+      surface_tendency, deep_tendency, incoming, cloudy_reflected, outgoing, latent_heat_flux=latent_heat_flux, &
+      cloud_cover=0.5_real64, land_fraction=land)
+    total_energy_tendency = sum(physics%radiation%dry_air_specific_heat* &
+      (pressure_half(1:4) - pressure_half(0:3))/earth_gravity*atmospheric_tendency) + &
+      capacity*surface_tendency + physics%radiation%deep_ground_heat_capacity*deep_tendency + latent_heat_flux
+    if (cloudy_reflected <= reflected .or. &
+        abs(total_energy_tendency - (incoming - cloudy_reflected - outgoing)) > 1.0e-9_real64) then
+      error stop 'cloudy mixed surface column energy budget does not close'
     end if
   end subroutine check_mixed_surface_budget
 

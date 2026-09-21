@@ -44,7 +44,7 @@ program check_refactoring_types
     error stop 'shallow-water equation defaults changed'
   end if
   if (physics%held_suarez%enabled .or. physics%surface_friction%enabled .or. physics%rayleigh_friction%enabled .or. &
-      physics%radiation%enabled .or. physics%convection%enabled) then
+      physics%radiation%enabled .or. physics%convection%enabled .or. physics%cloud%enabled) then
     error stop 'dry physics must default to disabled'
   end if
 

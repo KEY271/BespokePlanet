@@ -51,13 +51,20 @@ module dry_physics_config
     integer :: months_per_year = 12
     real(real64) :: axial_tilt = 23.4_real64*pi/180.0_real64
     real(real64) :: solar_constant = 1361.0_real64
+    !> Albedo of the legacy single-surface path.  Without diagnosed clouds it
+    !> is the planetary value with the cloud reflection folded in; the moist
+    !> cases replace it by the open-ocean value (docs/tendency/shortwave-radiation.md).
     real(real64) :: surface_shortwave_albedo = 0.3_real64
+    !> Reflectance of an overcast column; the downward shortwave reaching the
+    !> troposphere is reflected once by C times this value.
+    real(real64) :: cloud_shortwave_albedo = 0.43_real64
     !> When enabled, the surface properties are mixed with the fixed land
     !> fraction supplied by the solver.  The legacy ground/slab switch remains
-    !> the exact path used by existing cases.
+    !> the exact path used by existing cases.  The land and ocean albedos are
+    !> surface values without clouds.
     logical :: land_sea_mixing_enabled = .false.
-    real(real64) :: land_shortwave_albedo = 0.3_real64
-    real(real64) :: ocean_shortwave_albedo = 0.3_real64
+    real(real64) :: land_shortwave_albedo = 0.2_real64
+    real(real64) :: ocean_shortwave_albedo = 0.06_real64
     !> Grey longwave optical depth d tau/dp = (a mu + b q)/p_0: a well-mixed
     !> absorber (a mu) plus water vapour (b q), with the Byrne & O'Gorman (2013)
     !> coefficients as implemented in Isca (docs/tendency/longwave-radiation.md).
@@ -134,6 +141,19 @@ module dry_physics_config
     integer :: maximum_iterations = 10
   end type condensation_config
 
+  !> Diagnostic column cloud cover from the column-maximum relative humidity and
+  !> the convective precipitation (Slingo 1987; docs/tendency/cloud.md).  Used by
+  !> the shortwave reflection only.
+  type, public :: cloud_config
+    logical :: enabled = .false.
+    real(real64) :: critical_relative_humidity = 0.8_real64
+    real(real64) :: convective_intercept = 0.245_real64
+    real(real64) :: convective_slope = 0.125_real64
+    !> P_0 = 1 mm day^-1 in kg m^-2 s^-1.
+    real(real64) :: convective_reference_precipitation = 1.0_real64/day_seconds
+    real(real64) :: convective_maximum_cover = 0.8_real64
+  end type cloud_config
+
   type, public :: dry_model_physics_config
     type(held_suarez_config) :: held_suarez
     type(surface_friction_config) :: surface_friction
@@ -144,6 +164,7 @@ module dry_physics_config
     type(evaporation_config) :: evaporation
     type(moist_convection_config) :: moist_convection
     type(condensation_config) :: condensation
+    type(cloud_config) :: cloud
   end type dry_model_physics_config
 
   public :: radiation_days_per_year, radiation_orbital_period, radiation_planet_rotation_rate

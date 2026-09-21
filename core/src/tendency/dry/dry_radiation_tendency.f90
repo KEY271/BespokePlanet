@@ -18,7 +18,9 @@ contains
 
   !> Radiation and surface exchange use one consistent RAW-filtered previous-time column.
   !> With prognostic water vapour the longwave optical depth sees the previous-time
-  !> specific humidity; otherwise the fixed reference humidity stands in for it.
+  !> specific humidity and the shortwave reflection the cloud cover diagnosed by the
+  !> convection tendency of this evaluation (zero unless the cloud diagnosis is
+  !> enabled); otherwise the fixed reference humidity stands in for the water vapour.
   subroutine add_dry_radiation_tendency(config, moisture_enabled, transform_mu, workspace)
     type(radiation_config), intent(in) :: config
     logical, intent(in) :: moisture_enabled
@@ -47,7 +49,7 @@ contains
               deep_contribution, incoming_shortwave, reflected_shortwave, outgoing_longwave, &
               latent_heat_flux=workspace%latent_heat_flux(i, j), &
               specific_humidity=workspace%previous_humidity_grid(i, j, :), &
-              land_fraction=workspace%land_fraction(i, j))
+              cloud_cover=workspace%cloud_cover(i, j), land_fraction=workspace%land_fraction(i, j))
           else
             call radiation_tendency(config, workspace%previous_pressure_half(i, j, :), &
             workspace%previous_temperature_grid(i, j, :), &
@@ -57,7 +59,7 @@ contains
             longitude, workspace%evaluation_time, temperature_contribution, surface_contribution, &
             deep_contribution, incoming_shortwave, reflected_shortwave, outgoing_longwave, &
             latent_heat_flux=workspace%latent_heat_flux(i, j), &
-            specific_humidity=workspace%previous_humidity_grid(i, j, :))
+            specific_humidity=workspace%previous_humidity_grid(i, j, :), cloud_cover=workspace%cloud_cover(i, j))
           end if
         else
           if (config%land_sea_mixing_enabled) then

@@ -245,7 +245,7 @@ contains
     real(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     real(real64), allocatable :: surface_pressure(:, :), log_surface_pressure(:, :)
     real(real64), allocatable :: u(:, :, :), v(:, :, :), humidity(:, :, :)
-    real(real64), allocatable :: surface_temperature(:, :), deep_temperature(:, :)
+    real(real64), allocatable :: surface_temperature(:, :), deep_temperature(:, :), cloud_cover(:, :)
 
     if (options%include_moisture) then
       call solver%get_spectral_state(zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
@@ -255,13 +255,14 @@ contains
       call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
                              surface_temperature=surface_temperature, deep_temperature=deep_temperature, &
                              specific_humidity=humidity)
+      call solver%get_cloud_cover(cloud_cover)
       log_surface_pressure = log(surface_pressure)
       call write_radiation_yearly_snapshot(case_directory, year, ring_nlon, &
         zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
         zeta, delta, temperature, u, v, log_surface_pressure, surface_temperature, deep_temperature, &
         options, humidity_spectral=humidity_spectral, humidity=humidity, &
         surface_temperature_spectral=surface_temperature_spectral, time_seconds=solver%get_time(), &
-        step=solver%get_step(), deep_temperature_spectral=deep_temperature_spectral)
+        step=solver%get_step(), deep_temperature_spectral=deep_temperature_spectral, cloud_cover=cloud_cover)
     else
       call solver%get_spectral_state(zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
                                      deep_temperature=deep_temperature_spectral)

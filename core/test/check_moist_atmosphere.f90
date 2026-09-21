@@ -17,8 +17,10 @@ program check_moist_atmosphere
   use moist_convection, only: moist_convective_adjustment_tendency, moist_convection_reference_profile
   use dry_convection, only: dry_convective_adjustment_tendency
   use dry_radiation, only: radiation_tendency, radiation_diagnostics
+  use cloud_diagnostics, only: relative_humidity_cloud_cover, convective_cloud_cover, diagnose_cloud_cover
   use dry_physics_config, only: dry_model_physics_config, radiation_config, convection_config, &
-                                moist_convection_config, condensation_config, radiation_surface_heat_capacity
+                                moist_convection_config, condensation_config, cloud_config, &
+                                radiation_surface_heat_capacity
   use dry_case_initial_conditions, only: moist_case_physics, slab_ocean_case_physics, radiation_case_planet, &
                                          set_radiation_case_state
   use dry_held_suarez, only: held_suarez_initial_state
@@ -47,6 +49,8 @@ program check_moist_atmosphere
   call check_moist_convection_stable_columns()
   call check_moist_convection_deep()
   call check_moist_convection_shallow()
+  call check_cloud_diagnosis()
+  call check_cloud_shortwave_reflection()
   call check_moist_case_configuration()
   call check_dry_atmosphere_unchanged_by_zero_humidity()
   call check_column_water_budget_closure()
@@ -398,6 +402,111 @@ contains
     end do
   end subroutine check_moist_convection_shallow
 
+  !> Cloud cover from the column-maximum relative humidity and the convective
+  !> precipitation (docs/tendency/cloud.md).
+  subroutine check_cloud_diagnosis()
+    type(cloud_config) :: clouds
+    real(real64), parameter :: mm_per_day = 1.0_real64/86400.0_real64
+    real(real64), parameter :: temperature(4) = [220.0_real64, 250.0_real64, 275.0_real64, 288.0_real64]
+    real(real64) :: full_pressure(4), delta_pressure(4), saturation(4), humidity(4), cover
+    integer :: k
+
+    if (abs(clouds%critical_relative_humidity - 0.8_real64) > 0.0_real64 .or. &
+        abs(clouds%convective_intercept - 0.245_real64) > 0.0_real64 .or. &
+        abs(clouds%convective_slope - 0.125_real64) > 0.0_real64 .or. &
+        abs(clouds%convective_reference_precipitation - mm_per_day) > 1.0e-20_real64 .or. &
+        abs(clouds%convective_maximum_cover - 0.8_real64) > 0.0_real64) then
+      error stop 'cloud defaults differ from docs/tendency/cloud.md'
+    end if
+    if (relative_humidity_cloud_cover(clouds, 0.5_real64) /= 0.0_real64 .or. &
+        relative_humidity_cloud_cover(clouds, 0.8_real64) /= 0.0_real64 .or. &
+        abs(relative_humidity_cloud_cover(clouds, 0.9_real64) - 0.25_real64) > 1.0e-14_real64 .or. &
+        abs(relative_humidity_cloud_cover(clouds, 1.0_real64) - 1.0_real64) > 1.0e-14_real64 .or. &
+        abs(relative_humidity_cloud_cover(clouds, 1.2_real64) - 1.0_real64) > 1.0e-14_real64) then
+      error stop 'relative-humidity cloud cover is incorrect'
+    end if
+    if (convective_cloud_cover(clouds, 0.0_real64) /= 0.0_real64 .or. &
+        convective_cloud_cover(clouds, 0.1_real64*mm_per_day) /= 0.0_real64 .or. &
+        abs(convective_cloud_cover(clouds, mm_per_day) - 0.245_real64) > 1.0e-14_real64 .or. &
+        abs(convective_cloud_cover(clouds, 10.0_real64*mm_per_day) - (0.245_real64 + 0.125_real64*log(10.0_real64))) > &
+        1.0e-14_real64 .or. &
+        abs(convective_cloud_cover(clouds, 100.0_real64*mm_per_day) - 0.8_real64) > 0.0_real64 .or. &
+        convective_cloud_cover(clouds, 5.0_real64*mm_per_day) <= convective_cloud_cover(clouds, 2.0_real64*mm_per_day)) then
+      error stop 'convective cloud cover is incorrect'
+    end if
+    call full_level_pressures(pressure_half, full_pressure, delta_pressure)
+    do k = 1, 4
+      saturation(k) = saturation_specific_humidity(temperature(k), full_pressure(k))
+    end do
+    humidity = 0.5_real64*saturation
+    if (diagnose_cloud_cover(clouds, full_pressure, temperature, humidity, 0.0_real64) /= 0.0_real64) then
+      error stop 'an unsaturated column without convective rain has cloud'
+    end if
+    humidity(3) = saturation(3)
+    if (abs(diagnose_cloud_cover(clouds, full_pressure, temperature, humidity, 0.0_real64) - 1.0_real64) > 1.0e-14_real64) then
+      error stop 'a saturated layer does not give full cloud cover'
+    end if
+    humidity = 0.9_real64*saturation
+    humidity(1) = -0.5_real64
+    cover = diagnose_cloud_cover(clouds, full_pressure, temperature, humidity, 10.0_real64*mm_per_day)
+    if (abs(cover - max(0.25_real64, 0.245_real64 + 0.125_real64*log(10.0_real64))) > 1.0e-14_real64) then
+      error stop 'cloud cover is not the larger of the humidity and convective covers'
+    end if
+    humidity = -0.5_real64
+    if (diagnose_cloud_cover(clouds, full_pressure, temperature, humidity, 0.0_real64) /= 0.0_real64) then
+      error stop 'negative humidity produced cloud'
+    end if
+  end subroutine check_cloud_diagnosis
+
+  !> The cloud reflects C alpha_c of the downward shortwave once below the ozone layer
+  !> (docs/tendency/shortwave-radiation.md): C = 0 reproduces the cloud-free column bit for
+  !> bit, the atmosphere is not heated by clouds, and the column energy budget closes.
+  subroutine check_cloud_shortwave_reflection()
+    real(real64), parameter :: temperature(4) = [220.0_real64, 250.0_real64, 275.0_real64, 288.0_real64]
+    real(real64) :: clear_tendency(4), cloudy_tendency(4), clear_surface, cloudy_surface, deep
+    real(real64) :: clear_incoming, clear_reflected, clear_outgoing, incoming, reflected, outgoing
+    real(real64) :: surface_shortwave, expected_reflected, total_energy_tendency, cover
+    type(dry_model_physics_config) :: physics
+    type(radiation_config) :: ocean
+    integer :: quarter
+
+    physics = moist_case_physics()
+    ocean = physics%radiation
+    if (abs(ocean%cloud_shortwave_albedo - 0.43_real64) > 0.0_real64 .or. &
+        abs(ocean%surface_shortwave_albedo - 0.06_real64) > 0.0_real64) then
+      error stop 'moist case albedos differ from docs/tendency/shortwave-radiation.md'
+    end if
+    call radiation_tendency(ocean, pressure_half, temperature, 290.0_real64, 0.0_real64, 3.0_real64, 4.0_real64, &
+                            0.0_real64, 0.0_real64, 0.0_real64, clear_tendency, clear_surface, deep, &
+                            clear_incoming, clear_reflected, clear_outgoing, latent_heat_flux=50.0_real64)
+    call radiation_tendency(ocean, pressure_half, temperature, 290.0_real64, 0.0_real64, 3.0_real64, 4.0_real64, &
+                            0.0_real64, 0.0_real64, 0.0_real64, cloudy_tendency, cloudy_surface, deep, &
+                            incoming, reflected, outgoing, latent_heat_flux=50.0_real64, cloud_cover=0.0_real64)
+    if (any(cloudy_tendency /= clear_tendency) .or. cloudy_surface /= clear_surface .or. &
+        reflected /= clear_reflected .or. incoming /= clear_incoming .or. outgoing /= clear_outgoing) then
+      error stop 'zero cloud cover changes the radiation column'
+    end if
+    surface_shortwave = clear_reflected/ocean%surface_shortwave_albedo
+    do quarter = 1, 4
+      cover = 0.25_real64*real(quarter, real64)
+      call radiation_tendency(ocean, pressure_half, temperature, 290.0_real64, 0.0_real64, 3.0_real64, 4.0_real64, &
+                              0.0_real64, 0.0_real64, 0.0_real64, cloudy_tendency, cloudy_surface, deep, &
+                              incoming, reflected, outgoing, latent_heat_flux=50.0_real64, cloud_cover=cover)
+      expected_reflected = (cover*ocean%cloud_shortwave_albedo + &
+        (1.0_real64 - cover*ocean%cloud_shortwave_albedo)*ocean%surface_shortwave_albedo)*surface_shortwave
+      if (abs(reflected - expected_reflected) > 1.0e-12_real64*expected_reflected .or. &
+          any(cloudy_tendency /= clear_tendency) .or. cloudy_surface >= clear_surface .or. &
+          incoming /= clear_incoming .or. outgoing /= clear_outgoing) then
+        error stop 'cloud reflection of the downward shortwave is incorrect'
+      end if
+      total_energy_tendency = sum(ocean%dry_air_specific_heat*(pressure_half(1:4) - pressure_half(0:3))/ &
+        earth_gravity*cloudy_tendency) + radiation_surface_heat_capacity(ocean)*cloudy_surface + 50.0_real64
+      if (abs(total_energy_tendency - (incoming - reflected - outgoing)) > 1.0e-9_real64) then
+        error stop 'cloudy radiation column does not conserve energy'
+      end if
+    end do
+  end subroutine check_cloud_shortwave_reflection
+
   subroutine check_moist_case_configuration()
     type(dry_model_physics_config) :: physics
     type(radiation_config) :: seasonal_radiation
@@ -406,8 +515,10 @@ contains
     if (.not. (physics%moisture%enabled .and. physics%evaporation%enabled .and. physics%moist_convection%enabled .and. &
                physics%condensation%enabled .and. physics%convection%enabled .and. physics%radiation%enabled .and. &
                physics%radiation%slab_ocean_enabled .and. physics%surface_friction%enabled .and. &
-               physics%rayleigh_friction%enabled) .or. physics%held_suarez%enabled .or. &
+               physics%rayleigh_friction%enabled .and. physics%cloud%enabled) .or. physics%held_suarez%enabled .or. &
         physics%evaporation%surface_wetness /= 1.0_real64 .or. &
+        physics%radiation%surface_shortwave_albedo /= seasonal_radiation%ocean_shortwave_albedo .or. &
+        abs(physics%radiation%surface_shortwave_albedo - 0.06_real64) > 0.0_real64 .or. &
         physics%radiation%axial_tilt /= seasonal_radiation%axial_tilt .or. &
         abs(physics%radiation%axial_tilt - 23.4_real64*acos(-1.0_real64)/180.0_real64) > 1.0e-15_real64 .or. &
         abs(physics%moisture%initial_relative_humidity - 0.7_real64) > 0.0_real64 .or. &
@@ -561,6 +672,7 @@ contains
     type(radiation_monthly_means) :: monthly
     real(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :), humidity(:, :, :)
     real(real64), allocatable :: surface_pressure(:, :), u(:, :, :), v(:, :, :), ocean(:, :), deep(:, :)
+    real(real64), allocatable :: cloud_cover(:, :)
     integer, allocatable :: nlon(:)
     real(real64) :: first_water, last_water, accumulated_source, time_step_used
     real(real64), allocatable :: column_half(:), full_pressure(:), delta_pressure(:), weights(:)
@@ -655,13 +767,22 @@ contains
     end if
     if (means%mean_evaporation <= 0.0_real64 .or. means%mean_latent_heat_flux <= 0.0_real64 .or. &
         means%mean_precipitable_water <= 0.0_real64 .or. means%maximum_wind_speed <= 0.0_real64 .or. &
+        means%mean_cloud_cover < 0.0_real64 .or. means%mean_cloud_cover > 1.0_real64 .or. &
         means%maximum_wind_level < 1 .or. abs(means%maximum_wind_latitude_degrees) > 90.0_real64 .or. &
         means%maximum_wind_longitude_degrees < 0.0_real64 .or. means%maximum_wind_longitude_degrees >= 360.0_real64) then
       error stop 'moist daily diagnostics are incorrect'
     end if
     if (.not. allocated(monthly%precipitation) .or. .not. allocated(monthly%eddy_vq) .or. &
+        .not. allocated(monthly%cloud_cover) .or. &
         .not. all(ieee_is_finite(monthly%precipitable_water)) .or. .not. all(ieee_is_finite(monthly%zonal_humidity))) then
       error stop 'moist monthly diagnostics are missing or non-finite'
+    end if
+    if (any(monthly%cloud_cover < 0.0_real64) .or. any(monthly%cloud_cover > 1.0_real64)) then
+      error stop 'monthly cloud cover is outside [0,1]'
+    end if
+    call dry_start_solver%get_cloud_cover(cloud_cover)
+    if (any(shape(cloud_cover) /= shape(ocean)) .or. any(cloud_cover < 0.0_real64) .or. any(cloud_cover > 1.0_real64)) then
+      error stop 'solver cloud cover snapshot is missing or outside [0,1]'
     end if
     ! The column water sampled at the start of each step changes by the accumulated E - P up to the
     ! advection and filter error, which is small for the nearly balanced initial state over 4 hours.

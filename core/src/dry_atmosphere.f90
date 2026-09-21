@@ -65,6 +65,9 @@ module dry_atmosphere
     procedure, public :: get_time
     procedure, public :: get_last_advance_cfl
     procedure, public :: take_latest_diagnostics
+    !> Effective column cloud cover of the most recent tendency evaluation
+    !> (docs/tendency/cloud.md); zero before the first advance or without clouds.
+    procedure, public :: get_cloud_cover
   end type dry_atmosphere_solver
 
 contains
@@ -382,6 +385,13 @@ contains
     call move_radiation_diagnostics(this%latest_radiation_diagnostics, diagnostics)
     this%latest_diagnostics_available = .false.
   end subroutine take_latest_diagnostics
+
+  subroutine get_cloud_cover(this, cloud_cover)
+    class(dry_atmosphere_solver), intent(in) :: this
+    real(real64), allocatable, intent(out) :: cloud_cover(:, :)
+    call check_ready(this)
+    cloud_cover = this%workspace%cloud_cover
+  end subroutine get_cloud_cover
 
   pure real(real64) function advective_cfl(this, maximum_speed) result(cfl)
     class(dry_atmosphere_solver), intent(in) :: this

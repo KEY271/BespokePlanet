@@ -54,7 +54,7 @@ contains
       header = header//',precipitation_mm_day-1,convective_precipitation_mm_day-1,'// &
                'large_scale_precipitation_mm_day-1,evaporation_mm_day-1,latent_heat_flux_w_m-2,'// &
                'precipitable_water_kg_m-2,signed_column_water_kg_m-2,negative_column_water_kg_m-2,'// &
-               'maximum_wind_speed_m_s-1,maximum_wind_longitude_deg,maximum_wind_latitude_deg,'// &
+               'cloud_cover,maximum_wind_speed_m_s-1,maximum_wind_longitude_deg,maximum_wind_latitude_deg,'// &
                'maximum_wind_level,maximum_wind_eta'
     end if
     if (options%include_land_sea) then
@@ -89,7 +89,8 @@ contains
             csv_real(mm_per_day*means%mean_large_scale_precipitation)//','// &
             csv_real(mm_per_day*means%mean_evaporation)//','//csv_real(means%mean_latent_heat_flux)//','// &
             csv_real(means%mean_precipitable_water)//','//csv_real(means%mean_signed_column_water)//','// &
-            csv_real(means%mean_negative_column_water)//','//csv_real(means%maximum_wind_speed)//','// &
+            csv_real(means%mean_negative_column_water)//','//csv_real(means%mean_cloud_cover)//','// &
+            csv_real(means%maximum_wind_speed)//','// &
             csv_real(means%maximum_wind_longitude_degrees)//','//csv_real(means%maximum_wind_latitude_degrees)//','// &
             csv_integer(means%maximum_wind_level)//','//csv_real(means%maximum_wind_eta)
     end if
@@ -146,10 +147,13 @@ contains
     if (options%include_moisture) then
       if (.not. allocated(means%precipitation) .or. .not. allocated(means%evaporation) .or. &
           .not. allocated(means%precipitable_water) .or. .not. allocated(means%zonal_humidity) .or. &
-          .not. allocated(means%eddy_vq)) error stop 'moist monthly means are missing'
+          .not. allocated(means%eddy_vq) .or. .not. allocated(means%cloud_cover)) then
+        error stop 'moist monthly means are missing'
+      end if
       call check_finite('monthly_precipitation', nlon, means%precipitation)
       call check_finite('monthly_evaporation', nlon, means%evaporation)
       call check_finite('monthly_precipitable_water', nlon, means%precipitable_water)
+      call check_finite('monthly_cloud_cover', nlon, means%cloud_cover)
       call check_rectangular_finite('monthly_zonal_humidity', means%zonal_humidity)
       call check_rectangular_finite('monthly_eddy_vq', means%eddy_vq)
       call write_field(trim(case_directory)//'/monthly_precipitation_m'//month_text//'.bin', &
@@ -158,6 +162,7 @@ contains
                        nlon, mm_per_day*means%evaporation)
       call write_field(trim(case_directory)//'/monthly_precipitable_water_m'//month_text//'.bin', &
                        nlon, means%precipitable_water)
+      call write_field(trim(case_directory)//'/monthly_cloud_cover_m'//month_text//'.bin', nlon, means%cloud_cover)
       call write_rectangular_field(trim(case_directory)//'/monthly_zonal_humidity_m'//month_text//'.bin', &
                                    means%zonal_humidity)
       call write_rectangular_field(trim(case_directory)//'/monthly_eddy_vq_m'//month_text//'.bin', means%eddy_vq)
@@ -169,7 +174,7 @@ contains
                                               log_surface_pressure_spectral, zeta, delta, temperature, &
                                               u, v, log_surface_pressure, surface_temperature, deep_temperature, &
                                               options, humidity_spectral, humidity, surface_temperature_spectral, &
-                                              time_seconds, step, deep_temperature_spectral)
+                                              time_seconds, step, deep_temperature_spectral, cloud_cover)
     character(*), intent(in) :: case_directory
     integer, intent(in) :: year
     integer, intent(in) :: nlon(:)
@@ -186,6 +191,8 @@ contains
     complex(real64), intent(in), optional :: deep_temperature_spectral(0:, 0:)
     real(real64), intent(in), optional :: humidity(:, :, :), time_seconds
     integer, intent(in), optional :: step
+    !> Diagnosed cloud cover of the most recent tendency evaluation (moist cases).
+    real(real64), intent(in), optional :: cloud_cover(:, :)
     character(len=4) :: year_text
     character(len=2) :: level_text
     integer :: k, unit
@@ -200,8 +207,9 @@ contains
     end if
     if (options%include_moisture) then
       if (.not. (present(humidity_spectral) .and. present(humidity) .and. &
-                 present(surface_temperature_spectral) .and. present(time_seconds) .and. present(step))) then
-        error stop 'moist yearly snapshot requires the humidity, ocean temperature and time'
+                 present(surface_temperature_spectral) .and. present(time_seconds) .and. present(step) .and. &
+                 present(cloud_cover))) then
+        error stop 'moist yearly snapshot requires the humidity, ocean temperature, cloud cover and time'
       end if
       if (size(humidity, 3) /= size(zeta, 3) .or. size(humidity_spectral, 3) /= size(zeta, 3)) then
         error stop 'moist yearly snapshot humidity has a different level count'
@@ -231,6 +239,8 @@ contains
       call check_spectral_finite('yearly_surface_temperature_spectral', surface_temperature_spectral)
       call write_spectral_field(trim(case_directory)//'/yearly_surface_temperature_spectral_y'// &
                                 year_text//'.bin', surface_temperature_spectral)
+      call check_finite('yearly_cloud_cover', nlon, cloud_cover)
+      call write_field(trim(case_directory)//'/yearly_cloud_cover_y'//year_text//'.bin', nlon, cloud_cover)
       open (newunit=unit, file=trim(case_directory)//'/yearly_time_y'//year_text//'.json', status='replace', &
             action='write')
       write (unit, '(a)') '{'
@@ -340,6 +350,15 @@ contains
     write (unit, '(a)') '  "radiation": {'
     write (unit, '(a,es24.16e3,a)') '    "solar_constant_w_m-2": ', radiation%solar_constant, ','
     write (unit, '(a,es24.16e3,a)') '    "surface_shortwave_albedo": ', radiation%surface_shortwave_albedo, ','
+    if (physics%cloud%enabled) then
+      write (unit, '(a)') '    "surface_albedo_meaning": "surface without clouds; cloud reflection is diagnosed",'
+      write (unit, '(a,es24.16e3,a)') '    "cloud_shortwave_albedo": ', radiation%cloud_shortwave_albedo, ','
+      write (unit, '(a)') '    "cloud_shortwave": "downward shortwave below the ozone layer reflected once by '// &
+        'cloud_cover * cloud_shortwave_albedo; no cloud absorption; no cloud longwave effect",'
+    else
+      write (unit, '(a)') '    "surface_albedo_meaning": "planetary value with the cloud reflection folded in; '// &
+        'no diagnosed clouds",'
+    end if
     write (unit, '(a,es24.16e3,a)') '    "axial_tilt_radians": ', radiation%axial_tilt, ','
     write (unit, '(a,es24.16e3,a)') '    "orbital_period_seconds": ', orbital_period, ','
     write (unit, '(a,es24.16e3,a)') '    "rotation_rate_rad_s": ', planet%rotation_rate, ','
@@ -431,7 +450,25 @@ contains
       write (unit, '(a,es24.16e3)') &
         '      "saturation_tolerance": ', physics%condensation%saturation_tolerance
       write (unit, '(a)') '    },'
-      write (unit, '(a)') '    "physics_order": "dry adjustment, moist adjustment, condensation on provisional fields"'
+      if (physics%cloud%enabled) then
+        write (unit, '(a)') '    "cloud": {'
+        write (unit, '(a)') '      "method": "diagnostic effective column cloud cover; max of Slingo (1987) '// &
+          'relative-humidity form on the column-maximum RH of the provisional field after condensation and '// &
+          'Slingo (1987) convective form on the convective precipitation",'
+        write (unit, '(a,es24.16e3,a)') &
+          '      "critical_relative_humidity": ', physics%cloud%critical_relative_humidity, ','
+        write (unit, '(a,es24.16e3,a)') '      "convective_intercept": ', physics%cloud%convective_intercept, ','
+        write (unit, '(a,es24.16e3,a)') '      "convective_slope": ', physics%cloud%convective_slope, ','
+        write (unit, '(a,es24.16e3,a)') '      "convective_reference_precipitation_kg_m-2_s-1": ', &
+          physics%cloud%convective_reference_precipitation, ','
+        write (unit, '(a,es24.16e3)') '      "convective_maximum_cover": ', physics%cloud%convective_maximum_cover
+        write (unit, '(a)') '    },'
+        write (unit, '(a)') '    "physics_order": "evaporation; dry adjustment, moist adjustment, condensation '// &
+          'and cloud diagnosis on provisional fields; radiation"'
+      else
+        write (unit, '(a)') '    "physics_order": "evaporation; dry adjustment, moist adjustment, condensation '// &
+          'on provisional fields; radiation"'
+      end if
       write (unit, '(a)') '  },'
     end if
     if (radiation%land_sea_mixing_enabled) then
@@ -571,6 +608,10 @@ contains
       write (unit, '(a)') '    "monthly_precipitation": "monthly_precipitation_m{month:04d}.bin",'
       write (unit, '(a)') '    "monthly_evaporation": "monthly_evaporation_m{month:04d}.bin",'
       write (unit, '(a)') '    "monthly_precipitable_water": "monthly_precipitable_water_m{month:04d}.bin",'
+      write (unit, '(a)') '    "monthly_cloud_cover": "monthly_cloud_cover_m{month:04d}.bin",'
+      write (unit, '(a)') '    "yearly_cloud_cover": "yearly_cloud_cover_y{year:04d}.bin",'
+      write (unit, '(a)') '    "yearly_cloud_cover_sampling": "cloud cover diagnosed in the tendency evaluation '// &
+        'of the step ending at the snapshot time; zero in the initial snapshot",'
     end if
     if (options%include_land_sea) then
       write (unit, '(a)') '    "static_land_fraction": "land_fraction.bin",'
@@ -602,7 +643,8 @@ contains
     if (options%include_moisture) then
       write (unit, '(a)') '      "eddy_uv": "m2 s^-2", "eddy_vt": "K m s^-1",'
       write (unit, '(a)') '      "specific_humidity": "kg kg^-1", "precipitation": "mm day^-1",'
-      write (unit, '(a)') '      "evaporation": "mm day^-1", "precipitable_water": "kg m^-2", "eddy_vq": "m s^-1"'
+      write (unit, '(a)') '      "evaporation": "mm day^-1", "precipitable_water": "kg m^-2", "eddy_vq": "m s^-1",'
+      write (unit, '(a)') '      "cloud_cover": "1"'
     else
       write (unit, '(a)') '      "eddy_uv": "m2 s^-2", "eddy_vt": "K m s^-1"'
     end if

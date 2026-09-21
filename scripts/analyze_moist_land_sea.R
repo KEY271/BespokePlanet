@@ -105,6 +105,7 @@ calendar_labels <- month.abb[calendar_month]
 
 temperature_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
 precipitation_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
+cloud_cover_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
 surface_pressure_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
 zonal_v_monthly <- array(NA_real_, dim = c(nlat, nlev, months_per_year))
 
@@ -112,6 +113,7 @@ for (m in seq_along(final_months)) {
   suffix <- sprintf("m%04d.bin", final_months[[m]])
   temperature_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_surface_temperature_", suffix)))
   precipitation_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_precipitation_", suffix)))
+  cloud_cover_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_cloud_cover_", suffix)))
   surface_pressure_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_surface_pressure_", suffix)))
   zonal_v_monthly[, , m] <- read_zonal(file.path(case_dir, paste0("monthly_zonal_v_", suffix)))
 }
@@ -122,6 +124,7 @@ temperature_annual_k <- rowMeans(temperature_monthly)
 temperature_annual_c <- temperature_annual_k - 273.15
 precipitation_annual_mm <- rowSums(precipitation_monthly * days_per_month)
 precipitation_mean_mm_day <- rowMeans(precipitation_monthly)
+cloud_cover_annual <- rowMeans(cloud_cover_monthly)
 
 # Köppen first-letter climate group. We use the original -3 C C/D boundary.
 # B is tested first using annual temperature, annual precipitation, and the
@@ -172,6 +175,7 @@ climate_table <- data.frame(
   land_fraction = land_fraction,
   annual_mean_surface_temperature_c = temperature_annual_c,
   annual_precipitation_mm = precipitation_annual_mm,
+  annual_mean_cloud_cover = cloud_cover_annual,
   koppen_group = koppen_group
 )
 write.csv(climate_table, file.path(analysis_dir, "final_year_koppen_groups.csv"), row.names = FALSE)
@@ -439,6 +443,57 @@ legend("topleft", legend = c(precipitation_labels, "Ocean"),
 mtext("Land is defined as land fraction >= 0.5", side = 1, line = 4.6, cex = 0.72)
 dev.off()
 
+# Final-year annual-mean effective cloud cover over the whole globe. Cloud
+# cover is a diagnosed column area fraction in [0, 1], so use fixed 10%-wide
+# bins to make this map directly comparable with future runs.
+cloud_breaks <- seq(0, 1, by = 0.1)
+cloud_colors <- hcl.colors(length(cloud_breaks) - 1, palette = "Blues 3", rev = TRUE)
+cloud_class <- cut(pmin(1, pmax(0, cloud_cover_annual)), breaks = cloud_breaks,
+                   labels = FALSE, include.lowest = TRUE)
+cloud_labels <- sprintf("%d–%d%%", seq(0, 90, 10), seq(10, 100, 10))
+
+png(file.path(analysis_dir, "final_year_mean_cloud_cover_map.png"),
+    width = 2200, height = 1250, res = 180, type = png_device_type)
+par(mar = c(6.2, 5.0, 4.1, 1.0), las = 1)
+plot(NA, xlim = c(-180, 180), ylim = c(-90, 90), xaxs = "i", yaxs = "i",
+     xlab = "Longitude", ylab = "Latitude",
+     main = sprintf("Annual-mean effective cloud cover, final year (months %d–%d)",
+                    min(final_months), max(final_months)),
+     axes = FALSE)
+offset <- 0L
+for (j in seq_len(nlat)) {
+  delta_lon <- 360 / nlon[[j]]
+  for (i in seq_len(nlon[[j]])) {
+    index <- offset + i
+    centre <- map_longitude[[index]]
+    left <- centre - delta_lon / 2
+    right <- centre + delta_lon / 2
+    colour <- cloud_colors[[cloud_class[[index]]]]
+    if (left < -180) {
+      rect(-180, latitude_edges[[j]], right, latitude_edges[[j + 1]], col = colour, border = NA)
+      rect(360 + left, latitude_edges[[j]], 180, latitude_edges[[j + 1]], col = colour, border = NA)
+    } else if (right > 180) {
+      rect(left, latitude_edges[[j]], 180, latitude_edges[[j + 1]], col = colour, border = NA)
+      rect(-180, latitude_edges[[j]], right - 360, latitude_edges[[j + 1]], col = colour, border = NA)
+    } else {
+      rect(left, latitude_edges[[j]], right, latitude_edges[[j + 1]], col = colour, border = NA)
+    }
+  }
+  offset <- offset + nlon[[j]]
+}
+abline(h = seq(-60, 60, 30), v = seq(-180, 180, 60),
+       col = adjustcolor("white", 0.55), lwd = 0.7)
+axis(1, at = seq(-180, 180, 60),
+     labels = c("180°W", "120°W", "60°W", "0°", "60°E", "120°E", "180°E"))
+axis(2, at = seq(-90, 90, 30),
+     labels = c("90°S", "60°S", "30°S", "0°", "30°N", "60°N", "90°N"))
+box()
+legend("topleft", legend = cloud_labels, fill = cloud_colors,
+       border = "#555555", bg = "white", cex = 0.72, title = "Cloud cover")
+mtext("Diagnosed effective column cloud fraction; land and ocean are both shown",
+      side = 1, line = 4.6, cex = 0.72)
+dev.off()
+
 # Requested zonal means, including land and ocean in every longitude ring.
 temperature_zonal_k <- rowMeans(vapply(
   seq_len(months_per_year), function(m) ring_mean(temperature_monthly[, m]), numeric(nlat)
@@ -446,10 +501,14 @@ temperature_zonal_k <- rowMeans(vapply(
 precipitation_zonal_mm_day <- rowMeans(vapply(
   seq_len(months_per_year), function(m) ring_mean(precipitation_monthly[, m]), numeric(nlat)
 ))
+cloud_cover_zonal <- rowMeans(vapply(
+  seq_len(months_per_year), function(m) ring_mean(cloud_cover_monthly[, m]), numeric(nlat)
+))
 zonal_table <- data.frame(
   latitude_deg = latitude,
   annual_mean_surface_temperature_k = temperature_zonal_k,
-  annual_mean_precipitation_mm_day = precipitation_zonal_mm_day
+  annual_mean_precipitation_mm_day = precipitation_zonal_mm_day,
+  annual_mean_cloud_cover = cloud_cover_zonal
 )
 write.csv(zonal_table, file.path(analysis_dir, "final_year_zonal_means.csv"), row.names = FALSE)
 
@@ -532,6 +591,10 @@ dev.off()
 
 # Reorder April–March output into the conventional January–December display.
 calendar_order <- order(calendar_month)
+selected_temperature_c <- temperature_monthly[selected, calendar_order, drop = FALSE] - 273.15
+selected_precipitation_mm <- precipitation_monthly[selected, calendar_order, drop = FALSE] * days_per_month
+temperature_limits <- range(pretty(range(c(selected_temperature_c, 0)), n = 6))
+precipitation_limit <- max(pretty(c(0, selected_precipitation_mm), n = 6))
 png(file.path(analysis_dir, "final_year_representative_land_climographs.png"),
     width = 2200, height = 1900, res = 180, type = png_device_type)
 par(mfrow = c(3, 2), mar = c(4.1, 4.7, 3.7, 4.7), oma = c(1.0, 0.8, 3.0, 0.8), las = 1)
@@ -539,10 +602,6 @@ for (s in seq_along(selected)) {
   index <- selected[[s]]
   temperature_c <- temperature_monthly[index, calendar_order] - 273.15
   precipitation_mm <- precipitation_monthly[index, calendar_order] * days_per_month
-  precipitation_limit <- max(10, max(precipitation_mm) * 1.2)
-  temperature_limits <- range(c(temperature_c, 0))
-  temperature_padding <- max(3, diff(temperature_limits) * 0.12)
-  temperature_limits <- temperature_limits + c(-temperature_padding, temperature_padding)
 
   plot(seq_len(12), temperature_c, type = "n", xlim = c(0.5, 12.5), ylim = temperature_limits,
        xaxt = "n", xlab = "Month", ylab = "Temperature (°C)",
@@ -569,6 +628,8 @@ for (s in seq_along(selected)) {
 }
 mtext(sprintf("Representative land-point climographs, final year (months %d–%d; shown Jan–Dec)",
               min(final_months), max(final_months)), side = 3, outer = TRUE, line = 1.2, cex = 1.15)
+mtext("Temperature and precipitation axes are shared across all six panels",
+      side = 1, outer = TRUE, line = 0.0, cex = 0.72)
 dev.off()
 
 # Compact summary and methodological record alongside the figures.
@@ -600,9 +661,16 @@ group_fraction <- vapply(names(koppen_colors), function(group) {
 summary_table <- data.frame(
   metric = c("final_month_start", "final_month_end", "maximum_streamfunction_1e9_kg_s",
              "minimum_streamfunction_1e9_kg_s", "maximum_surface_mass_residual_1e9_kg_s",
+             "global_area_mean_cloud_cover", "land_area_mean_cloud_cover",
+             "ocean_area_mean_cloud_cover",
              paste0("land_area_fraction_group_", names(group_fraction))),
   value = c(min(final_months), max(final_months), max(psi_billion), min(psi_billion),
-            max(abs(rowMeans(surface_mass_residual))) / 1e9, group_fraction)
+            max(abs(rowMeans(surface_mass_residual))) / 1e9,
+            sum(group_weight * cloud_cover_annual),
+            sum(group_weight * land_fraction * cloud_cover_annual) / sum(group_weight * land_fraction),
+            sum(group_weight * (1 - land_fraction) * cloud_cover_annual) /
+              sum(group_weight * (1 - land_fraction)),
+            group_fraction)
 )
 write.csv(summary_table, file.path(analysis_dir, "analysis_summary.csv"), row.names = FALSE)
 
@@ -613,8 +681,9 @@ notes <- c(
   "The B threshold uses annual temperature, annual precipitation, and hemisphere-specific high-sun-half-year precipitation.",
   "The C/D boundary is -3 degC. A requires every month >=18 degC; E has warmest month <10 degC.",
   "Zonal means include both land and ocean grid cells.",
+  "The cloud map shows final-year mean diagnosed effective column cloud fraction over land and ocean in fixed 10-percentage-point bins.",
   "Mass streamfunction uses monthly zonal-mean v and monthly zonal-mean surface pressure; pressure shown is the reference full-level pressure.",
-  "Climographs use snapped native-grid cells with land_fraction >= 0.75 and are reordered to January-December.",
+  "Climographs use snapped native-grid cells with land_fraction >= 0.75, are reordered to January-December, and share both vertical-axis ranges across all panels.",
   "All annual means use the final 12 monthly means with equal weights."
 )
 writeLines(notes, file.path(analysis_dir, "README.txt"))

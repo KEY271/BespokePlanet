@@ -18,6 +18,7 @@ module radiation_diagnostics_collector
     real(real64), allocatable :: eddy_uv(:, :), eddy_vt(:, :)
     !> Moist fields; unallocated in a dry run.
     real(real64), allocatable :: precipitation(:, :), evaporation(:, :), precipitable_water(:, :)
+    real(real64), allocatable :: cloud_cover(:, :)
     real(real64), allocatable :: zonal_humidity(:, :), eddy_vq(:, :)
   end type radiation_monthly_means
 
@@ -37,6 +38,7 @@ module radiation_diagnostics_collector
     real(real64), allocatable :: precipitation_sum(:, :)
     real(real64), allocatable :: evaporation_sum(:, :)
     real(real64), allocatable :: precipitable_water_sum(:, :)
+    real(real64), allocatable :: cloud_cover_sum(:, :)
     real(real64), allocatable :: zonal_humidity_sum(:, :)
     real(real64), allocatable :: zonal_vq_sum(:, :)
   contains
@@ -73,6 +75,7 @@ module radiation_diagnostics_collector
     real(real64) :: precipitable_water_sum = 0.0_real64
     real(real64) :: signed_column_water_sum = 0.0_real64
     real(real64) :: negative_column_water_sum = 0.0_real64
+    real(real64) :: cloud_cover_sum = 0.0_real64
     real(real64) :: maximum_wind_speed = -1.0_real64
     real(real64) :: maximum_wind_longitude_degrees = 0.0_real64
     real(real64) :: maximum_wind_latitude_degrees = 0.0_real64
@@ -146,12 +149,14 @@ contains
       this%moist = allocated(sample%precipitation)
       if (this%moist) then
         if (.not. allocated(sample%evaporation) .or. .not. allocated(sample%precipitable_water) .or. &
-            .not. allocated(sample%zonal_humidity) .or. .not. allocated(sample%zonal_vq)) then
+            .not. allocated(sample%zonal_humidity) .or. .not. allocated(sample%zonal_vq) .or. &
+            .not. allocated(sample%cloud_cover)) then
           error stop 'incomplete moist diagnostic sample'
         end if
         allocate (this%precipitation_sum, mold=sample%precipitation)
         allocate (this%evaporation_sum, mold=sample%evaporation)
         allocate (this%precipitable_water_sum, mold=sample%precipitable_water)
+        allocate (this%cloud_cover_sum, mold=sample%cloud_cover)
         allocate (this%zonal_humidity_sum, mold=sample%zonal_humidity)
         allocate (this%zonal_vq_sum, mold=sample%zonal_vq)
       end if
@@ -172,6 +177,7 @@ contains
       this%precipitation_sum = this%precipitation_sum + sample%precipitation
       this%evaporation_sum = this%evaporation_sum + sample%evaporation
       this%precipitable_water_sum = this%precipitable_water_sum + sample%precipitable_water
+      this%cloud_cover_sum = this%cloud_cover_sum + sample%cloud_cover
       this%zonal_humidity_sum = this%zonal_humidity_sum + sample%zonal_humidity
       this%zonal_vq_sum = this%zonal_vq_sum + sample%zonal_vq
     end if
@@ -197,6 +203,7 @@ contains
       means%precipitation = this%precipitation_sum*inverse_count
       means%evaporation = this%evaporation_sum*inverse_count
       means%precipitable_water = this%precipitable_water_sum*inverse_count
+      means%cloud_cover = this%cloud_cover_sum*inverse_count
       means%zonal_humidity = this%zonal_humidity_sum*inverse_count
       means%eddy_vq = this%zonal_vq_sum*inverse_count - means%zonal_v*means%zonal_humidity
     end if
@@ -218,6 +225,7 @@ contains
     if (allocated(this%precipitation_sum)) this%precipitation_sum = 0.0_real64
     if (allocated(this%evaporation_sum)) this%evaporation_sum = 0.0_real64
     if (allocated(this%precipitable_water_sum)) this%precipitable_water_sum = 0.0_real64
+    if (allocated(this%cloud_cover_sum)) this%cloud_cover_sum = 0.0_real64
     if (allocated(this%zonal_humidity_sum)) this%zonal_humidity_sum = 0.0_real64
     if (allocated(this%zonal_vq_sum)) this%zonal_vq_sum = 0.0_real64
   end subroutine reset_monthly_accumulator
@@ -254,6 +262,7 @@ contains
     this%precipitable_water_sum = this%precipitable_water_sum + sample%mean_precipitable_water
     this%signed_column_water_sum = this%signed_column_water_sum + sample%mean_signed_column_water
     this%negative_column_water_sum = this%negative_column_water_sum + sample%mean_negative_column_water
+    this%cloud_cover_sum = this%cloud_cover_sum + sample%mean_cloud_cover
     ! The interval maximum keeps the first sample that reaches it.
     if (sample%maximum_wind_speed > this%maximum_wind_speed) then
       this%maximum_wind_speed = sample%maximum_wind_speed
@@ -296,6 +305,7 @@ contains
     means%mean_precipitable_water = this%precipitable_water_sum*inverse_count
     means%mean_signed_column_water = this%signed_column_water_sum*inverse_count
     means%mean_negative_column_water = this%negative_column_water_sum*inverse_count
+    means%mean_cloud_cover = this%cloud_cover_sum*inverse_count
     means%maximum_wind_speed = max(this%maximum_wind_speed, 0.0_real64)
     means%maximum_wind_longitude_degrees = this%maximum_wind_longitude_degrees
     means%maximum_wind_latitude_degrees = this%maximum_wind_latitude_degrees
@@ -330,6 +340,7 @@ contains
     this%precipitable_water_sum = 0.0_real64
     this%signed_column_water_sum = 0.0_real64
     this%negative_column_water_sum = 0.0_real64
+    this%cloud_cover_sum = 0.0_real64
     this%maximum_wind_speed = -1.0_real64
     this%maximum_wind_longitude_degrees = 0.0_real64
     this%maximum_wind_latitude_degrees = 0.0_real64
