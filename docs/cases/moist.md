@@ -12,9 +12,10 @@
 - 地表摩擦は放射ケースから引き継ぐ [Held–Suarez 強制](../tendency/Held-Suarez.md#rayleigh-摩擦)の Rayleigh 摩擦（$\sigma_b=0.7$、時定数 $1\,\mathrm{day}$）をそのまま使い、拡散型の境界層スキームは持たない。
 - [上層の Rayleigh 摩擦](../tendency/upper-rayleigh-friction.md)は slab ocean ケースから引き継ぐ。上端 2 層（$1$--$3\,\mathrm{hPa}$ と $3$--$10\,\mathrm{hPa}$）の風を時定数 $1\,\mathrm{day}$ で減衰させ、放射と湿潤過程による上層風の加速を抑える。全層一様の発散への超粘性（$\tau_\delta=1\,\mathrm{hour}$）も併用する。
 - [長波放射](../tendency/longwave-radiation.md)の水蒸気による光学的厚さ $\Delta\tau^{\mathrm{H_2O}}_k=bq_k\Delta p_k/p_0$ に、slab ocean ケースの固定した[基準水蒸気分布](../tendency/longwave-radiation.md#基準水蒸気分布)ではなく、予報した比湿の正の部分 $\overline q_k^{+,n-1}$ を使う。これにより、比湿の変動が長波放射に反映される簡易的な水蒸気フィードバックを持つ。
+- [雲](../tendency/cloud.md)の診断を有効にし、対流調節と大規模凝結の後の相対湿度と対流性降水から気柱の実効雲量を診断して、[短波放射](../tendency/shortwave-radiation.md)で下向き短波を一回だけ反射する（雲量 1 で $\alpha_c=0.43$）。雲による短波の吸収は扱わない。海面のアルベドは雲を繰り込んだ $0.3$ から開いた海面の $\alpha_o=0.06$ に変える。長波には雲を入れない。
 - 地軸の傾きを slab ocean ケースの $0$ から[放射ケース](./radiation.md)と同じ $\varepsilon=23.4^\circ$（[暦と軌道](../calendar.md)）に戻す。したがって日変化と季節変化の両方を持ち、積分開始の 4 月 1 日は北半球の春分である。海洋の熱容量は 30 m の水柱のものなので、季節変化に対する海面温度の応答は地球の海洋より速い。
 
-[短波放射](../tendency/shortwave-radiation.md)、[オゾン](../tendency/ozone.md)、長波の係数 $a,b,\mu$、海面との顕熱交換、地表摩擦、[暦と軌道](../calendar.md)、自転角速度、計算期間、タイムステップおよび出力間隔は slab ocean ケースと同じとする。短波は水蒸気に依存させず、雲の放射効果は長波・短波ともに扱わない。長波は灰色大気で大気の窓を持たないので、水蒸気フィードバックは地球より強めに出る傾向がある（[長波放射](../tendency/longwave-radiation.md#パラメータの根拠)）。日平均の $\braket{T_o}$ と OLR で平衡温度を監視し、5 年平均の $\braket{T_o}$ が地球の $288\,\mathrm{K}$ から大きく外れる場合は $b$ または $\mu$ を見直す。Frierson 型の湿潤 GCM が持つ拡散型の境界層スキームは持たず、地表のバルクフラックス、対流調節、Rayleigh 摩擦で代替しているので、Frierson や Isca のモデルの再現ではない。すべての物理過程は[物理過程を評価する時刻](../tendency/physics-time-level.md)のとおり $\overline X^{n-1}$ の場で評価し、対流調節と大規模凝結は[湿潤大気](../dynamics/moist.md#物理過程)の順序で逐次に評価する。
+[オゾン](../tendency/ozone.md)、長波の係数 $a,b,\mu$、海面との顕熱交換、地表摩擦、[暦と軌道](../calendar.md)、自転角速度、計算期間、タイムステップおよび出力間隔は slab ocean ケースと同じとする。短波は水蒸気に依存させず、雲の放射効果は短波にだけ入れる。長波は灰色大気で大気の窓を持たないので、水蒸気フィードバックは地球より強めに出る傾向がある（[長波放射](../tendency/longwave-radiation.md#パラメータの根拠)）。日平均の $\braket{T_o}$ と OLR で平衡温度を監視し、5 年平均の $\braket{T_o}$ が地球の $288\,\mathrm{K}$ から大きく外れる場合は $b$ または $\mu$ を見直す。Frierson 型の湿潤 GCM が持つ拡散型の境界層スキームは持たず、地表のバルクフラックス、対流調節、Rayleigh 摩擦で代替しているので、Frierson や Isca のモデルの再現ではない。すべての物理過程は[物理過程を評価する時刻](../tendency/physics-time-level.md)のとおり $\overline X^{n-1}$ の場で評価し、蒸発 → 対流調節・大規模凝結 → 雲量の診断 → 放射の順序（[湿潤大気](../dynamics/moist.md#物理過程)）で逐次に評価する。
 
 ## 解像度
 
@@ -67,6 +68,7 @@ $$
 - 全球平均の蒸発 $\braket{E}$
 - 全球平均の潜熱フラックス $\braket{LE}$
 - 全球平均の可降水量 $\braket{W}$、符号付きの気柱水蒸気量 $\braket{W_\pm}$、負の部分 $\braket{W_-}$
+- 全球平均の全雲量 $\braket{C}$
 
 これらは放射の全球平均と同じくオンラインで集計する。定常状態では $\braket{P}$ と $\braket{E}$ が一致するので、その差を水収支の確認に使う。また日平均の $\braket{W_\pm}$ の日々の差分と $\braket{E}-\braket{P}$ の差は、移流の離散化と RAW フィルターによる水蒸気の非保存の大きさを表すので、これが $\braket{P}$ に比べて十分小さいことを確認する。$\braket{W_-}$ が $\braket{W}$ に比べて無視できないほど大きくなれば、正値性を保つ移流や水分補正の導入を検討する。
 
@@ -83,6 +85,7 @@ $$
 - 各格子点の降水の月平均 $P(\lambda,\varphi)$
 - 各格子点の蒸発の月平均 $E(\lambda,\varphi)$
 - 各格子点の可降水量の月平均 $W(\lambda,\varphi)$
+- 各格子点の全雲量の月平均 $C(\lambda,\varphi)$
 - 経度方向に平均した比湿の月平均 $[q](\varphi,\eta)$
 - 偏差の積の月平均 $[v'q'](\varphi,\eta)$
 
@@ -90,6 +93,7 @@ $$
 
 - 現時刻 $X^n$ のスペクトル比湿 $q$（格子の $q$ も合わせて出力する）
 - 現時刻 $X^n$ のスペクトル海洋温度 $T_o$。
+- 格子の雲量 $C(\lambda,\varphi)$。予報変数ではないので格子の値だけを書き、その時刻の傾向評価で診断した値を使う。
 - 時刻、すなわちモデル時刻（積分開始からの経過秒）とステップ数。日変化と軌道上の位置、月・年の境界はここから定まる。
 
 ファイル名の規則は slab ocean ケースと同じとする。
@@ -106,3 +110,6 @@ $$
 - 長波放射に、乾燥ケースと同じ[基準水蒸気分布](../tendency/longwave-radiation.md#基準水蒸気分布) $\overline q^{\mathrm{ref}}_k$ を比湿として渡すと、乾燥ケースの長波フラックスとビット単位で一致すること。
 - 地表と全層が同じ温度 $T$ の等温気柱では、比湿の分布によらず全界面で $F^\uparrow_{k+1/2}=\sigma T^4$ となり、大気上端から出る長波が比湿に依存しないこと。上端から入る長波はないので、この気柱でも各層は宇宙へ放射して冷える。
 - 同じ温度分布で比湿を増やすと、大気上端から出る長波 $F^\uparrow_{1/2}$ が単調に減り、地表に届く下向き長波 $F^\downarrow_{N+1/2}$ が単調に増えること。
+- [雲](../tendency/cloud.md#実装後の確認項目)と[短波放射](../tendency/shortwave-radiation.md#実装後の確認項目)の確認項目。特に、雲のない気柱の短波が雲を入れる前の値とビット単位で一致し、各気柱で $F^{\downarrow\mathrm{SW}}_{1/2}=\sum_kA^{\mathrm{UV}}_k+F^{\mathrm{SW}}_{\mathrm{abs}}+F^{\mathrm{SW}}_{\mathrm{refl}}$ が閉じること。
+
+5 年積分の後には、日平均の $\braket{C}$ と惑星アルベド $\braket{F^{\mathrm{SW}}_{\mathrm{refl}}}/\braket{F^{\downarrow\mathrm{SW}}_{1/2}}$ が地球の $0.6$--$0.7$ と $0.3$ 程度にあることを確認し、外れる場合は[雲](../tendency/cloud.md#パラメータの根拠)の $\mathrm{RH}_c$ を見直す。

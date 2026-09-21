@@ -26,10 +26,10 @@ $$
 とする。$K_{sd}=2\,\mathrm{W\,m^{-2}\,K^{-1}}$ は地面の値である。既定値は
 
 $$
-\alpha_L=\alpha_o=0.3,\qquad\beta_L=0.5,\qquad\beta_o=1
+\alpha_L=0.2,\qquad\alpha_o=0.06,\qquad\beta_L=0.5,\qquad\beta_o=1
 $$
 
-とする。$\alpha_o=0.3$ は[短波放射](./shortwave-radiation.md)が雲のない代わりに使っている惑星規模の値で、海の実際のアルベドより大きいが、これを下げると既存の slab ocean・湿潤ケースと気候が比較できなくなるので変えない。陸のアルベドも同じ値にし、陸と海の違いはまず熱容量と湿り具合で表す。$\beta_L$ は土壌水分を予報しない定数で、陸を海と区別する主要なパラメータである。雪氷、海氷、河川や流出は扱わない。
+とする。アルベドは雲を含まない地表そのものの値で、雲の反射は[雲](./cloud.md)で診断した雲量から[短波放射](./shortwave-radiation.md)が別に計算する。$\alpha_o=0.06$ は開いた海面の代表値、$\alpha_L=0.2$ は雪氷のない陸面の代表値である。比湿を予報せず雲を診断しない[放射ケース](../cases/radiation.md)と [slab ocean ケース](../cases/slab-ocean.md)では、雲の反射を地表に繰り込んだ従来の $\alpha_L=\alpha_o=0.3$ を使う。$\beta_L$ は土壌水分を予報しない定数で、陸を海と区別する主要なパラメータである。雪氷、海氷、河川や流出は扱わない。
 
 ## 地表収支
 
@@ -45,13 +45,13 @@ $$
 C_d\frac{\partial T_d}{\partial t}=H_{sd}
 $$
 
-に従う。$F^{\mathrm{SW}}_{\mathrm{abs}}=(1-\alpha)F^{\downarrow\mathrm{SW}}_{N+1/2}$ で、反射短波 $\alpha F^{\downarrow\mathrm{SW}}_{N+1/2}$ も同じ $\alpha$ で診断する。顕熱フラックス $H_{sa}$ は[地面](./ground.md)の式のまま、蒸発 $E$ は[蒸発](./evaporation.md)の式で $\beta$ に上の混ぜた値を使う。大気最下層に加える顕熱・潜熱・長波と、地表から差し引く値には同じ前時刻のフラックスを使うので、大気・地表・地中を合わせたエネルギー収支は $f_L$ の値に関わらず閉じる。
+に従う。$F^{\mathrm{SW}}_{\mathrm{abs}}=(1-\alpha)F^{\downarrow\mathrm{SW}}_{N+1/2}$ で、$F^{\downarrow\mathrm{SW}}_{N+1/2}$ は[短波放射](./shortwave-radiation.md)の雲による反射を差し引いた後に地表に達する短波（同文書の $F^{\downarrow\mathrm{SW}}_{\mathrm{sfc}}$）と読む。反射短波は雲の反射と地表の反射 $\alpha F^{\downarrow\mathrm{SW}}_{\mathrm{sfc}}$ の和である。顕熱フラックス $H_{sa}$ は[地面](./ground.md)の式のまま、蒸発 $E$ は[蒸発](./evaporation.md)の式で $\beta$ に上の混ぜた値を使う。大気最下層に加える顕熱・潜熱・長波と、地表から差し引く値には同じ前時刻のフラックスを使うので、大気・地表・地中を合わせたエネルギー収支は $f_L$ の値に関わらず閉じる。
 
 深い層の熱容量 $C_d=2\times10^7\,\mathrm{J\,m^{-2}\,K^{-1}}$ は $f_L$ で割らない。海（$f_L=0$）では $K=0$ となって $T_d$ は初期値に留まり、収支に現れない。海岸（$0<f_L<1$）では単位面積当たり $C_d$ の深い層が $f_LK_{sd}$ で浅い層とつながることになり、陸の部分だけで見た深い層の熱容量は $C_d/f_L$ に相当する。これは物理的には粗いが、エネルギーは保存し、$f_L\to0$ で特異にならない。
 
 ### 極限での一致
 
-$f_L\equiv1$ では $C=C_s$、$\alpha=\alpha_L$、$\beta=\beta_L$、$K=K_{sd}$ となって[地面](./ground.md)の二層モデルに、$f_L\equiv0$ では $C=C_o$、$\alpha=\alpha_o$、$\beta=1$、$K=0$ となって [slab ocean](./slab-ocean.md) にそれぞれ戻る。$1\cdot C_s+0\cdot C_o$ と $0\cdot C_s+1\cdot C_o$ は浮動小数点でも厳密に $C_s$、$C_o$ に等しいので、[放射ケース](../cases/radiation.md)を $f_L\equiv1$、[slab ocean ケース](../cases/slab-ocean.md)と[湿潤ケース](../cases/moist.md)を $f_L\equiv0$ として走らせても結果はビット単位で変わらない。既存ケースはこの混ぜ方を通して計算し、この一致を確認項目にする。
+$f_L\equiv1$ では $C=C_s$、$\alpha=\alpha_L$、$\beta=\beta_L$、$K=K_{sd}$ となって[地面](./ground.md)の二層モデルに、$f_L\equiv0$ では $C=C_o$、$\alpha=\alpha_o$、$\beta=1$、$K=0$ となって [slab ocean](./slab-ocean.md) にそれぞれ戻る。$1\cdot C_s+0\cdot C_o$ と $0\cdot C_s+1\cdot C_o$ は浮動小数点でも厳密に $C_s$、$C_o$ に等しいので、[放射ケース](../cases/radiation.md)を $f_L\equiv1$、[slab ocean ケース](../cases/slab-ocean.md)と[湿潤ケース](../cases/moist.md)を $f_L\equiv0$ として走らせても、それぞれのケースのアルベドの値を使う限り結果はビット単位で変わらない。既存ケースはこの混ぜ方を通して計算し、この一致を確認項目にする。
 
 ## 一枚の地表として扱う理由
 

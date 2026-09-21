@@ -37,7 +37,7 @@ just run radiation
 # 地軸傾斜0・深さ30 mのslab oceanを持つ放射ケースを5年間実行
 just run slab-ocean
 
-# slab ocean ケースに水蒸気（蒸発・湿潤対流調節・大規模凝結・水蒸気に依存する長波放射）を加え、
+# slab ocean ケースに水蒸気（蒸発・湿潤対流調節・大規模凝結・水蒸気に依存する長波放射・雲量診断による短波の反射）を加え、
 # 地軸傾斜を地球の値に戻した湿潤ケースを T31 で5年間実行
 just run moist
 
@@ -85,6 +85,7 @@ just viz
 - [蒸発](./docs/tendency/evaporation.md)
 - [大規模凝結](./docs/tendency/large-scale-condensation.md)
 - [簡略化 Betts–Miller 型の湿潤対流調節](./docs/tendency/moist-convective-adjustment.md)
+- [雲](./docs/tendency/cloud.md)
 
 ### 暦
 

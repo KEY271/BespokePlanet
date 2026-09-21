@@ -4,7 +4,7 @@
 
 ## 物理過程
 
-力学に加えて、[長波放射](../tendency/longwave-radiation.md)、[短波放射](../tendency/shortwave-radiation.md)、[オゾン](../tendency/ozone.md)、[地面](../tendency/ground.md)、[上層の Rayleigh 摩擦](../tendency/upper-rayleigh-friction.md)を有効にする。比湿は予報しないので、長波の水蒸気による光学的厚さには固定した[基準水蒸気分布](../tendency/longwave-radiation.md#基準水蒸気分布) $\overline q^{\mathrm{ref}}_k$（$q_0=0.010$、可降水量約 $25\,\mathrm{kg\,m^{-2}}$）を使う。[Held–Suarez 強制](../tendency/Held-Suarez.md)の Newton 緩和は使わない。これらはすべて[物理過程を評価する時刻](../tendency/physics-time-level.md)のとおり $\overline X^{n-1}$ の場で評価する。[暦と軌道](../calendar.md)の 360 日暦と、そこから定まる自転角速度 $\Omega$ は、この放射ケースにだけ適用する。他のケースの時間設定と自転角速度は変更しない。
+力学に加えて、[長波放射](../tendency/longwave-radiation.md)、[短波放射](../tendency/shortwave-radiation.md)、[オゾン](../tendency/ozone.md)、[地面](../tendency/ground.md)、[上層の Rayleigh 摩擦](../tendency/upper-rayleigh-friction.md)を有効にする。比湿は予報しないので、長波の水蒸気による光学的厚さには固定した[基準水蒸気分布](../tendency/longwave-radiation.md#基準水蒸気分布) $\overline q^{\mathrm{ref}}_k$（$q_0=0.010$、可降水量約 $25\,\mathrm{kg\,m^{-2}}$）を使う。同じ理由で[雲](../tendency/cloud.md)は診断せず、地表アルベド $\alpha_s=0.3$ に雲の反射を繰り込む。[Held–Suarez 強制](../tendency/Held-Suarez.md)の Newton 緩和は使わない。これらはすべて[物理過程を評価する時刻](../tendency/physics-time-level.md)のとおり $\overline X^{n-1}$ の場で評価する。[暦と軌道](../calendar.md)の 360 日暦と、そこから定まる自転角速度 $\Omega$ は、この放射ケースにだけ適用する。他のケースの時間設定と自転角速度は変更しない。
 
 ## 乾燥対流調節
 

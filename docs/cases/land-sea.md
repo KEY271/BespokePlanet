@@ -11,7 +11,7 @@
 - 初期値は[地形上の初期状態](../dynamics/topography.md#地形上の初期状態)のとおり、放射ケースの基本場を気圧の関数として読み、地表面気圧を $\Phi^\ast(\varphi,p_s)=\Phi_s$ から決める。
 - 出力に陸面率・地表高度の静的な場と、陸と海で分けた全球平均を加える。
 
-[短波放射](../tendency/shortwave-radiation.md)、[長波放射](../tendency/longwave-radiation.md)、[オゾン](../tendency/ozone.md)、[乾燥対流調節](../tendency/dry-convective-adjustment.md)、[湿潤対流調節](../tendency/moist-convective-adjustment.md)、[大規模凝結](../tendency/large-scale-condensation.md)、地表摩擦、[上層の Rayleigh 摩擦](../tendency/upper-rayleigh-friction.md)、[暦と軌道](../calendar.md)（地軸の傾き $23.4^\circ$）、自転角速度、計算期間、タイムステップ、超粘性の時定数は湿潤ケースと同じとする。すべての物理過程は[物理過程を評価する時刻](../tendency/physics-time-level.md)のとおり $\overline X^{n-1}$ の場で評価する。
+[雲](../tendency/cloud.md)、[短波放射](../tendency/shortwave-radiation.md)、[長波放射](../tendency/longwave-radiation.md)、[オゾン](../tendency/ozone.md)、[乾燥対流調節](../tendency/dry-convective-adjustment.md)、[湿潤対流調節](../tendency/moist-convective-adjustment.md)、[大規模凝結](../tendency/large-scale-condensation.md)、地表摩擦、[上層の Rayleigh 摩擦](../tendency/upper-rayleigh-friction.md)、[暦と軌道](../calendar.md)（地軸の傾き $23.4^\circ$）、自転角速度、計算期間、タイムステップ、超粘性の時定数は湿潤ケースと同じとする。すべての物理過程は[物理過程を評価する時刻](../tendency/physics-time-level.md)のとおり $\overline X^{n-1}$ の場で評価する。
 
 ## 地表のパラメータ
 
@@ -19,10 +19,10 @@
 | --- | --- | --- |
 | 熱容量 | $C_s=2\times10^6\,\mathrm{J\,m^{-2}\,K^{-1}}$（浅い層）、$C_d=2\times10^7$（深い層） | $C_o=1.2558\times10^8\,\mathrm{J\,m^{-2}\,K^{-1}}$ |
 | 地中との熱交換 | $K_{sd}=2\,\mathrm{W\,m^{-2}\,K^{-1}}$ | なし |
-| 短波アルベド | $\alpha_L=0.3$ | $\alpha_o=0.3$ |
+| 短波アルベド（雲を含まない） | $\alpha_L=0.2$ | $\alpha_o=0.06$ |
 | 湿り具合 | $\beta_L=0.5$ | $\beta_o=1$ |
 
-格子点の値はこれらを $f_L$ で線形に混ぜたものである。$\beta_L$ が陸の気候を決める主要なパラメータで、5 年平均の陸上の $\braket{P}_L-\braket{E}_L$ と $\braket{T_s}_L$ を見て見直す。
+格子点の値はこれらを $f_L$ で線形に混ぜたものである。雲の反射は[雲](../tendency/cloud.md)で診断した雲量から別に計算するので、アルベドは地表そのものの値である。$\beta_L$ が陸の気候を決める主要なパラメータで、5 年平均の陸上の $\braket{P}_L-\braket{E}_L$ と $\braket{T_s}_L$ を見て見直す。
 
 ## 解像度
 
