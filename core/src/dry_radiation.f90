@@ -53,6 +53,8 @@ module dry_radiation
   public :: shortwave_downward_flux
   public :: ozone_layer_optical_depth
   public :: ozone_longwave_layer_optical_depth
+  public :: reference_layer_humidity
+  public :: gas_longwave_layer_optical_depth
   public :: radiation_tendency
   public :: radiation_calendar_date
   public :: move_radiation_diagnostics
@@ -176,6 +178,30 @@ contains
     optical_depth = config%ozone_longwave_optical_depth*ozone_layer_fraction(config, pressure_top, pressure_bottom)
   end function ozone_longwave_layer_optical_depth
 
+  !> Mass-weighted mean of the reference humidity q_ref = q_0 (p/p_s)^3 over one
+  !> layer, q_0 (p_bottom^4 - p_top^4)/(4 p_s^3 dp).  The cases without prognostic
+  !> water vapour give this to the longwave radiation in place of q.
+  pure real(real64) function reference_layer_humidity(config, pressure_top, pressure_bottom, surface_pressure) &
+    result(humidity)
+    type(radiation_config), intent(in) :: config
+    real(real64), intent(in) :: pressure_top, pressure_bottom, surface_pressure
+
+    humidity = config%longwave_reference_surface_humidity*(pressure_bottom**4 - pressure_top**4)/ &
+      (4.0_real64*surface_pressure**3*(pressure_bottom - pressure_top))
+  end function reference_layer_humidity
+
+  !> Longwave optical depth (a mu + b q^+) dp/p_0 of the gases other than ozone
+  !> within one layer; negative humidity counts as zero.
+  pure real(real64) function gas_longwave_layer_optical_depth(config, pressure_top, pressure_bottom, humidity) &
+    result(optical_depth)
+    type(radiation_config), intent(in) :: config
+    real(real64), intent(in) :: pressure_top, pressure_bottom, humidity
+
+    optical_depth = (config%longwave_well_mixed_optical_depth*config%longwave_well_mixed_scaling + &
+      config%longwave_water_vapor_optical_depth*max(humidity, 0.0_real64))* &
+      (pressure_bottom - pressure_top)/config%longwave_reference_pressure
+  end function gas_longwave_layer_optical_depth
+
   subroutine radiation_calendar_date(config, time_seconds, year, month, day, seconds_of_day)
     type(radiation_config), intent(in) :: config
     real(real64), intent(in) :: time_seconds
@@ -205,12 +231,15 @@ contains
   !> extrapolated dry-adiabatically to the surface pressure, so a neutral column exchanges none.
   !> An optional latent heat flux L E (W m^-2, upward) is taken from the surface budget; the
   !> matching water vapour source is added to the atmosphere by the evaporation tendency.
+  !> The grey longwave optical depth of each layer is (a mu + b q^+) dp/p_0 plus ozone, with q
+  !> the optional specific humidity column; without it the fixed reference humidity
+  !> q_0 (p/p_s)^3 stands in for the water vapour.
   subroutine radiation_tendency(config, pressure_half, temperature, surface_temperature, &
                                 deep_temperature, lowest_u, lowest_v, sin_latitude, &
                                 longitude, time_seconds, temperature_tendency, &
                                 surface_temperature_tendency, deep_temperature_tendency, &
                                 incoming_shortwave, reflected_shortwave, outgoing_longwave, &
-                                latent_heat_flux)
+                                latent_heat_flux, specific_humidity)
     type(radiation_config), intent(in) :: config
     real(real64), intent(in) :: pressure_half(0:), temperature(:)
     real(real64), intent(in) :: surface_temperature, deep_temperature
@@ -220,10 +249,11 @@ contains
     real(real64), intent(out) :: surface_temperature_tendency, deep_temperature_tendency
     real(real64), intent(out) :: incoming_shortwave, reflected_shortwave, outgoing_longwave
     real(real64), intent(in), optional :: latent_heat_flux
+    real(real64), intent(in), optional :: specific_humidity(:)
     real(real64) :: upward_longwave(0:size(temperature)), downward_longwave(0:size(temperature))
     real(real64) :: transmission(size(temperature)), emission(size(temperature))
     real(real64) :: net_longwave(0:size(temperature))
-    real(real64) :: pressure_thickness, layer_longwave_optical_depth, sensible_heat, surface_deep_heat
+    real(real64) :: pressure_thickness, layer_longwave_optical_depth, layer_humidity, sensible_heat, surface_deep_heat
     real(real64) :: layer_shortwave_optical_depth, shortwave_transmission
     real(real64) :: shortwave_downward, ultraviolet_downward, non_ultraviolet_downward, shortwave_absorbed
     real(real64) :: stefan_boltzmann_constant, dry_gravity_acceleration, dry_air_specific_heat
@@ -250,6 +280,14 @@ contains
     if (surface_heat_capacity <= 0.0_real64) then
       error stop 'radiation surface heat capacity must be positive'
     end if
+    if (config%longwave_reference_pressure <= 0.0_real64) then
+      error stop 'radiation longwave reference pressure must be positive'
+    end if
+    if (present(specific_humidity)) then
+      if (size(specific_humidity) /= number_of_levels) then
+        error stop 'radiation humidity column has an inconsistent length'
+      end if
+    end if
 
     ! The ozone fraction of a layer is shared by its longwave and shortwave optical depths.
     ozone_normalization = ozone_profile_normalization(config)
@@ -260,8 +298,14 @@ contains
       end if
       ozone_fraction(k) = ozone_layer_fraction_normalized(config, pressure_half(k - 1), pressure_half(k), &
                                                           ozone_normalization)
-      layer_longwave_optical_depth = config%longwave_surface_optical_depth*pressure_thickness/ &
-        (pressure_half(number_of_levels) - pressure_half(0)) + &
+      if (present(specific_humidity)) then
+        layer_humidity = specific_humidity(k)
+      else
+        layer_humidity = reference_layer_humidity(config, pressure_half(k - 1), pressure_half(k), &
+                                                  pressure_half(number_of_levels))
+      end if
+      layer_longwave_optical_depth = &
+        gas_longwave_layer_optical_depth(config, pressure_half(k - 1), pressure_half(k), layer_humidity) + &
         config%ozone_longwave_optical_depth*ozone_fraction(k)
       transmission(k) = exp(-layer_longwave_optical_depth)
       emission(k) = (1.0_real64 - transmission(k))*stefan_boltzmann_constant*temperature(k)**4

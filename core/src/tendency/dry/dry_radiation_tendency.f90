@@ -17,8 +17,11 @@ module dry_radiation_tendency
 contains
 
   !> Radiation and surface exchange use one consistent RAW-filtered previous-time column.
-  subroutine add_dry_radiation_tendency(config, transform_mu, workspace)
+  !> With prognostic water vapour the longwave optical depth sees the previous-time
+  !> specific humidity; otherwise the fixed reference humidity stands in for it.
+  subroutine add_dry_radiation_tendency(config, moisture_enabled, transform_mu, workspace)
     type(radiation_config), intent(in) :: config
+    logical, intent(in) :: moisture_enabled
     real(real64), intent(in) :: transform_mu(:)
     type(dry_workspace_type), intent(inout) :: workspace
     integer :: i, j, levels
@@ -33,14 +36,26 @@ contains
     do j = 1, workspace%ny
       do i = 1, workspace%ring_nlon(j)
         longitude = 2.0_real64*acos(-1.0_real64)*real(i - 1, real64)/real(workspace%ring_nlon(j), real64)
-        call radiation_tendency(config, workspace%previous_pressure_half(i, j, :), &
-          workspace%previous_temperature_grid(i, j, :), &
-          workspace%previous_surface_temperature_grid(i, j), &
-          workspace%previous_deep_temperature_grid(i, j), &
-          workspace%previous_u(i, j, levels), workspace%previous_v(i, j, levels), transform_mu(j), &
-          longitude, workspace%evaluation_time, temperature_contribution, surface_contribution, &
-          deep_contribution, incoming_shortwave, reflected_shortwave, outgoing_longwave, &
-          latent_heat_flux=workspace%latent_heat_flux(i, j))
+        if (moisture_enabled) then
+          call radiation_tendency(config, workspace%previous_pressure_half(i, j, :), &
+            workspace%previous_temperature_grid(i, j, :), &
+            workspace%previous_surface_temperature_grid(i, j), &
+            workspace%previous_deep_temperature_grid(i, j), &
+            workspace%previous_u(i, j, levels), workspace%previous_v(i, j, levels), transform_mu(j), &
+            longitude, workspace%evaluation_time, temperature_contribution, surface_contribution, &
+            deep_contribution, incoming_shortwave, reflected_shortwave, outgoing_longwave, &
+            latent_heat_flux=workspace%latent_heat_flux(i, j), &
+            specific_humidity=workspace%previous_humidity_grid(i, j, :))
+        else
+          call radiation_tendency(config, workspace%previous_pressure_half(i, j, :), &
+            workspace%previous_temperature_grid(i, j, :), &
+            workspace%previous_surface_temperature_grid(i, j), &
+            workspace%previous_deep_temperature_grid(i, j), &
+            workspace%previous_u(i, j, levels), workspace%previous_v(i, j, levels), transform_mu(j), &
+            longitude, workspace%evaluation_time, temperature_contribution, surface_contribution, &
+            deep_contribution, incoming_shortwave, reflected_shortwave, outgoing_longwave, &
+            latent_heat_flux=workspace%latent_heat_flux(i, j))
+        end if
         workspace%forcing_temperature(i, j, :) = workspace%forcing_temperature(i, j, :) + temperature_contribution
         workspace%forcing_surface_temperature(i, j) = workspace%forcing_surface_temperature(i, j) + &
                                                       surface_contribution

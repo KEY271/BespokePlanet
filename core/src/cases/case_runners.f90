@@ -65,7 +65,8 @@ contains
     write (*, '(a)') '  held-suarez:            run the 200-day forced dry-atmosphere case (output every 5 days)'
     write (*, '(a)') '  radiation:              run the 5-year diurnal/seasonal radiation case'
     write (*, '(a)') '  slab-ocean:             run the zero-obliquity radiation case with a 30 m slab ocean'
-    write (*, '(a)') '  moist:                  run the slab-ocean case with water vapour (T31 aquaplanet)'
+    write (*, '(a)') '  moist:                  run the slab-ocean case with water vapour and the seasonal cycle'
+    write (*, '(a)') '                          (T31 aquaplanet)'
     write (*, '(a)') '  all:                    run every case'
   end subroutine print_usage
 

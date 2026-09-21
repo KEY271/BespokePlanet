@@ -12,7 +12,9 @@ module dry_case_initial_conditions
   use dry_atmosphere, only: dry_atmosphere_solver
   use dry_initial_conditions, only: jablonowski_williamson_initial_state
   use dry_held_suarez, only: held_suarez_initial_state
-  use dry_physics_config, only: dry_model_physics_config, radiation_planet_rotation_rate
+  use dry_physics_config, only: dry_model_physics_config, radiation_config, moisture_config, &
+                                radiation_planet_rotation_rate
+  use moist_thermodynamics, only: saturation_specific_humidity, full_level_pressures
   use planet_parameters, only: planet_config
   implicit none
   private
@@ -94,13 +96,16 @@ contains
 
   !> The slab-ocean case with water vapour (docs/cases/moist.md): specific
   !> humidity, virtual temperature, evaporation from the saturated ocean, moist
-  !> convective adjustment and large-scale condensation.  The upper Rayleigh
-  !> friction is inherited from the slab-ocean case; radiation does not see the
-  !> water vapour.
+  !> convective adjustment and large-scale condensation.  The grey longwave
+  !> optical depth follows the prognostic water vapour, and the seasonal cycle of
+  !> the radiation case (Earth's obliquity) replaces the zero obliquity of the
+  !> slab-ocean case.  The upper Rayleigh friction is inherited.
   function moist_case_physics() result(physics)
     type(dry_model_physics_config) :: physics
+    type(radiation_config) :: seasonal_radiation
 
     physics = slab_ocean_case_physics()
+    physics%radiation%axial_tilt = seasonal_radiation%axial_tilt
     physics%moisture%enabled = .true.
     physics%evaporation%enabled = .true.
     physics%evaporation%surface_wetness = 1.0_real64
@@ -121,6 +126,8 @@ contains
   !> Jablonowski-Williamson temperature over flat terrain, with the unperturbed
   !> zonal wind rebalanced for Phi_s = 0 on the radiation case planet.  The
   !> active ground or ocean surface starts at the lowest model-level temperature.
+  !> With prognostic water vapour the troposphere starts at the configured
+  !> relative humidity (docs/cases/moist.md).
   subroutine set_radiation_case_state(solver, transform, physics, planet)
     type(dry_atmosphere_solver), intent(inout) :: solver
     type(harmonic_transform), intent(inout) :: transform
@@ -130,6 +137,7 @@ contains
     complex(real64), allocatable :: log_ps(:, :), unused_surface_geopotential(:, :)
     complex(real64), allocatable :: state_zeta(:, :, :), state_delta(:, :, :)
     complex(real64), allocatable :: state_temperature(:, :, :), state_log_ps(:, :)
+    complex(real64), allocatable :: humidity(:, :, :)
     type(hybrid_sigma_coordinate) :: coordinate
     integer :: number_of_levels
 
@@ -144,9 +152,68 @@ contains
     ! Read the state back so that the ground starts from the constrained
     ! spectral temperature the solver actually integrates.
     call solver%get_spectral_state(state_zeta, state_delta, state_temperature, state_log_ps)
+    if (physics%moisture%enabled) then
+      call initial_humidity_state(transform, coordinate, physics%moisture, state_temperature, state_log_ps, humidity)
+      call solver%set_initial_state(state_zeta, state_delta, state_temperature, state_log_ps, &
+                                    specific_humidity=humidity)
+      call solver%get_spectral_state(state_zeta, state_delta, state_temperature, state_log_ps)
+    end if
     call solver%set_surface_state(state_temperature(:, :, number_of_levels), &
                                   state_temperature(:, :, number_of_levels))
     call solver%set_physics(physics)
   end subroutine set_radiation_case_state
+
+  !> Spectral specific humidity q = RH q_s(T_k, p_k) on the levels whose full-level
+  !> pressure is at least the configured top pressure, and zero above.  The
+  !> Jablonowski-Williamson stratosphere is warm and thin, where the saturation
+  !> humidity is not meaningful (q_s -> 1 as p -> e_s), so it starts dry.
+  subroutine initial_humidity_state(transform, coordinate, moisture, temperature, log_surface_pressure, humidity)
+    type(harmonic_transform), intent(inout) :: transform
+    type(hybrid_sigma_coordinate), intent(in) :: coordinate
+    type(moisture_config), intent(in) :: moisture
+    complex(real64), intent(in) :: temperature(0:, 0:, :), log_surface_pressure(0:, 0:)
+    complex(real64), allocatable, intent(out) :: humidity(:, :, :)
+    real(real64), allocatable :: grid(:, :), log_ps_grid(:, :)
+    real(real64), allocatable :: temperature_grid(:, :, :), humidity_grid(:, :, :)
+    complex(real64), allocatable :: spectral(:, :)
+    real(real64) :: pressure_half(0:coordinate%number_of_levels)
+    real(real64) :: full_level_pressure(coordinate%number_of_levels), delta_pressure(coordinate%number_of_levels)
+    real(real64) :: surface_pressure
+    integer, allocatable :: nlon(:)
+    integer :: i, j, k, levels
+
+    levels = coordinate%number_of_levels
+    nlon = transform%get_nlon()
+    call transform%allocate_field(grid)
+    call transform%allocate_field(log_ps_grid)
+    allocate (temperature_grid(size(grid, 1), size(grid, 2), levels))
+    allocate (humidity_grid(size(grid, 1), size(grid, 2), levels))
+    do k = 1, levels
+      call transform%spectral_to_grid(temperature(:, :, k), grid)
+      temperature_grid(:, :, k) = grid
+    end do
+    call transform%spectral_to_grid(log_surface_pressure, log_ps_grid)
+    humidity_grid = 0.0_real64
+    do j = 1, size(grid, 2)
+      do i = 1, nlon(j)
+        surface_pressure = exp(log_ps_grid(i, j))
+        do k = 0, levels
+          pressure_half(k) = coordinate%a_half(k) + coordinate%b_half(k)*surface_pressure
+        end do
+        call full_level_pressures(pressure_half, full_level_pressure, delta_pressure)
+        do k = 1, levels
+          if (full_level_pressure(k) >= moisture%initial_humidity_top_pressure) then
+            humidity_grid(i, j, k) = moisture%initial_relative_humidity* &
+              saturation_specific_humidity(temperature_grid(i, j, k), full_level_pressure(k))
+          end if
+        end do
+      end do
+    end do
+    allocate (humidity(0:ubound(temperature, 1), 0:ubound(temperature, 2), levels))
+    do k = 1, levels
+      call transform%grid_to_spectral(humidity_grid(:, :, k), spectral)
+      humidity(:, :, k) = spectral(0:ubound(temperature, 1), 0:ubound(temperature, 2))
+    end do
+  end subroutine initial_humidity_state
 
 end module dry_case_initial_conditions

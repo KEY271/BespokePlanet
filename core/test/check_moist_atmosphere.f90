@@ -400,13 +400,18 @@ contains
 
   subroutine check_moist_case_configuration()
     type(dry_model_physics_config) :: physics
+    type(radiation_config) :: seasonal_radiation
 
     physics = moist_case_physics()
     if (.not. (physics%moisture%enabled .and. physics%evaporation%enabled .and. physics%moist_convection%enabled .and. &
                physics%condensation%enabled .and. physics%convection%enabled .and. physics%radiation%enabled .and. &
                physics%radiation%slab_ocean_enabled .and. physics%surface_friction%enabled .and. &
                physics%rayleigh_friction%enabled) .or. physics%held_suarez%enabled .or. &
-        physics%evaporation%surface_wetness /= 1.0_real64 .or. physics%radiation%axial_tilt /= 0.0_real64 .or. &
+        physics%evaporation%surface_wetness /= 1.0_real64 .or. &
+        physics%radiation%axial_tilt /= seasonal_radiation%axial_tilt .or. &
+        abs(physics%radiation%axial_tilt - 23.4_real64*acos(-1.0_real64)/180.0_real64) > 1.0e-15_real64 .or. &
+        abs(physics%moisture%initial_relative_humidity - 0.7_real64) > 0.0_real64 .or. &
+        abs(physics%moisture%initial_humidity_top_pressure - 2.0e4_real64) > 0.0_real64 .or. &
         abs(physics%moist_convection%adjustment_time - 7200.0_real64) > 0.0_real64 .or. &
         abs(physics%moist_convection%reference_relative_humidity - 0.7_real64) > 0.0_real64) then
       error stop 'moist case configuration does not match docs/cases/moist.md'
@@ -414,6 +419,8 @@ contains
   end subroutine check_moist_case_configuration
 
   !> Enabling the humidity variable with q = 0 leaves the dry tendencies unchanged.
+  !> The longwave radiation sees the prognostic humidity once it is enabled, so the
+  !> dry reference humidity it would otherwise use is set to zero for the comparison.
   subroutine check_dry_atmosphere_unchanged_by_zero_humidity()
     type(harmonic_transform) :: transform
     type(hybrid_sigma_coordinate) :: coordinate
@@ -442,6 +449,7 @@ contains
     call allocate_dry_tendency(dry, truncation, levels)
     call allocate_dry_tendency(moist, truncation, levels)
     physics = slab_ocean_case_physics()
+    physics%radiation%longwave_reference_surface_humidity = 0.0_real64
     call evaluate_dry_tendency(transform, truncation, coordinate, planet_config(), state, state, surface_geopotential, &
                                physics, workspace, 0.0_real64, 2.0_real64*time_step, dry, speed_dry)
     physics%moisture%enabled = .true.
@@ -540,12 +548,14 @@ contains
     end if
   end subroutine check_column_water_budget_closure
 
-  !> A short moist integration stays finite, moistens from the ocean, and its
+  !> The moist case starts at the configured relative humidity.  A short
+  !> integration from a dry start stays finite, moistens from the ocean, and its
   !> daily-mean water budget is consistent with the change of column water.
   subroutine check_moist_integration()
-    type(dry_atmosphere_solver) :: solver
+    type(dry_atmosphere_solver) :: solver, dry_start_solver
     type(harmonic_transform) :: transform
     type(dry_model_physics_config) :: physics
+    type(hybrid_sigma_coordinate) :: coordinate
     type(radiation_case_diagnostics) :: diagnostics
     type(radiation_diagnostics) :: sample, means
     type(radiation_monthly_means) :: monthly
@@ -553,7 +563,10 @@ contains
     real(real64), allocatable :: surface_pressure(:, :), u(:, :, :), v(:, :, :), ocean(:, :), deep(:, :)
     integer, allocatable :: nlon(:)
     real(real64) :: first_water, last_water, accumulated_source, time_step_used
-    integer :: step
+    real(real64), allocatable :: column_half(:), full_pressure(:), delta_pressure(:), weights(:)
+    real(real64), allocatable :: expected(:, :)
+    real(real64) :: ring_expected, ring_humidity, level_expected, level_humidity, level_maximum
+    integer :: step, i, j, k, levels
     integer, parameter :: steps = 12
 
     call transform%init(truncation)
@@ -562,15 +575,64 @@ contains
     physics = moist_case_physics()
     call set_radiation_case_state(solver, transform, physics, radiation_case_planet(physics))
     call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, specific_humidity=humidity)
-    if (maxval(abs(humidity)) > 0.0_real64) error stop 'moist case does not start dry'
+    ! q^0 = RH q_s(T_k, p_k) below the top pressure and zero above, up to the spectral truncation.  The
+    ! truncation preserves the Gaussian-quadrature global mean of every level exactly.
+    coordinate = solver%get_coordinate()
+    levels = coordinate%number_of_levels
+    weights = transform%get_gaussian_weights()
+    allocate (column_half(0:levels), full_pressure(levels), delta_pressure(levels))
+    allocate (expected(size(humidity, 1), size(humidity, 2)))
+    do k = 1, levels
+      expected = 0.0_real64
+      level_expected = 0.0_real64
+      level_humidity = 0.0_real64
+      do j = 1, size(humidity, 2)
+        ring_expected = 0.0_real64
+        ring_humidity = 0.0_real64
+        do i = 1, nlon(j)
+          column_half = coordinate%a_half + coordinate%b_half*surface_pressure(i, j)
+          call full_level_pressures(column_half, full_pressure, delta_pressure)
+          if (full_pressure(k) >= physics%moisture%initial_humidity_top_pressure) then
+            expected(i, j) = physics%moisture%initial_relative_humidity* &
+              saturation_specific_humidity(temperature(i, j, k), full_pressure(k))
+          end if
+          ring_expected = ring_expected + expected(i, j)
+          ring_humidity = ring_humidity + humidity(i, j, k)
+        end do
+        level_expected = level_expected + 0.5_real64*weights(j)*ring_expected/real(nlon(j), real64)
+        level_humidity = level_humidity + 0.5_real64*weights(j)*ring_humidity/real(nlon(j), real64)
+      end do
+      if (abs(level_humidity - level_expected) > 1.0e-9_real64*level_expected + 1.0e-15_real64) then
+        error stop 'global-mean initial humidity does not match the initial relative humidity'
+      end if
+      ! The truncation error is absolute and largest at the cold poles, so compare with the level maximum.
+      level_maximum = maxval(expected)
+      if (level_maximum == 0.0_real64) then
+        if (maxval(abs(humidity(:, :, k))) > 1.0e-12_real64) error stop 'moist case does not start with a dry stratosphere'
+      else
+        do j = 1, size(humidity, 2)
+          if (any(abs(humidity(1:nlon(j), j, k) - expected(1:nlon(j), j)) > 0.25_real64*level_maximum)) then
+            error stop 'moist case does not start near the initial relative humidity'
+          end if
+        end do
+      end if
+    end do
+
+    ! The budget closure is checked from a dry start, where the advection and filter error of the
+    ! strongly varying initial humidity field does not mask the small accumulated E - P.
+    physics%moisture%initial_relative_humidity = 0.0_real64
+    call dry_start_solver%init(truncation, time_step)
+    call set_radiation_case_state(dry_start_solver, transform, physics, radiation_case_planet(physics))
+    call dry_start_solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, specific_humidity=humidity)
+    if (maxval(abs(humidity)) > 0.0_real64) error stop 'zero initial relative humidity does not start dry'
     call diagnostics%reset()
     accumulated_source = 0.0_real64
     first_water = 0.0_real64
     last_water = 0.0_real64
     time_step_used = time_step
     do step = 1, steps
-      call solver%advance()
-      call solver%take_latest_diagnostics(sample)
+      call dry_start_solver%advance()
+      call dry_start_solver%take_latest_diagnostics(sample)
       if (step == 1) first_water = sample%mean_signed_column_water
       last_water = sample%mean_signed_column_water
       ! The first two advances are the dt/4 and dt/2 startup; afterwards each advance moves the state by dt.
@@ -580,7 +642,7 @@ contains
     end do
     call diagnostics%take_daily(means)
     call diagnostics%take_monthly(monthly)
-    call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, surface_temperature=ocean, &
+    call dry_start_solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, surface_temperature=ocean, &
                            deep_temperature=deep, specific_humidity=humidity)
     if (.not. all(ieee_is_finite(humidity)) .or. .not. all(ieee_is_finite(temperature)) .or. &
         .not. all(ieee_is_finite(ocean)) .or. .not. all(ieee_is_finite(u))) then

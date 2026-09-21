@@ -3,7 +3,7 @@ program check_dry_atmosphere
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use harmonics, only: harmonic_transform
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate, reference_surface_pressure, &
-                                     dry_air_gas_constant, dry_air_kappa
+                                     dry_air_gas_constant, dry_air_kappa, default_number_of_levels
   use dry_gravity_wave, only: dry_gravity_wave_solver, dry_gravity_wave_implicitness
   use dry_atmosphere, only: dry_atmosphere_solver, dry_gravity_wave_reference_temperature
   use dry_initial_conditions, only: jablonowski_williamson_initial_state
@@ -12,6 +12,7 @@ program check_dry_atmosphere
                               held_suarez_temperature_perturbation
   use dry_radiation, only: radiation_tendency, shortwave_downward_flux, &
                            ozone_layer_optical_depth, ozone_longwave_layer_optical_depth, &
+                           reference_layer_humidity, gas_longwave_layer_optical_depth, &
                            radiation_calendar_date, radiation_diagnostics
   use dry_rayleigh_friction_tendency, only: dry_rayleigh_friction_rate
   use radiation_diagnostics_collector, only: radiation_case_diagnostics, radiation_daily_accumulator, &
@@ -47,6 +48,7 @@ program check_dry_atmosphere
   call check_radiation_top_rayleigh_friction()
   call check_solar_geometry()
   call check_ozone_absorption()
+  call check_longwave_optical_depth()
   call check_radiation_column()
   call check_slab_ocean_column()
   call check_radiation_daily_accumulator()
@@ -219,7 +221,7 @@ contains
     real(real64), parameter :: deep_temperature = 285.0_real64
     real(real64) :: temperature_tendency(2), expected_temperature_tendency(2), surface_tendency, deep_tendency
     real(real64) :: transmission(2), emission(2), upward_longwave(0:2), downward_longwave(0:2), net_longwave(0:2)
-    real(real64) :: surface_shortwave, absorbed_shortwave, sensible_heat, pressure_thickness
+    real(real64) :: surface_shortwave, absorbed_shortwave, sensible_heat, pressure_thickness, reference_humidity
     real(real64) :: total_energy_tendency, lowest_alpha, lowest_pressure
     real(real64) :: incoming_shortwave, reflected_shortwave, outgoing_longwave
     integer :: k
@@ -233,8 +235,12 @@ contains
     surface_shortwave = radiation%solar_constant - absorbed_shortwave
     do k = 1, 2
       pressure_thickness = pressure_half(k) - pressure_half(k - 1)
-      transmission(k) = exp(-(radiation%longwave_surface_optical_depth*pressure_thickness/ &
-        (pressure_half(2) - pressure_half(0)) + &
+      ! Without prognostic water vapour the layer sees the reference humidity q_0 (p/p_s)^3.
+      reference_humidity = radiation%longwave_reference_surface_humidity* &
+        (pressure_half(k)**4 - pressure_half(k - 1)**4)/(4.0_real64*pressure_half(2)**3*pressure_thickness)
+      transmission(k) = exp(-((radiation%longwave_well_mixed_optical_depth*radiation%longwave_well_mixed_scaling + &
+        radiation%longwave_water_vapor_optical_depth*reference_humidity)*pressure_thickness/ &
+        radiation%longwave_reference_pressure + &
         ozone_longwave_layer_optical_depth(radiation, pressure_half(k - 1), pressure_half(k))))
       emission(k) = (1.0_real64 - transmission(k))*radiation%stefan_boltzmann_constant*temperature(k)**4
     end do
@@ -290,6 +296,110 @@ contains
       error stop 'radiation column does not use the prescribed vertical ozone path'
     end if
   end subroutine check_radiation_column
+
+  !> The grey longwave optical depth follows docs/tendency/longwave-radiation.md: the
+  !> Isca coefficients of the Byrne-O'Gorman scheme, the reference humidity
+  !> q_0 (p/p_s)^3 whose column integrates to a mu + b q_0/4 and to the documented
+  !> precipitable water, and a column that darkens monotonically as it moistens.
+  subroutine check_longwave_optical_depth()
+    type(hybrid_sigma_coordinate) :: coordinate
+    real(real64), parameter :: pi = acos(-1.0_real64)
+    real(real64) :: pressure_half(0:default_number_of_levels), humidity(default_number_of_levels)
+    real(real64) :: temperature(default_number_of_levels), tendency(default_number_of_levels)
+    real(real64) :: reference_tendency(default_number_of_levels)
+    real(real64) :: total_optical_depth, column_water, surface_pressure
+    real(real64) :: surface_tendency, reference_surface_tendency, deep_tendency
+    real(real64) :: incoming, reflected, outgoing, reference_outgoing, previous_outgoing, previous_surface_tendency
+    real(real64), parameter :: moistening(5) = [0.0_real64, 0.5_real64, 1.0_real64, 2.0_real64, 4.0_real64]
+    integer :: k, levels, factor
+
+    if (abs(radiation%longwave_well_mixed_optical_depth - 0.1627_real64) > 0.0_real64 .or. &
+        abs(radiation%longwave_water_vapor_optical_depth - 1997.9_real64) > 0.0_real64 .or. &
+        abs(radiation%longwave_well_mixed_scaling - 1.0_real64) > 0.0_real64 .or. &
+        abs(radiation%longwave_reference_pressure - 1.0e5_real64) > 0.0_real64 .or. &
+        abs(radiation%longwave_reference_surface_humidity - 0.010_real64) > 0.0_real64) then
+      error stop 'longwave optical depth coefficients do not match docs/tendency/longwave-radiation.md'
+    end if
+
+    call coordinate%init_default()
+    levels = coordinate%number_of_levels
+    surface_pressure = reference_surface_pressure
+    do k = 0, levels
+      pressure_half(k) = coordinate%a_half(k) + coordinate%b_half(k)*surface_pressure
+    end do
+    total_optical_depth = 0.0_real64
+    column_water = 0.0_real64
+    do k = 1, levels
+      humidity(k) = reference_layer_humidity(radiation, pressure_half(k - 1), pressure_half(k), surface_pressure)
+      total_optical_depth = total_optical_depth + &
+        gas_longwave_layer_optical_depth(radiation, pressure_half(k - 1), pressure_half(k), humidity(k))
+      column_water = column_water + humidity(k)*(pressure_half(k) - pressure_half(k - 1))/radiation%gravity_acceleration
+    end do
+    ! The column integrals telescope to (p_s^4 - p_T^4)/(4 p_s^3): b q_0/4 up to (p_T/p_s)^4 = 1e-12, while the
+    ! well-mixed term covers p_s - p_T.
+    if (abs(total_optical_depth - (radiation%longwave_well_mixed_optical_depth*radiation%longwave_well_mixed_scaling* &
+        (pressure_half(levels) - pressure_half(0))/radiation%longwave_reference_pressure + &
+        0.25_real64*radiation%longwave_water_vapor_optical_depth*radiation%longwave_reference_surface_humidity* &
+        (surface_pressure**4 - pressure_half(0)**4)/(surface_pressure**3*radiation%longwave_reference_pressure))) > &
+        1.0e-12_real64 .or. &
+        abs(column_water - 0.25_real64*radiation%longwave_reference_surface_humidity*surface_pressure/ &
+            radiation%gravity_acceleration) > 1.0e-9_real64*column_water .or. &
+        any(humidity(2:levels) < humidity(1:levels - 1)) .or. humidity(1) < 0.0_real64) then
+      write (*, '(a,2es24.16)') 'tau, column water = ', total_optical_depth, column_water
+      error stop 'reference humidity column does not integrate to the documented optical depth'
+    end if
+    if (gas_longwave_layer_optical_depth(radiation, 5.0e4_real64, 1.0e5_real64, -0.01_real64) /= &
+        gas_longwave_layer_optical_depth(radiation, 5.0e4_real64, 1.0e5_real64, 0.0_real64)) then
+      error stop 'longwave optical depth does not clip negative humidity'
+    end if
+
+    ! At local midnight on the equator there is no shortwave; the humidity only changes the longwave.
+    do k = 1, levels
+      temperature(k) = 210.0_real64 + 80.0_real64*pressure_half(k)/surface_pressure
+    end do
+    call radiation_tendency(radiation, pressure_half, temperature, 295.0_real64, 290.0_real64, 0.0_real64, 0.0_real64, &
+                            0.0_real64, pi, 0.0_real64, reference_tendency, reference_surface_tendency, deep_tendency, &
+                            incoming, reflected, reference_outgoing)
+    call radiation_tendency(radiation, pressure_half, temperature, 295.0_real64, 290.0_real64, 0.0_real64, 0.0_real64, &
+                            0.0_real64, pi, 0.0_real64, tendency, surface_tendency, deep_tendency, &
+                            incoming, reflected, outgoing, specific_humidity=humidity)
+    if (incoming /= 0.0_real64 .or. any(tendency /= reference_tendency) .or. surface_tendency /= reference_surface_tendency &
+        .or. outgoing /= reference_outgoing) then
+      error stop 'the explicit reference humidity does not reproduce the dry-case longwave column'
+    end if
+
+    ! An isothermal column over a black surface at the same temperature has F_up = sigma T^4 on every
+    ! interface whatever its humidity, so the outgoing longwave does not depend on the water vapour; with
+    ! no longwave entering from above the layers still cool to space (the lowest layer also exchanges
+    ! sensible heat with the surface and is excluded).
+    temperature = 260.0_real64
+    do factor = 1, size(moistening)
+      call radiation_tendency(radiation, pressure_half, temperature, 260.0_real64, 260.0_real64, 0.0_real64, 0.0_real64, &
+                              0.0_real64, pi, 0.0_real64, tendency, surface_tendency, deep_tendency, &
+                              incoming, reflected, outgoing, specific_humidity=moistening(factor)*humidity)
+      if (abs(outgoing - radiation%stefan_boltzmann_constant*260.0_real64**4) > 1.0e-9_real64 .or. &
+          any(tendency(1:levels - 1) >= 0.0_real64)) then
+        error stop 'an isothermal column does not emit sigma T^4 upward and cool to space'
+      end if
+    end do
+
+    ! Moistening a column with a lapse rate lowers the outgoing longwave and raises the downward longwave at the surface.
+    do k = 1, levels
+      temperature(k) = 210.0_real64 + 80.0_real64*pressure_half(k)/surface_pressure
+    end do
+    previous_outgoing = huge(1.0_real64)
+    previous_surface_tendency = -huge(1.0_real64)
+    do factor = 1, size(moistening)
+      call radiation_tendency(radiation, pressure_half, temperature, 295.0_real64, 290.0_real64, 0.0_real64, 0.0_real64, &
+                              0.0_real64, pi, 0.0_real64, tendency, surface_tendency, deep_tendency, &
+                              incoming, reflected, outgoing, specific_humidity=moistening(factor)*humidity)
+      if (outgoing >= previous_outgoing .or. surface_tendency <= previous_surface_tendency) then
+        error stop 'moistening the column does not darken it in the longwave'
+      end if
+      previous_outgoing = outgoing
+      previous_surface_tendency = surface_tendency
+    end do
+  end subroutine check_longwave_optical_depth
 
   subroutine check_slab_ocean_column()
     real(real64), parameter :: pressure_half(0:2) = [1000.0_real64, 40000.0_real64, 100000.0_real64]

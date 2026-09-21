@@ -87,7 +87,7 @@ contains
       call add_dry_evaporation_tendency(physics%evaporation, physics%radiation, workspace)
     end if
     if (physics%radiation%enabled) then
-      call add_dry_radiation_tendency(physics%radiation, transform%mu, workspace)
+      call add_dry_radiation_tendency(physics%radiation, physics%moisture%enabled, transform%mu, workspace)
     end if
     if (physics%convection%enabled .or. physics%moist_convection%enabled .or. physics%condensation%enabled) then
       call add_dry_convection_tendency(physics, interval, workspace)

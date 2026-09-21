@@ -52,7 +52,16 @@ module dry_physics_config
     real(real64) :: axial_tilt = 23.4_real64*pi/180.0_real64
     real(real64) :: solar_constant = 1361.0_real64
     real(real64) :: surface_shortwave_albedo = 0.3_real64
-    real(real64) :: longwave_surface_optical_depth = 1.0_real64
+    !> Grey longwave optical depth d tau/dp = (a mu + b q)/p_0: a well-mixed
+    !> absorber (a mu) plus water vapour (b q), with the Byrne & O'Gorman (2013)
+    !> coefficients as implemented in Isca (docs/tendency/longwave-radiation.md).
+    real(real64) :: longwave_well_mixed_optical_depth = 0.1627_real64
+    real(real64) :: longwave_water_vapor_optical_depth = 1997.9_real64
+    real(real64) :: longwave_well_mixed_scaling = 1.0_real64
+    real(real64) :: longwave_reference_pressure = 1.0e5_real64
+    !> Surface value q_0 of the fixed reference humidity q_ref = q_0 (p/p_s)^3
+    !> that the cases without prognostic water vapour give the longwave radiation.
+    real(real64) :: longwave_reference_surface_humidity = 0.010_real64
     real(real64) :: stefan_boltzmann_constant = 5.670374419e-8_real64
     real(real64) :: dry_air_specific_heat = 1004.0_real64
     real(real64) :: gravity_acceleration = earth_gravity
@@ -86,6 +95,10 @@ module dry_physics_config
   !> heating.  The other moist processes require this to be enabled.
   type, public :: moisture_config
     logical :: enabled = .false.
+    !> Initial state q = RH q_s(T, p) on the levels whose full-level pressure is
+    !> at least initial_humidity_top_pressure; the levels above start dry.
+    real(real64) :: initial_relative_humidity = 0.7_real64
+    real(real64) :: initial_humidity_top_pressure = 2.0e4_real64
   end type moisture_config
 
   !> Bulk evaporation from the surface into the lowest model level, with the

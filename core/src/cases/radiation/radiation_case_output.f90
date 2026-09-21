@@ -311,8 +311,20 @@ contains
     write (unit, '(a,es24.16e3,a)') '    "axial_tilt_radians": ', radiation%axial_tilt, ','
     write (unit, '(a,es24.16e3,a)') '    "orbital_period_seconds": ', orbital_period, ','
     write (unit, '(a,es24.16e3,a)') '    "rotation_rate_rad_s": ', planet%rotation_rate, ','
+    write (unit, '(a)') '    "longwave_optical_depth": "grey; d tau/dp = (a mu + b q)/p_0 plus ozone '// &
+      '(Byrne & O''Gorman 2013 as in Isca)",'
     write (unit, '(a,es24.16e3,a)') &
-      '    "longwave_surface_optical_depth": ', radiation%longwave_surface_optical_depth, ','
+      '    "longwave_well_mixed_optical_depth_a": ', radiation%longwave_well_mixed_optical_depth, ','
+    write (unit, '(a,es24.16e3,a)') &
+      '    "longwave_water_vapor_optical_depth_b": ', radiation%longwave_water_vapor_optical_depth, ','
+    write (unit, '(a,es24.16e3,a)') &
+      '    "longwave_well_mixed_scaling_mu": ', radiation%longwave_well_mixed_scaling, ','
+    write (unit, '(a,es24.16e3,a)') &
+      '    "longwave_reference_pressure_pa": ', radiation%longwave_reference_pressure, ','
+    if (.not. physics%moisture%enabled) then
+      write (unit, '(a,es24.16e3,a)') &
+        '    "longwave_reference_surface_humidity_q0": ', radiation%longwave_reference_surface_humidity, ','
+    end if
     write (unit, '(a,es24.16e3,a)') &
       '    "stefan_boltzmann_constant_w_m-2_k-4": ', radiation%stefan_boltzmann_constant, ','
     write (unit, '(a,es24.16e3,a)') '    "dry_air_specific_heat_j_kg-1_k-1": ', radiation%dry_air_specific_heat, ','
@@ -332,7 +344,12 @@ contains
     write (unit, '(a,es24.16e3,a)') '    "ozone_log_pressure_width": ', radiation%ozone_log_pressure_width, ','
     write (unit, '(a)') '    "ozone_optical_path": "vertical; no solar-zenith slant correction",'
     write (unit, '(a)') '    "shortwave_forcing": "instantaneous local solar zenith angle",'
-    write (unit, '(a)') '    "water_vapor_feedback": "none; the longwave optical depth is fixed",'
+    if (physics%moisture%enabled) then
+      write (unit, '(a)') '    "water_vapor_feedback": "grey longwave optical depth follows the prognostic '// &
+        'specific humidity (previous time level, clipped at zero)",'
+    else
+      write (unit, '(a)') '    "water_vapor_feedback": "none; fixed reference humidity q_ref = q_0 (p/p_s)^3",'
+    end if
     write (unit, '(a)') '    "orbit_eccentricity": 0'
     write (unit, '(a)') '  },'
     write (unit, '(a)') '  "surface_exchange": {'
@@ -365,6 +382,10 @@ contains
         '    "reference_saturation_vapor_pressure_pa": ', reference_saturation_vapor_pressure, ','
       write (unit, '(a,es24.16e3,a)') '    "reference_temperature_k": ', saturation_reference_temperature, ','
       write (unit, '(a,es24.16e3,a)') '    "evaporation_surface_wetness": ', physics%evaporation%surface_wetness, ','
+      write (unit, '(a,es24.16e3,a)') &
+        '    "initial_relative_humidity": ', physics%moisture%initial_relative_humidity, ','
+      write (unit, '(a,es24.16e3,a)') &
+        '    "initial_humidity_top_pressure_pa": ', physics%moisture%initial_humidity_top_pressure, ','
       write (unit, '(a)') '    "moist_convective_adjustment": {'
       write (unit, '(a)') '      "method": "simplified Betts-Miller (Frierson 2007), enthalpy-conserving shift, '// &
         'shallower non-precipitating scheme",'

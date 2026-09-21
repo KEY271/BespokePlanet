@@ -114,7 +114,7 @@ $$
 
 ## 負の比湿
 
-スペクトル法の切断誤差により、格子に変換した $q_k$ は水蒸気の少ない領域で負になりうる。負の値は、仮想温度 $T_{v,k}$ と物理過程（蒸発、凝結、対流調節、飽和の判定）の評価に用いる前に $q_k^+=\max(q_k,0)$ で置き換える。一方、移流項 $-\bm{u}_k\cdot\bm\nabla_\eta q_k-W_k(q)$ と超粘性、RAW フィルターには置き換えない値をそのまま使う。スペクトル係数自体は修正せず、負の値を隣接層から補う穴埋めのような質量保存の補正も行わない。したがって格子で見た比湿は局所的に負になりうる。
+スペクトル法の切断誤差により、格子に変換した $q_k$ は水蒸気の少ない領域で負になりうる。負の値は、仮想温度 $T_{v,k}$ と物理過程（長波の光学的厚さ、蒸発、凝結、対流調節、飽和の判定）の評価に用いる前に $q_k^+=\max(q_k,0)$ で置き換える。一方、移流項 $-\bm{u}_k\cdot\bm\nabla_\eta q_k-W_k(q)$ と超粘性、RAW フィルターには置き換えない値をそのまま使う。スペクトル係数自体は修正せず、負の値を隣接層から補う穴埋めのような質量保存の補正も行わない。したがって格子で見た比湿は局所的に負になりうる。
 
 物理過程には $q^+$ を見せるが、そこから得た傾向はそのまま $q$ に加える。したがって蒸発 $E$ と降水 $P_{\mathrm{conv}}+P_{\mathrm{ls}}$ は、符号付きの比湿で定義した気柱水蒸気量 $\sum_kq_k\Delta p_k/g$ の変化として閉じており、$q^+$ で定義した可降水量の変化とは負の領域の分だけずれる。また移流を移流形 $-\bm{u}_k\cdot\bm\nabla_\eta q_k-W_k(q)$ で離散化しているので、超粘性は各層の全球平均 $q$ を変えないものの、移流の離散化誤差と $\Delta p_k$ の空間変化のために $q$ の質量重み付き全球積分は厳密には保存されない。正値性を保つ移流スキームや全球の水分補正（moisture fixer）は導入せず、その代わりに[湿潤ケース](../cases/moist.md#出力)の出力で符号付きの気柱水蒸気量と負の部分の量を別に診断し、全球の $dW/dt=E-P$ がどの程度閉じるかを長期積分で確認する。
 
@@ -165,7 +165,7 @@ $$
 
 物理過程 $\mathcal{P}$ は[物理過程を評価する時刻](../tendency/physics-time-level.md)のとおり、RAW フィルター適用済みの前時刻 $\overline X^{n-1}$ の場で評価する。湿潤大気では次の過程を含む。
 
-- [長波放射](../tendency/longwave-radiation.md)、[短波放射](../tendency/shortwave-radiation.md)、[オゾン](../tendency/ozone.md)
+- [長波放射](../tendency/longwave-radiation.md)（水蒸気による光学的厚さは $q^+$ に依存する）、[短波放射](../tendency/shortwave-radiation.md)、[オゾン](../tendency/ozone.md)
 - [地面](../tendency/ground.md)または [slab ocean](../tendency/slab-ocean.md) との顕熱交換、および[蒸発](../tendency/evaporation.md)
 - [Held–Suarez 強制](../tendency/Held-Suarez.md)の形の地表摩擦と、ケースによっては[上層の Rayleigh 摩擦](../tendency/upper-rayleigh-friction.md)
 - [乾燥対流調節](../tendency/dry-convective-adjustment.md)（[湿潤対流調節](../tendency/moist-convective-adjustment.md#乾燥対流調節の変更)の節で述べる変更を含む）

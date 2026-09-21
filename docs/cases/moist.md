@@ -1,6 +1,6 @@
 # 湿潤ケース
 
-[Slab ocean ケース](./slab-ocean.md)に水蒸気を加えた計算ケースの定義である。力学の傾向項は[湿潤大気](../dynamics/moist.md)のとおりに解き、全球を深さ 30 m の [slab ocean](../tendency/slab-ocean.md) で覆った aquaplanet とする。
+[Slab ocean ケース](./slab-ocean.md)に水蒸気を加え、地軸の傾きを地球の値に戻した計算ケースの定義である。力学の傾向項は[湿潤大気](../dynamics/moist.md)のとおりに解き、全球を深さ 30 m の [slab ocean](../tendency/slab-ocean.md) で覆った aquaplanet とする。
 
 ## Slab ocean ケースとの差分
 
@@ -11,8 +11,10 @@
 - [湿潤対流調節](../tendency/moist-convective-adjustment.md)と[大規模凝結](../tendency/large-scale-condensation.md)を有効にする。[乾燥対流調節](../tendency/dry-convective-adjustment.md)は[湿潤対流調節](../tendency/moist-convective-adjustment.md#乾燥対流調節の変更)の節の変更を加えた上で引き続き用いる。
 - 地表摩擦は放射ケースから引き継ぐ [Held–Suarez 強制](../tendency/Held-Suarez.md#rayleigh-摩擦)の Rayleigh 摩擦（$\sigma_b=0.7$、時定数 $1\,\mathrm{day}$）をそのまま使い、拡散型の境界層スキームは持たない。
 - [上層の Rayleigh 摩擦](../tendency/upper-rayleigh-friction.md)は slab ocean ケースから引き継ぐ。上端 2 層（$1$--$3\,\mathrm{hPa}$ と $3$--$10\,\mathrm{hPa}$）の風を時定数 $1\,\mathrm{day}$ で減衰させ、放射と湿潤過程による上層風の加速を抑える。全層一様の発散への超粘性（$\tau_\delta=1\,\mathrm{hour}$）も併用する。
+- [長波放射](../tendency/longwave-radiation.md)の水蒸気による光学的厚さ $\Delta\tau^{\mathrm{H_2O}}_k=bq_k\Delta p_k/p_0$ に、slab ocean ケースの固定した[基準水蒸気分布](../tendency/longwave-radiation.md#基準水蒸気分布)ではなく、予報した比湿の正の部分 $\overline q_k^{+,n-1}$ を使う。これにより、比湿の変動が長波放射に反映される簡易的な水蒸気フィードバックを持つ。
+- 地軸の傾きを slab ocean ケースの $0$ から[放射ケース](./radiation.md)と同じ $\varepsilon=23.4^\circ$（[暦と軌道](../calendar.md)）に戻す。したがって日変化と季節変化の両方を持ち、積分開始の 4 月 1 日は北半球の春分である。海洋の熱容量は 30 m の水柱のものなので、季節変化に対する海面温度の応答は地球の海洋より速い。
 
-[長波放射](../tendency/longwave-radiation.md)、[短波放射](../tendency/shortwave-radiation.md)、[オゾン](../tendency/ozone.md)、海面との顕熱交換、地表摩擦、[暦と軌道](../calendar.md)、自転角速度、地軸の傾き $0$、計算期間、タイムステップおよび出力間隔は slab ocean ケースと同じとする。放射は水蒸気の量に依存させない。すなわち長波の光学的厚さ $\tau_s=1$ は水蒸気の平均的な効果を含んだ固定値とみなし、水蒸気の変動による放射のフィードバックと雲の放射効果は扱わない。したがってこのケースは現実的な気候感度を持つモデルではなく、潜熱と大規模力学の相互作用を放射フィードバックから切り離して調べる、湿潤力学の理想化モデルである。Frierson 型の湿潤 GCM が持つ拡散型の境界層スキームも持たず、地表のバルクフラックス、対流調節、Rayleigh 摩擦で代替しているので、Frierson や Isca のモデルの再現ではない。すべての物理過程は[物理過程を評価する時刻](../tendency/physics-time-level.md)のとおり $\overline X^{n-1}$ の場で評価し、対流調節と大規模凝結は[湿潤大気](../dynamics/moist.md#物理過程)の順序で逐次に評価する。
+[短波放射](../tendency/shortwave-radiation.md)、[オゾン](../tendency/ozone.md)、長波の係数 $a,b,\mu$、海面との顕熱交換、地表摩擦、[暦と軌道](../calendar.md)、自転角速度、計算期間、タイムステップおよび出力間隔は slab ocean ケースと同じとする。短波は水蒸気に依存させず、雲の放射効果は長波・短波ともに扱わない。長波は灰色大気で大気の窓を持たないので、水蒸気フィードバックは地球より強めに出る傾向がある（[長波放射](../tendency/longwave-radiation.md#パラメータの根拠)）。日平均の $\braket{T_o}$ と OLR で平衡温度を監視し、5 年平均の $\braket{T_o}$ が地球の $288\,\mathrm{K}$ から大きく外れる場合は $b$ または $\mu$ を見直す。Frierson 型の湿潤 GCM が持つ拡散型の境界層スキームは持たず、地表のバルクフラックス、対流調節、Rayleigh 摩擦で代替しているので、Frierson や Isca のモデルの再現ではない。すべての物理過程は[物理過程を評価する時刻](../tendency/physics-time-level.md)のとおり $\overline X^{n-1}$ の場で評価し、対流調節と大規模凝結は[湿潤大気](../dynamics/moist.md#物理過程)の順序で逐次に評価する。
 
 ## 解像度
 
@@ -20,13 +22,22 @@
 
 ## 初期値
 
-$\zeta,\delta,T,\ln p_s$ と $\Phi_s=0$、海洋温度 $T_o$ の初期値は slab ocean ケースと同じとする。比湿の初期値は全層で
+$\zeta,\delta,T,\ln p_s$ と $\Phi_s=0$、海洋温度 $T_o$ の初期値は slab ocean ケースと同じとする。比湿の初期値は、相対湿度 $\mathrm{RH}_0=0.7$ の対流圏として
 
 $$
-q^0=0
+q^0_k=
+\begin{cases}
+\mathrm{RH}_0\,q_s(T^0_k,p_k),&p_k\ge p_{\mathrm{top}},\\
+0,&p_k<p_{\mathrm{top}},
+\end{cases}
+\qquad p_{\mathrm{top}}=200\,\mathrm{hPa}
 $$
 
-とする。$q^0=0$ では仮想温度が温度に一致するので、[放射ケース](./radiation.md)で $\Phi_s=0$ に釣り合わせた東西風は初期に釣り合ったままである。水蒸気は海面からの蒸発によって供給され、数十日程度で大気に行き渡る。5 年間の積分ではこの spin-up は無視できる。
+とする。$T^0_k$ は Jablonowski–Williamson（JW）の温度、$p_k$ は full level の気圧、$q_s$ は[飽和比湿](../tendency/saturation-specific-humidity.md)である。$p_{\mathrm{top}}$ は JW の対流圏界面 $\eta_t=0.2$ に対応する。JW の成層圏は上端に向かって暖かく（$2\,\mathrm{hPa}$ で約 $262\,\mathrm{K}$）、そこでは $p\le e_s$ となって飽和比湿が $1$ に張り付き意味を持たないので、成層圏は乾燥した状態から始める。$q^0$ は格子で計算してからスペクトルに変換するので、切断誤差により格子で見た初期比湿は $\mathrm{RH}_0q_s$ からわずかにずれ、局所的に負になりうる。
+
+この初期値は JW の温度場に対して定めるので、最下層の温度が約 $307\,\mathrm{K}$ に達する JW の赤道では $q^0_N\approx0.026$、可降水量約 $81\,\mathrm{kg\,m^{-2}}$、水蒸気による長波光学的厚さ約 $16$ となり、極（最下層約 $224\,\mathrm{K}$）では可降水量約 $2\,\mathrm{kg\,m^{-2}}$ になる。全球平均では可降水量約 $46\,\mathrm{kg\,m^{-2}}$、光学的厚さ約 $9$ で、slab ocean ケースが使う[基準水蒸気分布](../tendency/longwave-radiation.md#基準水蒸気分布)（$25.5\,\mathrm{kg\,m^{-2}}$、$5.0$）より湿っている。JW は力学のテスト用の基本場であって放射対流平衡ではないので、この差は積分の初期に降水と放射によって調整される。$q^0=0$ から始める場合のように大気が一時的に長波に透明になることはないが、初期の数十日は平衡状態の統計に含めない。
+
+$q^0\neq0$ なので仮想温度は温度より $\delta_vq^0T$ だけ高くなる。その大きさは赤道の最下層で約 $5\,\mathrm{K}$、緯度 $45^\circ$ で約 $0.6\,\mathrm{K}$、極ではほぼ $0$ である。[放射ケース](./radiation.md)で $\Phi_s=0$ に釣り合わせた東西風はこの分だけ釣り合いからずれるが、ずれは JW の温度場の南北コントラスト（約 $80\,\mathrm{K}$）に比べて小さく、重力波として数日で調整されるので、5 年間の積分では無視できる。
 
 ## 時間
 
@@ -92,3 +103,6 @@ $$
 - 空気塊に正の浮力を持つ層がない気柱、および $P_T\le0$ の気柱で、[湿潤対流調節](../tendency/moist-convective-adjustment.md)の傾向がすべて 0 になること。
 - 深い対流で $\sum_k(c_pC^{\mathrm{conv}}_{T,k}+LC^{\mathrm{conv}}_{q,k})\Delta p_k=0$ と $P_{\mathrm{conv}}=-\sum_kC^{\mathrm{conv}}_{q,k}\Delta p_k/g>0$、浅い対流で $\sum_kC^{\mathrm{conv}}_{q,k}\Delta p_k=0$ と $\sum_kC^{\mathrm{conv}}_{T,k}\Delta p_k=0$ が丸め誤差の範囲で成り立つこと。
 - 数ステップの全球積分で $\braket{W_\pm}$ の変化が $\braket{E}-\braket{P}$ に、移流の離散化誤差の範囲で一致すること。
+- 長波放射に、乾燥ケースと同じ[基準水蒸気分布](../tendency/longwave-radiation.md#基準水蒸気分布) $\overline q^{\mathrm{ref}}_k$ を比湿として渡すと、乾燥ケースの長波フラックスとビット単位で一致すること。
+- 地表と全層が同じ温度 $T$ の等温気柱では、比湿の分布によらず全界面で $F^\uparrow_{k+1/2}=\sigma T^4$ となり、大気上端から出る長波が比湿に依存しないこと。上端から入る長波はないので、この気柱でも各層は宇宙へ放射して冷える。
+- 同じ温度分布で比湿を増やすと、大気上端から出る長波 $F^\uparrow_{1/2}$ が単調に減り、地表に届く下向き長波 $F^\downarrow_{N+1/2}$ が単調に増えること。
