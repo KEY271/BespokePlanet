@@ -42,6 +42,8 @@ module dry_atmosphere
     type(dry_state_type) :: current
     ! Time-independent lower boundary condition; it is never advanced or filtered.
     complex(real64), allocatable :: surface_geopotential(:, :)
+    !> Time-independent grid land fraction used only by surface physics.
+    real(real64), allocatable :: land_fraction(:, :)
   contains
     procedure, public :: init => initialize_dry_solver
     procedure, public :: init_with_config => initialize_dry_solver_with_config
@@ -105,6 +107,9 @@ contains
     if (allocated(this%surface_geopotential)) deallocate (this%surface_geopotential)
     allocate (this%surface_geopotential(0:truncation + 1, 0:truncation))
     this%surface_geopotential = 0.0_real64
+    if (allocated(this%land_fraction)) deallocate (this%land_fraction)
+    call this%transform%allocate_field(this%land_fraction)
+    this%land_fraction = 0.0_real64
   end subroutine initialize_dry_solver
 
   subroutine initialize_dry_solver_with_config(this, config, a_half, b_half, hyperdiffusion, planet)
@@ -129,13 +134,14 @@ contains
   !> Installs the spectral state on both time levels.  Specific humidity starts
   !> at zero (a dry atmosphere) unless supplied.
   subroutine set_initial_state(this, zeta, delta, temperature, log_surface_pressure, surface_geopotential, &
-                               specific_humidity)
+                               specific_humidity, land_fraction)
     class(dry_atmosphere_solver), intent(inout) :: this
     complex(real64), intent(in) :: zeta(0:, 0:, :), delta(0:, 0:, :), temperature(0:, 0:, :)
     complex(real64), intent(in) :: log_surface_pressure(0:, 0:)
     !> Fixed surface geopotential; a flat surface (zero) is used when absent.
     complex(real64), intent(in), optional :: surface_geopotential(0:, 0:)
     complex(real64), intent(in), optional :: specific_humidity(0:, 0:, :)
+    real(real64), intent(in), optional :: land_fraction(:, :)
 
     call check_initialized(this)
     call check_state_shape(this, zeta, 'zeta')
@@ -164,6 +170,16 @@ contains
       this%surface_geopotential = surface_geopotential(0:this%truncation + 1, 0:this%truncation)
     end if
     call enforce_dry_spectral_field(this%surface_geopotential, this%truncation, .false.)
+    this%land_fraction = 0.0_real64
+    if (present(land_fraction)) then
+      if (any(shape(land_fraction) /= shape(this%land_fraction))) then
+        error stop 'dry atmosphere land fraction has an inconsistent shape'
+      end if
+      if (any(land_fraction < 0.0_real64) .or. any(land_fraction > 1.0_real64)) then
+        error stop 'dry atmosphere land fraction is outside [0,1]'
+      end if
+      this%land_fraction = land_fraction
+    end if
     this%current%surface_temperature = 0.0_real64
     this%current%deep_temperature = 0.0_real64
     call enforce_dry_state_constraints(this%current, this%truncation)
@@ -219,7 +235,7 @@ contains
     call check_ready(this)
     call this%stepper%advance(this%transform, this%coordinate, this%gravity_wave, this%numerics, &
       this%hyperdiffusion, this%planet, this%physics, this%workspace, this%surface_geopotential, this%step_number, &
-      this%previous, this%current, maximum_speed, this%latest_radiation_diagnostics)
+      this%previous, this%current, this%land_fraction, maximum_speed, this%latest_radiation_diagnostics)
     this%last_advance_cfl = advective_cfl(this, maximum_speed)
     this%latest_diagnostics_available = this%physics%radiation%enabled
   end subroutine advance
@@ -286,11 +302,12 @@ contains
   end subroutine get_fields
 
   subroutine get_spectral_state(this, zeta, delta, temperature, log_surface_pressure, specific_humidity, &
-                                surface_temperature)
+                                surface_temperature, deep_temperature)
     class(dry_atmosphere_solver), intent(in) :: this
     complex(real64), allocatable, intent(out) :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     complex(real64), allocatable, intent(out) :: log_surface_pressure(:, :)
     complex(real64), allocatable, intent(out), optional :: specific_humidity(:, :, :), surface_temperature(:, :)
+    complex(real64), allocatable, intent(out), optional :: deep_temperature(:, :)
 
     call check_ready(this)
     zeta = this%current%zeta
@@ -299,6 +316,7 @@ contains
     log_surface_pressure = this%current%log_surface_pressure
     if (present(specific_humidity)) specific_humidity = this%current%specific_humidity
     if (present(surface_temperature)) surface_temperature = this%current%surface_temperature
+    if (present(deep_temperature)) deep_temperature = this%current%deep_temperature
   end subroutine get_spectral_state
 
   !> Model time of the current state, in seconds since the initial state.

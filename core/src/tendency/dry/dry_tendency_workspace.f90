@@ -43,6 +43,7 @@ module dry_tendency_workspace
     real(real64), allocatable :: log_ps(:, :), ps(:, :)
     real(real64), allocatable :: dlogps_dlambda(:, :), dlogps_dphi(:, :)
     real(real64), allocatable :: surface_geopotential_grid(:, :)
+    real(real64), allocatable :: land_fraction(:, :)
     real(real64), allocatable :: pressure_half(:, :, :), delta_p(:, :, :)
     real(real64), allocatable :: layer_l(:, :, :), alpha(:, :, :)
     real(real64), allocatable :: geopotential(:, :, :), geopotential_half(:, :, :)
@@ -128,6 +129,7 @@ contains
     allocate (this%log_ps(nx, ny), this%ps(nx, ny))
     allocate (this%dlogps_dlambda(nx, ny), this%dlogps_dphi(nx, ny))
     allocate (this%surface_geopotential_grid(nx, ny))
+    allocate (this%land_fraction(nx, ny))
     allocate (this%pressure_half(nx, ny, 0:levels))
     allocate (this%delta_p(nx, ny, levels), this%layer_l(nx, ny, levels))
     allocate (this%alpha(nx, ny, levels))
@@ -203,13 +205,14 @@ contains
 
   !> Diagnoses every grid field that more than one tendency needs.
   subroutine prepare_workspace(this, transform, coordinate, rotation_rate, state, physics_state, &
-                               surface_geopotential, physics, evaluation_time)
+                               surface_geopotential, physics, evaluation_time, land_fraction)
     class(dry_workspace_type), intent(inout) :: this
     type(harmonic_transform), intent(inout) :: transform
     type(hybrid_sigma_coordinate), intent(in) :: coordinate
     real(real64), intent(in) :: rotation_rate
     type(dry_state_type), intent(in) :: state, physics_state
     complex(real64), intent(in) :: surface_geopotential(0:, 0:)
+    real(real64), intent(in), optional :: land_fraction(:, :)
     type(dry_model_physics_config), intent(in) :: physics
     real(real64), intent(in) :: evaluation_time
     real(real64), allocatable :: grid(:, :), grid_u(:, :), grid_v(:, :)
@@ -234,6 +237,13 @@ contains
     this%radiation_grids_ready = physics%radiation%enabled
     this%moisture_grids_ready = physics%moisture%enabled
     this%active_rotation_rate = rotation_rate
+    this%land_fraction = 0.0_real64
+    if (present(land_fraction)) then
+      if (any(shape(land_fraction) /= shape(this%land_fraction))) then
+        error stop 'dry tendency land fraction has an inconsistent shape'
+      end if
+      this%land_fraction = land_fraction
+    end if
 
     ! Every level is transformed independently; the scratch arrays are private to the thread.
     !$omp parallel do default(shared) private(k, grid, grid_u, grid_v) schedule(dynamic, 1)

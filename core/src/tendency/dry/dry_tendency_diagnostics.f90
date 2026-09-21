@@ -22,11 +22,13 @@ contains
     integer :: i, j, k, levels
     real(real64) :: area_weight, ring_weight, atmospheric_mass, temperature_mass_sum, kinetic_energy_mass_sum
     real(real64) :: column_water, signed_column_water, negative_column_water, speed_squared, maximum_speed_squared
+    real(real64) :: land_area, ocean_area, land_weight, ocean_weight, total_precipitation
     real(real64), parameter :: degrees = 180.0_real64/acos(-1.0_real64)
 
     levels = workspace%number_of_levels
     diagnostics%time_seconds = workspace%evaluation_time
     diagnostics%surface_temperature = workspace%surface_temperature_grid
+    diagnostics%deep_temperature = workspace%deep_temperature_grid
     diagnostics%surface_pressure = workspace%ps
     allocate (diagnostics%zonal_temperature(workspace%ny, levels))
     allocate (diagnostics%zonal_u(workspace%ny, levels), diagnostics%zonal_v(workspace%ny, levels))
@@ -50,6 +52,8 @@ contains
     temperature_mass_sum = 0.0_real64
     kinetic_energy_mass_sum = 0.0_real64
     maximum_speed_squared = -1.0_real64
+    land_area = 0.0_real64
+    ocean_area = 0.0_real64
     do j = 1, workspace%ny
       ring_weight = 1.0_real64/real(workspace%ring_nlon(j), real64)
       area_weight = 0.5_real64*workspace%gaussian_weights(j)*ring_weight
@@ -58,6 +62,14 @@ contains
           area_weight*workspace%surface_temperature_grid(i, j)
         diagnostics%mean_deep_temperature = diagnostics%mean_deep_temperature + &
           area_weight*workspace%deep_temperature_grid(i, j)
+        land_weight = area_weight*workspace%land_fraction(i, j)
+        ocean_weight = area_weight*(1.0_real64 - workspace%land_fraction(i, j))
+        land_area = land_area + land_weight
+        ocean_area = ocean_area + ocean_weight
+        diagnostics%mean_land_surface_temperature = diagnostics%mean_land_surface_temperature + &
+          land_weight*workspace%surface_temperature_grid(i, j)
+        diagnostics%mean_ocean_surface_temperature = diagnostics%mean_ocean_surface_temperature + &
+          ocean_weight*workspace%surface_temperature_grid(i, j)
         diagnostics%mean_surface_pressure = diagnostics%mean_surface_pressure + area_weight*workspace%ps(i, j)
         diagnostics%mean_incoming_shortwave = diagnostics%mean_incoming_shortwave + &
           area_weight*workspace%incoming_shortwave(i, j)
@@ -117,11 +129,31 @@ contains
           diagnostics%mean_evaporation = diagnostics%mean_evaporation + area_weight*workspace%evaporation(i, j)
           diagnostics%mean_latent_heat_flux = diagnostics%mean_latent_heat_flux + &
             area_weight*workspace%latent_heat_flux(i, j)
+          total_precipitation = workspace%convective_precipitation(i, j) + &
+            workspace%large_scale_precipitation(i, j)
+          diagnostics%mean_land_precipitation = diagnostics%mean_land_precipitation + &
+            land_weight*total_precipitation
+          diagnostics%mean_ocean_precipitation = diagnostics%mean_ocean_precipitation + &
+            ocean_weight*total_precipitation
+          diagnostics%mean_land_evaporation = diagnostics%mean_land_evaporation + &
+            land_weight*workspace%evaporation(i, j)
+          diagnostics%mean_ocean_evaporation = diagnostics%mean_ocean_evaporation + &
+            ocean_weight*workspace%evaporation(i, j)
         end if
       end do
     end do
     diagnostics%mean_atmospheric_temperature = temperature_mass_sum/atmospheric_mass
     diagnostics%mean_kinetic_energy = kinetic_energy_mass_sum/atmospheric_mass
+    if (land_area > 0.0_real64) then
+      diagnostics%mean_land_surface_temperature = diagnostics%mean_land_surface_temperature/land_area
+      diagnostics%mean_land_precipitation = diagnostics%mean_land_precipitation/land_area
+      diagnostics%mean_land_evaporation = diagnostics%mean_land_evaporation/land_area
+    end if
+    if (ocean_area > 0.0_real64) then
+      diagnostics%mean_ocean_surface_temperature = diagnostics%mean_ocean_surface_temperature/ocean_area
+      diagnostics%mean_ocean_precipitation = diagnostics%mean_ocean_precipitation/ocean_area
+      diagnostics%mean_ocean_evaporation = diagnostics%mean_ocean_evaporation/ocean_area
+    end if
     diagnostics%maximum_wind_speed = sqrt(max(maximum_speed_squared, 0.0_real64))
   end subroutine collect_dry_diagnostics
 

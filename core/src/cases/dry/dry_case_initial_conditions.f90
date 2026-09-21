@@ -10,7 +10,8 @@ module dry_case_initial_conditions
   use harmonics, only: harmonic_transform
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate
   use dry_atmosphere, only: dry_atmosphere_solver
-  use dry_initial_conditions, only: jablonowski_williamson_initial_state
+  use dry_initial_conditions, only: jablonowski_williamson_initial_state, &
+                                    jablonowski_williamson_topographic_initial_state
   use dry_held_suarez, only: held_suarez_initial_state
   use dry_physics_config, only: dry_model_physics_config, radiation_config, moisture_config, &
                                 radiation_planet_rotation_rate
@@ -24,6 +25,7 @@ module dry_case_initial_conditions
   public :: radiation_case_physics, slab_ocean_case_physics
   public :: radiation_case_planet, set_radiation_case_state
   public :: moist_case_physics
+  public :: land_sea_case_physics, set_land_sea_case_state
 
 contains
 
@@ -113,6 +115,16 @@ contains
     physics%condensation%enabled = .true.
   end function moist_case_physics
 
+  !> Moist physics with one land--ocean surface budget mixed at every grid point.
+  function land_sea_case_physics() result(physics)
+    type(dry_model_physics_config) :: physics
+
+    physics = moist_case_physics()
+    physics%radiation%land_sea_mixing_enabled = .true.
+    physics%evaporation%land_surface_wetness = 0.5_real64
+    physics%evaporation%ocean_surface_wetness = 1.0_real64
+  end function land_sea_case_physics
+
   !> The planet of the radiation case rotates with the calendar of its radiation
   !> configuration, so that a solar day is exactly solar_day seconds.
   function radiation_case_planet(physics) result(planet)
@@ -162,6 +174,37 @@ contains
                                   state_temperature(:, :, number_of_levels))
     call solver%set_physics(physics)
   end subroutine set_radiation_case_state
+
+  !> Pressure-coordinate radiation basic state placed over the supplied terrain.
+  subroutine set_land_sea_case_state(solver, transform, physics, planet, surface_geopotential, land_fraction)
+    type(dry_atmosphere_solver), intent(inout) :: solver
+    type(harmonic_transform), intent(inout) :: transform
+    type(dry_model_physics_config), intent(in) :: physics
+    type(planet_config), intent(in) :: planet
+    complex(real64), intent(in) :: surface_geopotential(0:, 0:)
+    real(real64), intent(in) :: land_fraction(:, :)
+    complex(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :), log_ps(:, :)
+    complex(real64), allocatable :: state_zeta(:, :, :), state_delta(:, :, :), state_temperature(:, :, :)
+    complex(real64), allocatable :: state_log_ps(:, :), humidity(:, :, :)
+    type(hybrid_sigma_coordinate) :: coordinate
+    integer :: number_of_levels
+
+    coordinate = solver%get_coordinate()
+    number_of_levels = coordinate%number_of_levels
+    call jablonowski_williamson_topographic_initial_state(transform, solver%get_truncation(), coordinate, &
+      surface_geopotential, planet%rotation_rate, zeta, delta, temperature, log_ps)
+    call solver%set_planet(planet)
+    call solver%set_initial_state(zeta, delta, temperature, log_ps, surface_geopotential, &
+                                  land_fraction=land_fraction)
+    call solver%get_spectral_state(state_zeta, state_delta, state_temperature, state_log_ps)
+    call initial_humidity_state(transform, coordinate, physics%moisture, state_temperature, state_log_ps, humidity)
+    call solver%set_initial_state(state_zeta, state_delta, state_temperature, state_log_ps, surface_geopotential, &
+                                  specific_humidity=humidity, land_fraction=land_fraction)
+    call solver%get_spectral_state(state_zeta, state_delta, state_temperature, state_log_ps)
+    call solver%set_surface_state(state_temperature(:, :, number_of_levels), &
+                                  state_temperature(:, :, number_of_levels))
+    call solver%set_physics(physics)
+  end subroutine set_land_sea_case_state
 
   !> Spectral specific humidity q = RH q_s(T_k, p_k) on the levels whose full-level
   !> pressure is at least the configured top pressure, and zero above.  The

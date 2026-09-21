@@ -9,13 +9,19 @@ module dry_radiation
   real(real64), parameter :: pi = acos(-1.0_real64)
 
   !> One instantaneous sample of the global and zonal diagnostics that the
-  !> radiation, slab-ocean and moist cases aggregate.  The moist fields are zero
+  !> radiation, slab-ocean, moist and land--sea cases aggregate.  The moist fields are zero
   !> and unallocated unless the moist processes are active.
   type, public :: radiation_diagnostics
     real(real64) :: time_seconds = 0.0_real64
     real(real64) :: mean_atmospheric_temperature = 0.0_real64
     real(real64) :: mean_surface_temperature = 0.0_real64
     real(real64) :: mean_deep_temperature = 0.0_real64
+    real(real64) :: mean_land_surface_temperature = 0.0_real64
+    real(real64) :: mean_ocean_surface_temperature = 0.0_real64
+    real(real64) :: mean_land_precipitation = 0.0_real64
+    real(real64) :: mean_ocean_precipitation = 0.0_real64
+    real(real64) :: mean_land_evaporation = 0.0_real64
+    real(real64) :: mean_ocean_evaporation = 0.0_real64
     real(real64) :: mean_kinetic_energy = 0.0_real64
     real(real64) :: mean_surface_pressure = 0.0_real64
     real(real64) :: mean_incoming_shortwave = 0.0_real64
@@ -36,6 +42,7 @@ module dry_radiation
     integer :: maximum_wind_level = 0
     real(real64) :: maximum_wind_eta = 0.0_real64
     real(real64), allocatable :: surface_temperature(:, :)
+    real(real64), allocatable :: deep_temperature(:, :)
     real(real64), allocatable :: surface_pressure(:, :)
     real(real64), allocatable :: zonal_temperature(:, :)
     real(real64), allocatable :: zonal_u(:, :)
@@ -70,6 +77,12 @@ contains
     destination%mean_atmospheric_temperature = source%mean_atmospheric_temperature
     destination%mean_surface_temperature = source%mean_surface_temperature
     destination%mean_deep_temperature = source%mean_deep_temperature
+    destination%mean_land_surface_temperature = source%mean_land_surface_temperature
+    destination%mean_ocean_surface_temperature = source%mean_ocean_surface_temperature
+    destination%mean_land_precipitation = source%mean_land_precipitation
+    destination%mean_ocean_precipitation = source%mean_ocean_precipitation
+    destination%mean_land_evaporation = source%mean_land_evaporation
+    destination%mean_ocean_evaporation = source%mean_ocean_evaporation
     destination%mean_kinetic_energy = source%mean_kinetic_energy
     destination%mean_surface_pressure = source%mean_surface_pressure
     destination%mean_incoming_shortwave = source%mean_incoming_shortwave
@@ -93,6 +106,7 @@ contains
     if (allocated(source%zonal_humidity)) call move_alloc(source%zonal_humidity, destination%zonal_humidity)
     if (allocated(source%zonal_vq)) call move_alloc(source%zonal_vq, destination%zonal_vq)
     if (allocated(source%surface_temperature)) call move_alloc(source%surface_temperature, destination%surface_temperature)
+    if (allocated(source%deep_temperature)) call move_alloc(source%deep_temperature, destination%deep_temperature)
     if (allocated(source%surface_pressure)) call move_alloc(source%surface_pressure, destination%surface_pressure)
     if (allocated(source%zonal_temperature)) call move_alloc(source%zonal_temperature, destination%zonal_temperature)
     if (allocated(source%zonal_u)) call move_alloc(source%zonal_u, destination%zonal_u)
@@ -239,7 +253,7 @@ contains
                                 longitude, time_seconds, temperature_tendency, &
                                 surface_temperature_tendency, deep_temperature_tendency, &
                                 incoming_shortwave, reflected_shortwave, outgoing_longwave, &
-                                latent_heat_flux, specific_humidity)
+                                latent_heat_flux, specific_humidity, land_fraction)
     type(radiation_config), intent(in) :: config
     real(real64), intent(in) :: pressure_half(0:), temperature(:)
     real(real64), intent(in) :: surface_temperature, deep_temperature
@@ -250,6 +264,9 @@ contains
     real(real64), intent(out) :: incoming_shortwave, reflected_shortwave, outgoing_longwave
     real(real64), intent(in), optional :: latent_heat_flux
     real(real64), intent(in), optional :: specific_humidity(:)
+    !> Fraction of the grid cell covered by land.  It is required by the mixed
+    !> surface path and absent on the legacy ground/slab paths.
+    real(real64), intent(in), optional :: land_fraction
     real(real64) :: upward_longwave(0:size(temperature)), downward_longwave(0:size(temperature))
     real(real64) :: transmission(size(temperature)), emission(size(temperature))
     real(real64) :: net_longwave(0:size(temperature))
@@ -257,7 +274,8 @@ contains
     real(real64) :: layer_shortwave_optical_depth, shortwave_transmission
     real(real64) :: shortwave_downward, ultraviolet_downward, non_ultraviolet_downward, shortwave_absorbed
     real(real64) :: stefan_boltzmann_constant, dry_gravity_acceleration, dry_air_specific_heat
-    real(real64) :: surface_heat_capacity, surface_latent_heat
+    real(real64) :: surface_heat_capacity, surface_latent_heat, surface_albedo
+    real(real64) :: ocean_heat_capacity, ground_exchange, land
     real(real64) :: ozone_fraction(size(temperature)), ozone_normalization
     integer :: k, number_of_levels
 
@@ -266,7 +284,26 @@ contains
     stefan_boltzmann_constant = config%stefan_boltzmann_constant
     dry_gravity_acceleration = config%gravity_acceleration
     dry_air_specific_heat = config%dry_air_specific_heat
-    surface_heat_capacity = radiation_surface_heat_capacity(config)
+    if (config%land_sea_mixing_enabled) then
+      if (.not. present(land_fraction)) error stop 'mixed land-sea radiation requires land fraction'
+      if (land_fraction < 0.0_real64 .or. land_fraction > 1.0_real64) then
+        error stop 'radiation land fraction is outside [0,1]'
+      end if
+      land = land_fraction
+      ocean_heat_capacity = config%seawater_density*config%seawater_specific_heat*config%slab_ocean_depth
+      surface_heat_capacity = land*config%surface_heat_capacity + (1.0_real64 - land)*ocean_heat_capacity
+      surface_albedo = land*config%land_shortwave_albedo + &
+        (1.0_real64 - land)*config%ocean_shortwave_albedo
+      ground_exchange = land*config%ground_exchange_coefficient
+    else
+      surface_heat_capacity = radiation_surface_heat_capacity(config)
+      surface_albedo = config%surface_shortwave_albedo
+      if (config%slab_ocean_enabled) then
+        ground_exchange = 0.0_real64
+      else
+        ground_exchange = config%ground_exchange_coefficient
+      end if
+    end if
     number_of_levels = size(temperature)
     if (number_of_levels < 1 .or. size(pressure_half) /= number_of_levels + 1 .or. &
         size(temperature_tendency) /= number_of_levels) then
@@ -274,7 +311,8 @@ contains
     end if
     if (pressure_half(number_of_levels) <= pressure_half(0) .or. any(temperature <= 0.0_real64) .or. &
         surface_temperature <= 0.0_real64 .or. &
-        (.not. config%slab_ocean_enabled .and. deep_temperature <= 0.0_real64)) then
+        ((config%land_sea_mixing_enabled .or. .not. config%slab_ocean_enabled) .and. &
+         deep_temperature <= 0.0_real64)) then
       error stop 'radiation column contains a nonphysical state'
     end if
     if (surface_heat_capacity <= 0.0_real64) then
@@ -350,20 +388,14 @@ contains
     temperature_tendency(number_of_levels) = temperature_tendency(number_of_levels) + &
       dry_gravity_acceleration/(dry_air_specific_heat*pressure_thickness)*sensible_heat
 
-    reflected_shortwave = config%surface_shortwave_albedo*shortwave_downward
+    reflected_shortwave = surface_albedo*shortwave_downward
     outgoing_longwave = upward_longwave(0)
-    if (config%slab_ocean_enabled) then
-      ! A slab ocean is one isolated, well-mixed water column.  It has no
-      ! bottom heat exchange and its otherwise-unused deep state stays fixed.
-      surface_deep_heat = 0.0_real64
-    else
-      surface_deep_heat = config%ground_exchange_coefficient*(surface_temperature - deep_temperature)
-    end if
+    surface_deep_heat = ground_exchange*(surface_temperature - deep_temperature)
     ! The surface loses exactly the upward longwave the lowest layer sees, so the column budget closes.
     surface_temperature_tendency = (shortwave_downward - reflected_shortwave + &
       downward_longwave(number_of_levels) - upward_longwave(number_of_levels) - &
       surface_deep_heat - sensible_heat - surface_latent_heat)/surface_heat_capacity
-    if (config%slab_ocean_enabled) then
+    if (.not. config%land_sea_mixing_enabled .and. config%slab_ocean_enabled) then
       deep_temperature_tendency = 0.0_real64
     else
       deep_temperature_tendency = surface_deep_heat/config%deep_ground_heat_capacity

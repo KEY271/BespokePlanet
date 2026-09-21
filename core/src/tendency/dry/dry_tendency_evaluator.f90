@@ -40,7 +40,7 @@ contains
   !> their provisional fields with it.
   subroutine evaluate_dry_tendency(transform, truncation, coordinate, planet, state, physics_state, &
                                    surface_geopotential, physics, workspace, evaluation_time, interval, rhs, &
-                                   maximum_speed, diagnostics)
+                                   maximum_speed, diagnostics, land_fraction)
     type(harmonic_transform), intent(inout) :: transform
     integer, intent(in) :: truncation
     type(hybrid_sigma_coordinate), intent(in) :: coordinate
@@ -49,6 +49,7 @@ contains
     !> time level that every prescribed physical tendency is evaluated on.
     type(dry_state_type), intent(in) :: state, physics_state
     complex(real64), intent(in) :: surface_geopotential(0:, 0:)
+    real(real64), intent(in), optional :: land_fraction(:, :)
     type(dry_model_physics_config), intent(in) :: physics
     type(dry_workspace_type), intent(inout) :: workspace
     real(real64), intent(in) :: evaluation_time, interval
@@ -69,8 +70,13 @@ contains
 
     call zero_dry_tendency(rhs)
     call workspace%zero_forcing()
-    call workspace%prepare(transform, coordinate, planet%rotation_rate, state, physics_state, &
-                           surface_geopotential, physics, evaluation_time)
+    if (present(land_fraction)) then
+      call workspace%prepare(transform, coordinate, planet%rotation_rate, state, physics_state, &
+                             surface_geopotential, physics, evaluation_time, land_fraction)
+    else
+      call workspace%prepare(transform, coordinate, planet%rotation_rate, state, physics_state, &
+                             surface_geopotential, physics, evaluation_time)
+    end if
 
     call add_dry_dynamics_tendency(transform, state, workspace, maximum_speed)
 

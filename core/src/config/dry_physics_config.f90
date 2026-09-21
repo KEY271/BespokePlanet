@@ -52,6 +52,12 @@ module dry_physics_config
     real(real64) :: axial_tilt = 23.4_real64*pi/180.0_real64
     real(real64) :: solar_constant = 1361.0_real64
     real(real64) :: surface_shortwave_albedo = 0.3_real64
+    !> When enabled, the surface properties are mixed with the fixed land
+    !> fraction supplied by the solver.  The legacy ground/slab switch remains
+    !> the exact path used by existing cases.
+    logical :: land_sea_mixing_enabled = .false.
+    real(real64) :: land_shortwave_albedo = 0.3_real64
+    real(real64) :: ocean_shortwave_albedo = 0.3_real64
     !> Grey longwave optical depth d tau/dp = (a mu + b q)/p_0: a well-mixed
     !> absorber (a mu) plus water vapour (b q), with the Byrne & O'Gorman (2013)
     !> coefficients as implemented in Isca (docs/tendency/longwave-radiation.md).
@@ -108,6 +114,8 @@ module dry_physics_config
     logical :: enabled = .false.
     !> Surface wetness beta in [0, 1]; a slab ocean is saturated (1).
     real(real64) :: surface_wetness = 1.0_real64
+    real(real64) :: land_surface_wetness = 0.5_real64
+    real(real64) :: ocean_surface_wetness = 1.0_real64
   end type evaporation_config
 
   !> Simplified Betts-Miller moist convective adjustment (Frierson 2007).
@@ -140,6 +148,7 @@ module dry_physics_config
 
   public :: radiation_days_per_year, radiation_orbital_period, radiation_planet_rotation_rate
   public :: radiation_surface_heat_capacity
+  public :: mixed_surface_properties
 
 contains
 
@@ -170,5 +179,24 @@ contains
       heat_capacity = config%surface_heat_capacity
     end if
   end function radiation_surface_heat_capacity
+
+  !> Time-independent surface coefficients at one mixed land--ocean grid point.
+  pure subroutine mixed_surface_properties(radiation, evaporation, land_fraction, heat_capacity, albedo, &
+                                           wetness, ground_exchange)
+    type(radiation_config), intent(in) :: radiation
+    type(evaporation_config), intent(in) :: evaporation
+    real(real64), intent(in) :: land_fraction
+    real(real64), intent(out) :: heat_capacity, albedo, wetness, ground_exchange
+    real(real64) :: ocean_heat_capacity
+
+    ocean_heat_capacity = radiation%seawater_density*radiation%seawater_specific_heat*radiation%slab_ocean_depth
+    heat_capacity = land_fraction*radiation%surface_heat_capacity + &
+      (1.0_real64 - land_fraction)*ocean_heat_capacity
+    albedo = land_fraction*radiation%land_shortwave_albedo + &
+      (1.0_real64 - land_fraction)*radiation%ocean_shortwave_albedo
+    wetness = land_fraction*evaporation%land_surface_wetness + &
+      (1.0_real64 - land_fraction)*evaporation%ocean_surface_wetness
+    ground_exchange = land_fraction*radiation%ground_exchange_coefficient
+  end subroutine mixed_surface_properties
 
 end module dry_physics_config

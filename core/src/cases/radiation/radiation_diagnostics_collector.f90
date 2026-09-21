@@ -13,7 +13,7 @@ module radiation_diagnostics_collector
 
   !> Monthly means of the grid and zonal fields, returned in one bundle.
   type, public :: radiation_monthly_means
-    real(real64), allocatable :: surface_temperature(:, :), surface_pressure(:, :)
+    real(real64), allocatable :: surface_temperature(:, :), deep_temperature(:, :), surface_pressure(:, :)
     real(real64), allocatable :: zonal_temperature(:, :), zonal_u(:, :), zonal_v(:, :)
     real(real64), allocatable :: eddy_uv(:, :), eddy_vt(:, :)
     !> Moist fields; unallocated in a dry run.
@@ -27,6 +27,7 @@ module radiation_diagnostics_collector
     integer :: sample_count = 0
     logical :: moist = .false.
     real(real64), allocatable :: surface_temperature_sum(:, :)
+    real(real64), allocatable :: deep_temperature_sum(:, :)
     real(real64), allocatable :: surface_pressure_sum(:, :)
     real(real64), allocatable :: zonal_temperature_sum(:, :)
     real(real64), allocatable :: zonal_u_sum(:, :)
@@ -54,6 +55,12 @@ module radiation_diagnostics_collector
     real(real64) :: atmospheric_temperature_sum = 0.0_real64
     real(real64) :: surface_temperature_sum = 0.0_real64
     real(real64) :: deep_temperature_sum = 0.0_real64
+    real(real64) :: land_surface_temperature_sum = 0.0_real64
+    real(real64) :: ocean_surface_temperature_sum = 0.0_real64
+    real(real64) :: land_precipitation_sum = 0.0_real64
+    real(real64) :: ocean_precipitation_sum = 0.0_real64
+    real(real64) :: land_evaporation_sum = 0.0_real64
+    real(real64) :: ocean_evaporation_sum = 0.0_real64
     real(real64) :: kinetic_energy_sum = 0.0_real64
     real(real64) :: surface_pressure_sum = 0.0_real64
     real(real64) :: incoming_shortwave_sum = 0.0_real64
@@ -122,12 +129,14 @@ contains
     class(radiation_monthly_accumulator), intent(inout) :: this
     type(radiation_diagnostics), intent(in) :: sample
 
-    if (.not. allocated(sample%surface_temperature) .or. .not. allocated(sample%surface_pressure) .or. &
+    if (.not. allocated(sample%surface_temperature) .or. .not. allocated(sample%deep_temperature) .or. &
+        .not. allocated(sample%surface_pressure) .or. &
         .not. allocated(sample%zonal_temperature) .or. .not. allocated(sample%zonal_u) .or. &
         .not. allocated(sample%zonal_v) .or. .not. allocated(sample%zonal_uv) .or. &
         .not. allocated(sample%zonal_vt)) error stop 'incomplete radiation diagnostic sample'
     if (.not. allocated(this%surface_temperature_sum)) then
       allocate (this%surface_temperature_sum, mold=sample%surface_temperature)
+      allocate (this%deep_temperature_sum, mold=sample%deep_temperature)
       allocate (this%surface_pressure_sum, mold=sample%surface_pressure)
       allocate (this%zonal_temperature_sum, mold=sample%zonal_temperature)
       allocate (this%zonal_u_sum, mold=sample%zonal_u)
@@ -152,6 +161,7 @@ contains
       error stop 'radiation diagnostic samples must all carry, or all lack, the moist fields'
     end if
     this%surface_temperature_sum = this%surface_temperature_sum + sample%surface_temperature
+    this%deep_temperature_sum = this%deep_temperature_sum + sample%deep_temperature
     this%surface_pressure_sum = this%surface_pressure_sum + sample%surface_pressure
     this%zonal_temperature_sum = this%zonal_temperature_sum + sample%zonal_temperature
     this%zonal_u_sum = this%zonal_u_sum + sample%zonal_u
@@ -176,6 +186,7 @@ contains
     if (this%sample_count <= 0) error stop 'radiation monthly accumulator is empty'
     inverse_count = 1.0_real64/real(this%sample_count, real64)
     means%surface_temperature = this%surface_temperature_sum*inverse_count
+    means%deep_temperature = this%deep_temperature_sum*inverse_count
     means%surface_pressure = this%surface_pressure_sum*inverse_count
     means%zonal_temperature = this%zonal_temperature_sum*inverse_count
     means%zonal_u = this%zonal_u_sum*inverse_count
@@ -197,6 +208,7 @@ contains
 
     this%sample_count = 0
     if (allocated(this%surface_temperature_sum)) this%surface_temperature_sum = 0.0_real64
+    if (allocated(this%deep_temperature_sum)) this%deep_temperature_sum = 0.0_real64
     if (allocated(this%surface_pressure_sum)) this%surface_pressure_sum = 0.0_real64
     if (allocated(this%zonal_temperature_sum)) this%zonal_temperature_sum = 0.0_real64
     if (allocated(this%zonal_u_sum)) this%zonal_u_sum = 0.0_real64
@@ -224,6 +236,12 @@ contains
     this%atmospheric_temperature_sum = this%atmospheric_temperature_sum + sample%mean_atmospheric_temperature
     this%surface_temperature_sum = this%surface_temperature_sum + sample%mean_surface_temperature
     this%deep_temperature_sum = this%deep_temperature_sum + sample%mean_deep_temperature
+    this%land_surface_temperature_sum = this%land_surface_temperature_sum + sample%mean_land_surface_temperature
+    this%ocean_surface_temperature_sum = this%ocean_surface_temperature_sum + sample%mean_ocean_surface_temperature
+    this%land_precipitation_sum = this%land_precipitation_sum + sample%mean_land_precipitation
+    this%ocean_precipitation_sum = this%ocean_precipitation_sum + sample%mean_ocean_precipitation
+    this%land_evaporation_sum = this%land_evaporation_sum + sample%mean_land_evaporation
+    this%ocean_evaporation_sum = this%ocean_evaporation_sum + sample%mean_ocean_evaporation
     this%kinetic_energy_sum = this%kinetic_energy_sum + sample%mean_kinetic_energy
     this%surface_pressure_sum = this%surface_pressure_sum + sample%mean_surface_pressure
     this%incoming_shortwave_sum = this%incoming_shortwave_sum + sample%mean_incoming_shortwave
@@ -260,6 +278,12 @@ contains
     means%mean_atmospheric_temperature = this%atmospheric_temperature_sum*inverse_count
     means%mean_surface_temperature = this%surface_temperature_sum*inverse_count
     means%mean_deep_temperature = this%deep_temperature_sum*inverse_count
+    means%mean_land_surface_temperature = this%land_surface_temperature_sum*inverse_count
+    means%mean_ocean_surface_temperature = this%ocean_surface_temperature_sum*inverse_count
+    means%mean_land_precipitation = this%land_precipitation_sum*inverse_count
+    means%mean_ocean_precipitation = this%ocean_precipitation_sum*inverse_count
+    means%mean_land_evaporation = this%land_evaporation_sum*inverse_count
+    means%mean_ocean_evaporation = this%ocean_evaporation_sum*inverse_count
     means%mean_kinetic_energy = this%kinetic_energy_sum*inverse_count
     means%mean_surface_pressure = this%surface_pressure_sum*inverse_count
     means%mean_incoming_shortwave = this%incoming_shortwave_sum*inverse_count
@@ -288,6 +312,12 @@ contains
     this%atmospheric_temperature_sum = 0.0_real64
     this%surface_temperature_sum = 0.0_real64
     this%deep_temperature_sum = 0.0_real64
+    this%land_surface_temperature_sum = 0.0_real64
+    this%ocean_surface_temperature_sum = 0.0_real64
+    this%land_precipitation_sum = 0.0_real64
+    this%ocean_precipitation_sum = 0.0_real64
+    this%land_evaporation_sum = 0.0_real64
+    this%ocean_evaporation_sum = 0.0_real64
     this%kinetic_energy_sum = 0.0_real64
     this%surface_pressure_sum = 0.0_real64
     this%incoming_shortwave_sum = 0.0_real64

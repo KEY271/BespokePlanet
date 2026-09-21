@@ -10,7 +10,10 @@ module radiation_case
   use dry_physics_config, only: dry_model_physics_config, radiation_days_per_year, radiation_orbital_period
   use dry_atmosphere, only: dry_atmosphere_solver
   use dry_case_initial_conditions, only: radiation_case_physics, slab_ocean_case_physics, moist_case_physics, &
-                                         radiation_case_planet, set_radiation_case_state
+                                         land_sea_case_physics, radiation_case_planet, set_radiation_case_state, &
+                                         set_land_sea_case_state
+  use topography, only: topography_config, topography_diagnostics, generate_topography
+  use field_binary_writer, only: write_field
   use dry_radiation, only: radiation_diagnostics, radiation_calendar_date
   use radiation_diagnostics_collector, only: radiation_case_diagnostics, radiation_monthly_means
   use filesystem, only: make_directory
@@ -21,14 +24,14 @@ module radiation_case
                           elapsed_seconds
   implicit none
   private
-  public :: run_radiation_case, run_slab_ocean_case, run_moist_case
+  public :: run_radiation_case, run_slab_ocean_case, run_moist_case, run_land_case, run_land_t63_case
 
   real(real64), parameter :: radiation_time_step = dt
   integer, parameter :: radiation_number_of_years = 5
   !> The moist case is first run at a lower resolution than the other cases (docs/cases/moist.md).
   integer, parameter, public :: moist_case_truncation = 31
 
-  integer, parameter :: ground_variant = 1, slab_ocean_variant = 2, moist_variant = 3
+  integer, parameter :: ground_variant = 1, slab_ocean_variant = 2, moist_variant = 3, land_variant = 4
 
 contains
 
@@ -56,10 +59,33 @@ contains
     call run_radiative_surface_case(context, transform, nlon, moist_variant)
   end subroutine run_moist_case
 
-  subroutine run_radiative_surface_case(context, transform, nlon, variant)
+  subroutine run_land_case(context)
+    type(case_context), intent(inout) :: context
+    call run_land_case_at_truncation(context, 31)
+  end subroutine run_land_case
+
+  subroutine run_land_t63_case(context)
+    type(case_context), intent(inout) :: context
+    call run_land_case_at_truncation(context, 63)
+  end subroutine run_land_t63_case
+
+  subroutine run_land_case_at_truncation(context, truncation)
+    type(case_context), intent(inout) :: context
+    integer, intent(in) :: truncation
+    type(harmonic_transform) :: transform
+    integer, allocatable :: nlon(:)
+
+    call ensure_context(context)
+    call transform%init(truncation)
+    nlon = transform%get_nlon()
+    call run_radiative_surface_case(context, transform, nlon, land_variant, truncation)
+  end subroutine run_land_case_at_truncation
+
+  subroutine run_radiative_surface_case(context, transform, nlon, variant, requested_truncation)
     type(case_context), intent(inout) :: context
     type(harmonic_transform), intent(inout) :: transform
     integer, intent(in) :: nlon(:), variant
+    integer, intent(in), optional :: requested_truncation
     type(dry_atmosphere_solver) :: solver
     type(model_numerics_config) :: numerics
     type(dry_model_physics_config) :: physics
@@ -68,6 +94,10 @@ contains
     type(radiation_diagnostics) :: sample, daily_means
     type(radiation_monthly_means) :: monthly_means
     type(radiation_output_options) :: options
+    type(topography_config) :: terrain
+    type(topography_diagnostics) :: terrain_diagnostics
+    real(real64), allocatable :: land_fraction(:, :), analytic_height(:, :), truncated_height(:, :)
+    complex(real64), allocatable :: surface_geopotential(:, :)
     real(real64), allocatable :: pressure_half(:), delta_pressure(:), layer_l(:), alpha(:)
     real(real64), allocatable :: reference_temperature(:), a_half(:), b_half(:)
     character(len=:), allocatable :: case_directory, case_name
@@ -96,6 +126,20 @@ contains
       numerics%truncation = moist_case_truncation
       options%include_deep_temperature = .false.
       options%include_moisture = .true.
+    case (land_variant)
+      if (.not. present(requested_truncation)) error stop 'land case truncation is required'
+      physics = land_sea_case_physics()
+      numerics%truncation = requested_truncation
+      if (requested_truncation == 31) then
+        case_name = 'moist_land_sea_t31'
+      else if (requested_truncation == 63) then
+        case_name = 'moist_land_sea_t63'
+      else
+        error stop 'land case supports only T31 and T63'
+      end if
+      options%include_deep_temperature = .true.
+      options%include_moisture = .true.
+      options%include_land_sea = .true.
     case default
       error stop 'unknown radiative surface case variant'
     end select
@@ -110,7 +154,15 @@ contains
     call make_directory(case_directory)
     call initialize_radiation_daily_output(case_directory, options)
     call solver%init_with_config(numerics)
-    call set_radiation_case_state(solver, transform, physics, planet)
+    if (variant == land_variant) then
+      call generate_topography(transform, terrain, land_fraction, analytic_height, surface_geopotential, &
+                               truncated_height, terrain_diagnostics)
+      call set_land_sea_case_state(solver, transform, physics, planet, surface_geopotential, land_fraction)
+      call write_field(trim(case_directory)//'/land_fraction.bin', nlon, land_fraction)
+      call write_field(trim(case_directory)//'/surface_height.bin', nlon, truncated_height)
+    else
+      call set_radiation_case_state(solver, transform, physics, planet)
+    end if
     call diagnostics%reset()
     call write_current_radiation_snapshot(solver, case_directory, 1, nlon, options)
     number_of_steps = nint(radiation_duration/numerics%time_step)
@@ -166,11 +218,19 @@ contains
     elapsed_wall_seconds = elapsed_seconds(start_count)
     call solver%get_reference_atmosphere(pressure_half, delta_pressure, layer_l, alpha, &
                                          reference_temperature, a_half, b_half)
-    call write_radiation_metadata(case_directory, case_name, physics, planet, &
-                                  numerics%truncation, numerics%time_step, radiation_duration, number_of_steps, &
-                                  maximum_cfl, elapsed_wall_seconds, nlon, transform%mu, &
-                                  pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
-                                  a_half, b_half, options)
+    if (variant == land_variant) then
+      call write_radiation_metadata(case_directory, case_name, physics, planet, &
+                                    numerics%truncation, numerics%time_step, radiation_duration, number_of_steps, &
+                                    maximum_cfl, elapsed_wall_seconds, nlon, transform%mu, &
+                                    pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
+                                    a_half, b_half, options, terrain, terrain_diagnostics)
+    else
+      call write_radiation_metadata(case_directory, case_name, physics, planet, &
+                                    numerics%truncation, numerics%time_step, radiation_duration, number_of_steps, &
+                                    maximum_cfl, elapsed_wall_seconds, nlon, transform%mu, &
+                                    pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
+                                    a_half, b_half, options)
+    end if
   end subroutine run_radiative_surface_case
 
   subroutine write_current_radiation_snapshot(solver, case_directory, year, ring_nlon, options)
@@ -181,6 +241,7 @@ contains
     complex(real64), allocatable :: zeta_spectral(:, :, :), delta_spectral(:, :, :)
     complex(real64), allocatable :: temperature_spectral(:, :, :), log_ps_spectral(:, :)
     complex(real64), allocatable :: humidity_spectral(:, :, :), surface_temperature_spectral(:, :)
+    complex(real64), allocatable :: deep_temperature_spectral(:, :)
     real(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     real(real64), allocatable :: surface_pressure(:, :), log_surface_pressure(:, :)
     real(real64), allocatable :: u(:, :, :), v(:, :, :), humidity(:, :, :)
@@ -189,7 +250,8 @@ contains
     if (options%include_moisture) then
       call solver%get_spectral_state(zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
                                      specific_humidity=humidity_spectral, &
-                                     surface_temperature=surface_temperature_spectral)
+                                     surface_temperature=surface_temperature_spectral, &
+                                     deep_temperature=deep_temperature_spectral)
       call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
                              surface_temperature=surface_temperature, deep_temperature=deep_temperature, &
                              specific_humidity=humidity)
@@ -199,15 +261,17 @@ contains
         zeta, delta, temperature, u, v, log_surface_pressure, surface_temperature, deep_temperature, &
         options, humidity_spectral=humidity_spectral, humidity=humidity, &
         surface_temperature_spectral=surface_temperature_spectral, time_seconds=solver%get_time(), &
-        step=solver%get_step())
+        step=solver%get_step(), deep_temperature_spectral=deep_temperature_spectral)
     else
-      call solver%get_spectral_state(zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral)
+      call solver%get_spectral_state(zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
+                                     deep_temperature=deep_temperature_spectral)
       call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
                              surface_temperature=surface_temperature, deep_temperature=deep_temperature)
       log_surface_pressure = log(surface_pressure)
       call write_radiation_yearly_snapshot(case_directory, year, ring_nlon, &
         zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
-        zeta, delta, temperature, u, v, log_surface_pressure, surface_temperature, deep_temperature, options)
+        zeta, delta, temperature, u, v, log_surface_pressure, surface_temperature, deep_temperature, options, &
+        deep_temperature_spectral=deep_temperature_spectral)
     end if
   end subroutine write_current_radiation_snapshot
 

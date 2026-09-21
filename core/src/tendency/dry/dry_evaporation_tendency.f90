@@ -24,13 +24,19 @@ contains
     type(radiation_config), intent(in) :: surface
     type(dry_workspace_type), intent(inout) :: workspace
     integer :: i, j, levels
-    real(real64) :: evaporation, lowest_thickness
+    real(real64) :: evaporation, lowest_thickness, surface_wetness
 
     levels = workspace%number_of_levels
-    !$omp parallel do default(shared) private(i, j, evaporation, lowest_thickness) schedule(dynamic, 2)
+    !$omp parallel do default(shared) private(i, j, evaporation, lowest_thickness, surface_wetness) schedule(dynamic, 2)
     do j = 1, workspace%ny
       do i = 1, workspace%ring_nlon(j)
-        evaporation = surface_evaporation_flux(surface, config%surface_wetness, &
+        if (surface%land_sea_mixing_enabled) then
+          surface_wetness = workspace%land_fraction(i, j)*config%land_surface_wetness + &
+            (1.0_real64 - workspace%land_fraction(i, j))*config%ocean_surface_wetness
+        else
+          surface_wetness = config%surface_wetness
+        end if
+        evaporation = surface_evaporation_flux(surface, surface_wetness, &
           workspace%previous_pressure_half(i, j, :), workspace%previous_temperature_grid(i, j, levels), &
           workspace%previous_humidity_grid(i, j, levels), workspace%previous_surface_temperature_grid(i, j), &
           workspace%previous_u(i, j, levels), workspace%previous_v(i, j, levels))

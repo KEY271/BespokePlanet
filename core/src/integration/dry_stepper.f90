@@ -49,7 +49,7 @@ contains
   !> sample evaluated at the state this step started from.
   subroutine advance_dry(this, transform, coordinate, gravity_wave, numerics, hyperdiffusion, planet, &
                          physics, workspace, surface_geopotential, step_number, previous, current, &
-                         maximum_speed, diagnostics)
+                         land_fraction, maximum_speed, diagnostics)
     class(dry_stepper_type), intent(inout) :: this
     type(harmonic_transform), intent(inout) :: transform
     type(hybrid_sigma_coordinate), intent(in) :: coordinate
@@ -60,6 +60,7 @@ contains
     type(dry_model_physics_config), intent(in) :: physics
     type(dry_workspace_type), intent(inout) :: workspace
     complex(real64), intent(in) :: surface_geopotential(0:, 0:)
+    real(real64), intent(in) :: land_fraction(:, :)
     integer, intent(inout) :: step_number
     type(dry_state_type), intent(inout) :: previous, current
     real(real64), intent(out) :: maximum_speed
@@ -76,17 +77,17 @@ contains
     if (step_number == 0) then
       call integration_step(transform, coordinate, gravity_wave, numerics, hyperdiffusion, planet, &
         0.25_real64*time_step, current, current, 0.0_real64, physics, workspace, surface_geopotential, &
-        collect_diagnostics, .false., this%rhs, this%candidate, this%half, this%filtered, maximum_speed, &
+        land_fraction, collect_diagnostics, .false., this%rhs, this%candidate, this%half, this%filtered, maximum_speed, &
         diagnostics)
       call integration_step(transform, coordinate, gravity_wave, numerics, hyperdiffusion, planet, &
         0.5_real64*time_step, current, this%half, 0.5_real64*time_step, physics, workspace, &
-        surface_geopotential, .false., .true., this%rhs, this%candidate, this%next, this%filtered, &
+        surface_geopotential, land_fraction, .false., .true., this%rhs, this%candidate, this%next, this%filtered, &
         half_step_maximum_speed)
       call copy_dry_state(current, previous)
     else
       call integration_step(transform, coordinate, gravity_wave, numerics, hyperdiffusion, planet, &
         time_step, previous, current, real(step_number, real64)*time_step, physics, workspace, &
-        surface_geopotential, collect_diagnostics, .true., this%rhs, this%candidate, this%next, &
+        surface_geopotential, land_fraction, collect_diagnostics, .true., this%rhs, this%candidate, this%next, &
         this%filtered, maximum_speed, diagnostics)
       call swap_dry_states(previous, this%filtered)
     end if
@@ -96,7 +97,7 @@ contains
 
   subroutine integration_step(transform, coordinate, gravity_wave, numerics, hyperdiffusion, planet, interval, &
                               previous, current, evaluation_time, physics, workspace, surface_geopotential, &
-                              collect_diagnostics, apply_raw, rhs, candidate, next, filtered, &
+                              land_fraction, collect_diagnostics, apply_raw, rhs, candidate, next, filtered, &
                               maximum_speed, diagnostics)
     type(harmonic_transform), intent(inout) :: transform
     type(hybrid_sigma_coordinate), intent(in) :: coordinate
@@ -109,6 +110,7 @@ contains
     type(dry_model_physics_config), intent(in) :: physics
     type(dry_workspace_type), intent(inout) :: workspace
     complex(real64), intent(in) :: surface_geopotential(0:, 0:)
+    real(real64), intent(in) :: land_fraction(:, :)
     logical, intent(in) :: collect_diagnostics, apply_raw
     type(dry_tendency_type), intent(inout) :: rhs
     type(dry_state_type), intent(inout) :: candidate, next, filtered
@@ -124,10 +126,11 @@ contains
       if (.not. present(diagnostics)) error stop 'dry stepper diagnostics output is required'
       call evaluate_dry_tendency(transform, truncation, coordinate, planet, current, previous, &
         surface_geopotential, physics, workspace, evaluation_time, centered_interval, rhs, maximum_speed, &
-        diagnostics)
+        diagnostics, land_fraction)
     else
       call evaluate_dry_tendency(transform, truncation, coordinate, planet, current, previous, &
-        surface_geopotential, physics, workspace, evaluation_time, centered_interval, rhs, maximum_speed)
+        surface_geopotential, physics, workspace, evaluation_time, centered_interval, rhs, maximum_speed, &
+        land_fraction=land_fraction)
     end if
 
     ! Vorticity, specific humidity and the surface temperatures have no gravity-wave part

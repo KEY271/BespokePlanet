@@ -9,7 +9,7 @@ test:
     cd "{{ root }}/core" && fpm test --profile release --flag "{{ fflags }}" --link-flag "$(pkg-config --libs-only-L fftw3)"
 
 # Run the model in release mode (equation: shallow-water, barotropic, dry, held-suarez,
-# radiation, slab-ocean, moist, or all).
+# radiation, slab-ocean, moist, land, land-t63, or all).
 run equation="dry":
     cd "{{ root }}/core" && fpm run --profile release --flag "{{ fflags }}" --link-flag "$(pkg-config --libs-only-L fftw3)" -- "{{ equation }}"
 

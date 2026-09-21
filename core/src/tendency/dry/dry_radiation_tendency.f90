@@ -37,7 +37,19 @@ contains
       do i = 1, workspace%ring_nlon(j)
         longitude = 2.0_real64*acos(-1.0_real64)*real(i - 1, real64)/real(workspace%ring_nlon(j), real64)
         if (moisture_enabled) then
-          call radiation_tendency(config, workspace%previous_pressure_half(i, j, :), &
+          if (config%land_sea_mixing_enabled) then
+            call radiation_tendency(config, workspace%previous_pressure_half(i, j, :), &
+              workspace%previous_temperature_grid(i, j, :), &
+              workspace%previous_surface_temperature_grid(i, j), &
+              workspace%previous_deep_temperature_grid(i, j), &
+              workspace%previous_u(i, j, levels), workspace%previous_v(i, j, levels), transform_mu(j), &
+              longitude, workspace%evaluation_time, temperature_contribution, surface_contribution, &
+              deep_contribution, incoming_shortwave, reflected_shortwave, outgoing_longwave, &
+              latent_heat_flux=workspace%latent_heat_flux(i, j), &
+              specific_humidity=workspace%previous_humidity_grid(i, j, :), &
+              land_fraction=workspace%land_fraction(i, j))
+          else
+            call radiation_tendency(config, workspace%previous_pressure_half(i, j, :), &
             workspace%previous_temperature_grid(i, j, :), &
             workspace%previous_surface_temperature_grid(i, j), &
             workspace%previous_deep_temperature_grid(i, j), &
@@ -46,8 +58,20 @@ contains
             deep_contribution, incoming_shortwave, reflected_shortwave, outgoing_longwave, &
             latent_heat_flux=workspace%latent_heat_flux(i, j), &
             specific_humidity=workspace%previous_humidity_grid(i, j, :))
+          end if
         else
-          call radiation_tendency(config, workspace%previous_pressure_half(i, j, :), &
+          if (config%land_sea_mixing_enabled) then
+            call radiation_tendency(config, workspace%previous_pressure_half(i, j, :), &
+              workspace%previous_temperature_grid(i, j, :), &
+              workspace%previous_surface_temperature_grid(i, j), &
+              workspace%previous_deep_temperature_grid(i, j), &
+              workspace%previous_u(i, j, levels), workspace%previous_v(i, j, levels), transform_mu(j), &
+              longitude, workspace%evaluation_time, temperature_contribution, surface_contribution, &
+              deep_contribution, incoming_shortwave, reflected_shortwave, outgoing_longwave, &
+              latent_heat_flux=workspace%latent_heat_flux(i, j), &
+              land_fraction=workspace%land_fraction(i, j))
+          else
+            call radiation_tendency(config, workspace%previous_pressure_half(i, j, :), &
             workspace%previous_temperature_grid(i, j, :), &
             workspace%previous_surface_temperature_grid(i, j), &
             workspace%previous_deep_temperature_grid(i, j), &
@@ -55,6 +79,7 @@ contains
             longitude, workspace%evaluation_time, temperature_contribution, surface_contribution, &
             deep_contribution, incoming_shortwave, reflected_shortwave, outgoing_longwave, &
             latent_heat_flux=workspace%latent_heat_flux(i, j))
+          end if
         end if
         workspace%forcing_temperature(i, j, :) = workspace%forcing_temperature(i, j, :) + temperature_contribution
         workspace%forcing_surface_temperature(i, j) = workspace%forcing_surface_temperature(i, j) + &

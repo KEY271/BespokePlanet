@@ -15,6 +15,7 @@ module radiation_case_output
   use moist_thermodynamics, only: water_vapor_gas_constant, latent_heat_of_condensation, &
                                   reference_saturation_vapor_pressure, saturation_reference_temperature, &
                                   dry_air_specific_heat
+  use topography, only: topography_config, topography_diagnostics
   implicit none
   private
 
@@ -23,11 +24,12 @@ module radiation_case_output
   public :: write_radiation_monthly_output, write_radiation_yearly_snapshot
   public :: write_radiation_metadata
 
-  !> Which optional fields a case writes: the deep ground temperature exists only
-  !> with the two-layer ground, the water fields only in the moist case.
+  !> Which optional fields a case writes: the deep ground temperature exists in
+  !> the ground and mixed land--sea cases, and water fields in moist cases.
   type :: radiation_output_options
     logical :: include_deep_temperature = .true.
     logical :: include_moisture = .false.
+    logical :: include_land_sea = .false.
   end type radiation_output_options
 
   !> Precipitation and evaporation are aggregated in kg m^-2 s^-1 and written in mm day^-1.
@@ -54,6 +56,11 @@ contains
                'precipitable_water_kg_m-2,signed_column_water_kg_m-2,negative_column_water_kg_m-2,'// &
                'maximum_wind_speed_m_s-1,maximum_wind_longitude_deg,maximum_wind_latitude_deg,'// &
                'maximum_wind_level,maximum_wind_eta'
+    end if
+    if (options%include_land_sea) then
+      header = header//',mean_land_surface_temperature_k,mean_ocean_surface_temperature_k,'// &
+        'land_precipitation_mm_day-1,ocean_precipitation_mm_day-1,'// &
+        'land_evaporation_mm_day-1,ocean_evaporation_mm_day-1'
     end if
     call write_csv_header(trim(case_directory)//'/daily_global.csv', header)
   end subroutine initialize_radiation_daily_output
@@ -86,6 +93,14 @@ contains
             csv_real(means%maximum_wind_longitude_degrees)//','//csv_real(means%maximum_wind_latitude_degrees)//','// &
             csv_integer(means%maximum_wind_level)//','//csv_real(means%maximum_wind_eta)
     end if
+    if (options%include_land_sea) then
+      row = row//','//csv_real(means%mean_land_surface_temperature)//','// &
+        csv_real(means%mean_ocean_surface_temperature)//','// &
+        csv_real(mm_per_day*means%mean_land_precipitation)//','// &
+        csv_real(mm_per_day*means%mean_ocean_precipitation)//','// &
+        csv_real(mm_per_day*means%mean_land_evaporation)//','// &
+        csv_real(mm_per_day*means%mean_ocean_evaporation)
+    end if
     call append_csv_row(trim(case_directory)//'/daily_global.csv', row)
   end subroutine append_radiation_daily_output
 
@@ -117,6 +132,11 @@ contains
                      nlon, means%surface_temperature)
     call write_field(trim(case_directory)//'/monthly_surface_pressure_m'//month_text//'.bin', &
                      nlon, means%surface_pressure)
+    if (options%include_deep_temperature) then
+      call check_finite('monthly_deep_temperature', nlon, means%deep_temperature)
+      call write_field(trim(case_directory)//'/monthly_deep_temperature_m'//month_text//'.bin', &
+                       nlon, means%deep_temperature)
+    end if
     call write_rectangular_field(trim(case_directory)//'/monthly_zonal_temperature_m'//month_text//'.bin', &
                                  means%zonal_temperature)
     call write_rectangular_field(trim(case_directory)//'/monthly_zonal_u_m'//month_text//'.bin', means%zonal_u)
@@ -149,7 +169,7 @@ contains
                                               log_surface_pressure_spectral, zeta, delta, temperature, &
                                               u, v, log_surface_pressure, surface_temperature, deep_temperature, &
                                               options, humidity_spectral, humidity, surface_temperature_spectral, &
-                                              time_seconds, step)
+                                              time_seconds, step, deep_temperature_spectral)
     character(*), intent(in) :: case_directory
     integer, intent(in) :: year
     integer, intent(in) :: nlon(:)
@@ -163,6 +183,7 @@ contains
     !> Moist-case additions: spectral and grid specific humidity, spectral surface
     !> (ocean) temperature and the model time of the snapshot.
     complex(real64), intent(in), optional :: humidity_spectral(0:, 0:, :), surface_temperature_spectral(0:, 0:)
+    complex(real64), intent(in), optional :: deep_temperature_spectral(0:, 0:)
     real(real64), intent(in), optional :: humidity(:, :, :), time_seconds
     integer, intent(in), optional :: step
     character(len=4) :: year_text
@@ -198,6 +219,11 @@ contains
     if (options%include_deep_temperature) then
       call write_field(trim(case_directory)//'/yearly_deep_temperature_y'//year_text//'.bin', &
                        nlon, deep_temperature)
+      if (present(deep_temperature_spectral)) then
+        call check_spectral_finite('yearly_deep_temperature_spectral', deep_temperature_spectral)
+        call write_spectral_field(trim(case_directory)//'/yearly_deep_temperature_spectral_y'// &
+                                  year_text//'.bin', deep_temperature_spectral)
+      end if
     end if
     call write_spectral_field(trim(case_directory)//'/yearly_log_surface_pressure_spectral_y'// &
                               year_text//'.bin', log_surface_pressure_spectral)
@@ -253,7 +279,7 @@ contains
   subroutine write_radiation_metadata(case_directory, case_name, physics, planet, truncation, time_step, &
                                       duration, number_of_steps, maximum_cfl, elapsed_wall_seconds, nlon, mu, &
                                       pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
-                                      a_half, b_half, options)
+                                      a_half, b_half, options, terrain, terrain_diagnostics)
     character(*), intent(in) :: case_directory, case_name
     type(dry_model_physics_config), intent(in) :: physics
     type(planet_config), intent(in) :: planet
@@ -263,6 +289,8 @@ contains
     real(real64), intent(in) :: mu(:), pressure_half(0:), delta_pressure(:), layer_l(:), alpha(:)
     real(real64), intent(in) :: reference_temperature(:), a_half(0:), b_half(0:)
     type(radiation_output_options), intent(in) :: options
+    type(topography_config), intent(in), optional :: terrain
+    type(topography_diagnostics), intent(in), optional :: terrain_diagnostics
     type(radiation_config) :: radiation
     integer :: unit
     real(real64) :: orbital_period
@@ -278,7 +306,10 @@ contains
     else
       write (unit, '(a)') '  "equation": "dry_hydrostatic_atmosphere",'
     end if
-    if (physics%moisture%enabled) then
+    if (radiation%land_sea_mixing_enabled) then
+      write (unit, '(a)') '  "initial_condition": '// &
+        '"pressure-coordinate Jablonowski-Williamson basic state over analytic truncated terrain, mixed land and ocean",'
+    else if (physics%moisture%enabled) then
       write (unit, '(a)') '  "initial_condition": '// &
         '"unperturbed Jablonowski-Williamson temperature, balanced wind, flat terrain, slab ocean, '// &
         'q = initial_relative_humidity * q_s(T, p) at and below initial_humidity_top_pressure, dry above",'
@@ -403,7 +434,60 @@ contains
       write (unit, '(a)') '    "physics_order": "dry adjustment, moist adjustment, condensation on provisional fields"'
       write (unit, '(a)') '  },'
     end if
-    if (radiation%slab_ocean_enabled) then
+    if (radiation%land_sea_mixing_enabled) then
+      if (.not. present(terrain) .or. .not. present(terrain_diagnostics)) then
+        error stop 'land-sea metadata requires terrain configuration and diagnostics'
+      end if
+      write (unit, '(a)') '  "land_sea_surface": {'
+      write (unit, '(a)') '    "mixing": "linear in land_fraction",'
+      write (unit, '(a,es24.16e3,a)') &
+        '    "land_surface_heat_capacity_j_m-2_k-1": ', radiation%surface_heat_capacity, ','
+      write (unit, '(a,es24.16e3,a)') '    "ocean_depth_m": ', radiation%slab_ocean_depth, ','
+      write (unit, '(a,es24.16e3,a)') '    "deep_heat_capacity_j_m-2_k-1": ', &
+        radiation%deep_ground_heat_capacity, ','
+      write (unit, '(a,es24.16e3,a)') '    "land_ground_exchange_w_m-2_k-1": ', &
+        radiation%ground_exchange_coefficient, ','
+      write (unit, '(a,es24.16e3,a)') '    "land_albedo": ', radiation%land_shortwave_albedo, ','
+      write (unit, '(a,es24.16e3,a)') '    "ocean_albedo": ', radiation%ocean_shortwave_albedo, ','
+      write (unit, '(a,es24.16e3,a)') '    "land_wetness": ', physics%evaporation%land_surface_wetness, ','
+      write (unit, '(a,es24.16e3)') '    "ocean_wetness": ', physics%evaporation%ocean_surface_wetness
+      write (unit, '(a)') '  },'
+      write (unit, '(a)') '  "topography": {'
+      write (unit, '(a)') '    "shapes": "three ellipse continents, one south polar cap, two mountain ranges",'
+      write (unit, '(a,es24.16e3,a)') '    "coast_width_degrees": ', terrain%coast_width_degrees, ','
+      write (unit, '(a,es24.16e3,a)') '    "base_height_m": ', terrain%base_height_metres, ','
+      write (unit, '(a,es24.16e3,4(",",es24.16e3),a)') '    "continent_a_lon_lat_a_b_theta_deg": [', &
+        terrain%continent_a%longitude_degrees, terrain%continent_a%latitude_degrees, &
+        terrain%continent_a%semi_axis_east_degrees, terrain%continent_a%semi_axis_north_degrees, &
+        terrain%continent_a%orientation_degrees, '],'
+      write (unit, '(a,es24.16e3,4(",",es24.16e3),a)') '    "continent_b_lon_lat_a_b_theta_deg": [', &
+        terrain%continent_b%longitude_degrees, terrain%continent_b%latitude_degrees, &
+        terrain%continent_b%semi_axis_east_degrees, terrain%continent_b%semi_axis_north_degrees, &
+        terrain%continent_b%orientation_degrees, '],'
+      write (unit, '(a,es24.16e3,4(",",es24.16e3),a)') '    "continent_c_lon_lat_a_b_theta_deg": [', &
+        terrain%continent_c%longitude_degrees, terrain%continent_c%latitude_degrees, &
+        terrain%continent_c%semi_axis_east_degrees, terrain%continent_c%semi_axis_north_degrees, &
+        terrain%continent_c%orientation_degrees, '],'
+      write (unit, '(a,es24.16e3,a,i0,a)') '    "south_polar_cap_edge_deg_sign": [', &
+        terrain%south_polar_cap%edge_latitude_degrees, ',', terrain%south_polar_cap%hemisphere_sign, '],'
+      write (unit, '(a,es24.16e3,5(",",es24.16e3),a)') '    "mountain_a_lon_lat_length_width_theta_height": [', &
+        terrain%mountain_a%longitude_degrees, terrain%mountain_a%latitude_degrees, &
+        terrain%mountain_a%length_degrees, terrain%mountain_a%half_width_degrees, &
+        terrain%mountain_a%orientation_degrees, terrain%mountain_a%height_metres, '],'
+      write (unit, '(a,es24.16e3,5(",",es24.16e3),a)') '    "mountain_b_lon_lat_length_width_theta_height": [', &
+        terrain%mountain_b%longitude_degrees, terrain%mountain_b%latitude_degrees, &
+        terrain%mountain_b%length_degrees, terrain%mountain_b%half_width_degrees, &
+        terrain%mountain_b%orientation_degrees, terrain%mountain_b%height_metres, '],'
+      write (unit, '(a,es24.16e3,a)') '    "global_land_fraction": ', &
+        terrain_diagnostics%global_land_fraction, ','
+      write (unit, '(a,es24.16e3,a)') '    "minimum_truncated_height_m": ', &
+        terrain_diagnostics%minimum_truncated_height_metres, ','
+      write (unit, '(a,es24.16e3,a)') '    "maximum_truncated_height_m": ', &
+        terrain_diagnostics%maximum_truncated_height_metres, ','
+      write (unit, '(a,es24.16e3)') '    "height_rms_error_m": ', &
+        terrain_diagnostics%height_rms_error_metres
+      write (unit, '(a)') '  },'
+    else if (radiation%slab_ocean_enabled) then
       write (unit, '(a)') '  "slab_ocean": {'
       write (unit, '(a,i0,a)') '    "number_of_layers": ', 1, ','
       write (unit, '(a,es24.16e3,a)') '    "depth_m": ', radiation%slab_ocean_depth, ','
@@ -480,10 +564,17 @@ contains
       '"monthly zonal mean of product minus product of monthly zonal means",'
     write (unit, '(a)') '    "monthly_surface_temperature": "monthly_surface_temperature_m{month:04d}.bin",'
     write (unit, '(a)') '    "monthly_surface_pressure": "monthly_surface_pressure_m{month:04d}.bin",'
+    if (options%include_deep_temperature) then
+      write (unit, '(a)') '    "monthly_deep_temperature": "monthly_deep_temperature_m{month:04d}.bin",'
+    end if
     if (options%include_moisture) then
       write (unit, '(a)') '    "monthly_precipitation": "monthly_precipitation_m{month:04d}.bin",'
       write (unit, '(a)') '    "monthly_evaporation": "monthly_evaporation_m{month:04d}.bin",'
       write (unit, '(a)') '    "monthly_precipitable_water": "monthly_precipitable_water_m{month:04d}.bin",'
+    end if
+    if (options%include_land_sea) then
+      write (unit, '(a)') '    "static_land_fraction": "land_fraction.bin",'
+      write (unit, '(a)') '    "static_surface_height": "surface_height.bin",'
     end if
     write (unit, '(a)') '    "monthly_zonal_fields": "monthly_{name}_m{month:04d}.bin",'
     write (unit, '(a)') '    "yearly_grid_level_fields": '// &
@@ -497,6 +588,10 @@ contains
       write (unit, '(a)') '    "yearly_spectral_surface_temperature": '// &
         '"yearly_surface_temperature_spectral_y{year:04d}.bin",'
       write (unit, '(a)') '    "yearly_time": "yearly_time_y{year:04d}.json",'
+    end if
+    if (options%include_deep_temperature) then
+      write (unit, '(a)') '    "yearly_spectral_deep_temperature": '// &
+        '"yearly_deep_temperature_spectral_y{year:04d}.bin",'
     end if
     write (unit, '(a)') '    "binary_dtype": "float64 little-endian",'
     write (unit, '(a)') '    "spectral_dtype": "complex128 as interleaved float64 real,imag",'
