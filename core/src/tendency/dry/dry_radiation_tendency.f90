@@ -27,6 +27,9 @@ contains
     real(real64) :: surface_contribution, deep_contribution
 
     levels = workspace%number_of_levels
+    !$omp parallel do default(shared) schedule(dynamic, 2) &
+    !$omp   private(i, j, longitude, incoming_shortwave, reflected_shortwave, outgoing_longwave) &
+    !$omp   private(temperature_contribution, surface_contribution, deep_contribution)
     do j = 1, workspace%ny
       do i = 1, workspace%ring_nlon(j)
         longitude = 2.0_real64*acos(-1.0_real64)*real(i - 1, real64)/real(workspace%ring_nlon(j), real64)
@@ -47,6 +50,7 @@ contains
         workspace%outgoing_longwave(i, j) = outgoing_longwave
       end do
     end do
+    !$omp end parallel do
   end subroutine add_dry_radiation_tendency
 
 end module dry_radiation_tendency

@@ -118,34 +118,45 @@ contains
     flux = config%solar_constant*max(0.0_real64, cos_zenith)
   end function shortwave_downward_flux
 
-  !> Fraction of the prescribed ozone column within one pressure layer.
-  pure real(real64) function ozone_layer_fraction(config, pressure_top, pressure_bottom) result(fraction)
+  !> 1/(erf(x_upper) - erf(x_lower)) of the whole prescribed ozone column, the
+  !> normalization every layer fraction shares.
+  pure real(real64) function ozone_profile_normalization(config) result(normalization)
     type(radiation_config), intent(in) :: config
-    real(real64), intent(in) :: pressure_top, pressure_bottom
-    real(real64) :: pressure_lower, pressure_upper, x_lower, x_upper
     real(real64) :: x_profile_lower, x_profile_upper
-    real(real64) :: ozone_pressure_lower_bound, ozone_pressure_upper_bound
-    real(real64) :: ozone_peak_pressure, ozone_log_pressure_width
 
-    ozone_pressure_lower_bound = config%ozone_pressure_lower_bound
-    ozone_pressure_upper_bound = config%ozone_pressure_upper_bound
-    ozone_peak_pressure = config%ozone_peak_pressure
-    ozone_log_pressure_width = config%ozone_log_pressure_width
-    pressure_lower = max(pressure_top, ozone_pressure_lower_bound)
-    pressure_upper = min(pressure_bottom, ozone_pressure_upper_bound)
+    x_profile_lower = log(config%ozone_pressure_lower_bound/config%ozone_peak_pressure)/ &
+      (sqrt(2.0_real64)*config%ozone_log_pressure_width)
+    x_profile_upper = log(config%ozone_pressure_upper_bound/config%ozone_peak_pressure)/ &
+      (sqrt(2.0_real64)*config%ozone_log_pressure_width)
+    normalization = 1.0_real64/(erf(x_profile_upper) - erf(x_profile_lower))
+  end function ozone_profile_normalization
+
+  !> Fraction of the prescribed ozone column within one pressure layer, given the
+  !> column normalization above.
+  pure real(real64) function ozone_layer_fraction_normalized(config, pressure_top, pressure_bottom, &
+                                                             normalization) result(fraction)
+    type(radiation_config), intent(in) :: config
+    real(real64), intent(in) :: pressure_top, pressure_bottom, normalization
+    real(real64) :: pressure_lower, pressure_upper, x_lower, x_upper
+
+    pressure_lower = max(pressure_top, config%ozone_pressure_lower_bound)
+    pressure_upper = min(pressure_bottom, config%ozone_pressure_upper_bound)
     if (pressure_upper <= pressure_lower) then
       fraction = 0.0_real64
       return
     end if
+    x_lower = log(pressure_lower/config%ozone_peak_pressure)/(sqrt(2.0_real64)*config%ozone_log_pressure_width)
+    x_upper = log(pressure_upper/config%ozone_peak_pressure)/(sqrt(2.0_real64)*config%ozone_log_pressure_width)
+    fraction = (erf(x_upper) - erf(x_lower))*normalization
+  end function ozone_layer_fraction_normalized
 
-    x_lower = log(pressure_lower/ozone_peak_pressure)/(sqrt(2.0_real64)*ozone_log_pressure_width)
-    x_upper = log(pressure_upper/ozone_peak_pressure)/(sqrt(2.0_real64)*ozone_log_pressure_width)
-    x_profile_lower = log(ozone_pressure_lower_bound/ozone_peak_pressure)/ &
-      (sqrt(2.0_real64)*ozone_log_pressure_width)
-    x_profile_upper = log(ozone_pressure_upper_bound/ozone_peak_pressure)/ &
-      (sqrt(2.0_real64)*ozone_log_pressure_width)
-    fraction = (erf(x_upper) - erf(x_lower))/ &
-      (erf(x_profile_upper) - erf(x_profile_lower))
+  !> Fraction of the prescribed ozone column within one pressure layer.
+  pure real(real64) function ozone_layer_fraction(config, pressure_top, pressure_bottom) result(fraction)
+    type(radiation_config), intent(in) :: config
+    real(real64), intent(in) :: pressure_top, pressure_bottom
+
+    fraction = ozone_layer_fraction_normalized(config, pressure_top, pressure_bottom, &
+                                               ozone_profile_normalization(config))
   end function ozone_layer_fraction
 
   !> Vertical UV optical depth of the prescribed ozone profile within one pressure layer.
@@ -217,6 +228,7 @@ contains
     real(real64) :: shortwave_downward, ultraviolet_downward, non_ultraviolet_downward, shortwave_absorbed
     real(real64) :: stefan_boltzmann_constant, dry_gravity_acceleration, dry_air_specific_heat
     real(real64) :: surface_heat_capacity, surface_latent_heat
+    real(real64) :: ozone_fraction(size(temperature)), ozone_normalization
     integer :: k, number_of_levels
 
     surface_latent_heat = 0.0_real64
@@ -239,14 +251,18 @@ contains
       error stop 'radiation surface heat capacity must be positive'
     end if
 
+    ! The ozone fraction of a layer is shared by its longwave and shortwave optical depths.
+    ozone_normalization = ozone_profile_normalization(config)
     do k = 1, number_of_levels
       pressure_thickness = pressure_half(k) - pressure_half(k - 1)
       if (pressure_thickness <= 0.0_real64) then
         error stop 'radiation pressures must increase downward'
       end if
+      ozone_fraction(k) = ozone_layer_fraction_normalized(config, pressure_half(k - 1), pressure_half(k), &
+                                                          ozone_normalization)
       layer_longwave_optical_depth = config%longwave_surface_optical_depth*pressure_thickness/ &
         (pressure_half(number_of_levels) - pressure_half(0)) + &
-        ozone_longwave_layer_optical_depth(config, pressure_half(k - 1), pressure_half(k))
+        config%ozone_longwave_optical_depth*ozone_fraction(k)
       transmission(k) = exp(-layer_longwave_optical_depth)
       emission(k) = (1.0_real64 - transmission(k))*stefan_boltzmann_constant*temperature(k)**4
     end do
@@ -273,7 +289,7 @@ contains
       non_ultraviolet_downward = (1.0_real64 - config%ultraviolet_shortwave_fraction)*incoming_shortwave
       ultraviolet_downward = config%ultraviolet_shortwave_fraction*incoming_shortwave
       do k = 1, number_of_levels
-        layer_shortwave_optical_depth = ozone_layer_optical_depth(config, pressure_half(k - 1), pressure_half(k))
+        layer_shortwave_optical_depth = config%ozone_shortwave_optical_depth*ozone_fraction(k)
         shortwave_transmission = exp(-layer_shortwave_optical_depth)
         shortwave_absorbed = ultraviolet_downward*(1.0_real64 - shortwave_transmission)
         pressure_thickness = pressure_half(k) - pressure_half(k - 1)

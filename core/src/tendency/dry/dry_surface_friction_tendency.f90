@@ -35,6 +35,7 @@ contains
     integer :: i, j, k
     real(real64) :: drag_u, drag_v
 
+    !$omp parallel do default(shared) private(i, j, k, drag_u, drag_v) schedule(static)
     do k = 1, levels
       do j = 1, ny
         do i = 1, ring_nlon(j)
@@ -45,6 +46,7 @@ contains
         end do
       end do
     end do
+    !$omp end parallel do
   end subroutine apply_surface_friction
 
 end module dry_surface_friction_tendency

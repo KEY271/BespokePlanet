@@ -25,7 +25,7 @@ module moist_thermodynamics
   real(real64), parameter, public :: lifting_condensation_temperature_tolerance = 1.0e-3_real64
 
   public :: saturation_vapor_pressure, saturation_specific_humidity
-  public :: saturation_specific_humidity_derivative
+  public :: saturation_specific_humidity_derivative, saturation_specific_humidity_and_derivative
   public :: virtual_temperature, equivalent_potential_temperature
   public :: saturated_log_equivalent_potential_temperature_derivative
   public :: lifting_condensation_level
@@ -67,6 +67,25 @@ contains
         pressure/(pressure - (1.0_real64 - gas_constant_ratio)*vapor_pressure)
     end if
   end function saturation_specific_humidity_derivative
+
+  !> q_s and dq_s/dT from one evaluation of the saturation vapour pressure, for the
+  !> Newton solves of the condensation and the moist convective adjustment.
+  pure subroutine saturation_specific_humidity_and_derivative(temperature, pressure, humidity, derivative)
+    real(real64), intent(in) :: temperature, pressure
+    real(real64), intent(out) :: humidity, derivative
+    real(real64) :: vapor_pressure, denominator
+
+    vapor_pressure = saturation_vapor_pressure(temperature)
+    if (pressure <= vapor_pressure) then
+      humidity = 1.0_real64
+      derivative = 0.0_real64
+    else
+      denominator = pressure - (1.0_real64 - gas_constant_ratio)*vapor_pressure
+      humidity = gas_constant_ratio*vapor_pressure/denominator
+      derivative = humidity*latent_heat_of_condensation/(water_vapor_gas_constant*temperature**2)* &
+        pressure/denominator
+    end if
+  end subroutine saturation_specific_humidity_and_derivative
 
   !> T_v = (1 + delta_v max(q, 0)) T.  Negative spectral-truncation humidity is clipped here.
   pure real(real64) function virtual_temperature(temperature, humidity) result(value)

@@ -6,7 +6,7 @@
 
 | 用途 | 必要なもの |
 | --- | --- |
-| ソルバー（`core/`） | Fortran コンパイラ（gfortran など）、[fpm](https://fpm.fortran-lang.org/)、FFTW3、LAPACK、BLAS、pkg-config |
+| ソルバー（`core/`） | Fortran コンパイラ（gfortran など、OpenMP 対応）、[fpm](https://fpm.fortran-lang.org/)、FFTW3、LAPACK、BLAS、pkg-config |
 | ビジュアライザ（`viz/`） | Python 3（外部パッケージ不要）、Node.js / npm（Three.js の取得に使用） |
 | タスクランナー | [just](https://github.com/casey/just) |
 | `scripts/check_hybrid_sigma.py` | matplotlib |
@@ -43,6 +43,8 @@ just run moist
 # ビジュアライザを起動し、http://127.0.0.1:8000 を開く
 just viz
 ```
+
+ソルバーはスペクトル変換の鉛直層ループと物理過程の格子列ループを OpenMP で並列化している。スレッド数は既定でコア数で、`OMP_NUM_THREADS=4 just run moist` のように環境変数で変えられる。スレッド数を変えても結果はビット単位で同一である。
 
 計算結果は `output/` に保存されます。ビジュアライザについて詳しくは [viz/README.md](./viz/README.md) を参照してください。
 

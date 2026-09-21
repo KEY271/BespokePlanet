@@ -58,6 +58,7 @@ module dry_tendency_workspace
     real(real64), allocatable :: previous_u(:, :, :), previous_v(:, :, :)
     real(real64), allocatable :: previous_log_ps(:, :), previous_ps(:, :)
     real(real64), allocatable :: previous_pressure_half(:, :, :), previous_alpha(:, :, :)
+    real(real64), allocatable :: previous_delta_p(:, :, :), previous_layer_l(:, :, :)
     !> Full-level pressure of the previous time level, shared by the Held-Suarez
     !> drag and relaxation so that neither recomputes it.
     real(real64), allocatable :: previous_full_level_pressure(:, :, :)
@@ -143,6 +144,7 @@ contains
     allocate (this%previous_log_ps(nx, ny), this%previous_ps(nx, ny))
     allocate (this%previous_pressure_half(nx, ny, 0:levels))
     allocate (this%previous_alpha(nx, ny, levels))
+    allocate (this%previous_delta_p(nx, ny, levels), this%previous_layer_l(nx, ny, levels))
     allocate (this%previous_full_level_pressure(nx, ny, levels))
     allocate (this%previous_surface_temperature_grid(nx, ny))
     allocate (this%previous_deep_temperature_grid(nx, ny))
@@ -163,6 +165,18 @@ contains
     this%humidity_grid = 0.0_real64
     this%previous_humidity_grid = 0.0_real64
     this%vertical_q = 0.0_real64
+    ! The ring-limited geometry loops leave the padding untouched, so define it once.
+    this%ps = 1.0_real64
+    this%previous_ps = 1.0_real64
+    this%pressure_half = 0.0_real64
+    this%delta_p = 1.0_real64
+    this%layer_l = 0.0_real64
+    this%alpha = 0.0_real64
+    this%previous_pressure_half = 0.0_real64
+    this%previous_alpha = 0.0_real64
+    this%previous_delta_p = 1.0_real64
+    this%previous_layer_l = 0.0_real64
+    this%previous_full_level_pressure = 1.0_real64
   end subroutine initialize_workspace
 
   !> Zeroes the grid-space right-hand side and the flux records.  Points outside a
@@ -198,6 +212,7 @@ contains
     complex(real64), intent(in) :: surface_geopotential(0:, 0:)
     type(dry_model_physics_config), intent(in) :: physics
     real(real64), intent(in) :: evaluation_time
+    real(real64), allocatable :: grid(:, :), grid_u(:, :), grid_v(:, :)
     integer :: k, levels
 
     levels = this%number_of_levels
@@ -214,68 +229,56 @@ contains
                                physics%convection%enabled .or. physics%moist_convection%enabled .or. &
                                physics%condensation%enabled .or. physics%evaporation%enabled
     this%held_suarez_grids_ready = physics%held_suarez%enabled .or. physics%surface_friction%enabled .or. &
-                                   physics%moist_convection%enabled .or. physics%condensation%enabled
+                                   physics%convection%enabled .or. physics%moist_convection%enabled .or. &
+                                   physics%condensation%enabled
     this%radiation_grids_ready = physics%radiation%enabled
     this%moisture_grids_ready = physics%moisture%enabled
     this%active_rotation_rate = rotation_rate
 
-    this%zeta_grid = 0.0_real64
-    this%delta_grid = 0.0_real64
-    this%temperature_grid = 0.0_real64
-    this%u = 0.0_real64
-    this%v = 0.0_real64
-    if (this%moisture_grids_ready) this%humidity_grid = 0.0_real64
+    ! Every level is transformed independently; the scratch arrays are private to the thread.
+    !$omp parallel do default(shared) private(k, grid, grid_u, grid_v) schedule(dynamic, 1)
     do k = 1, levels
-      call transform%spectral_to_grid(state%zeta(:, :, k), this%temporary_grid)
-      this%zeta_grid(:, :, k) = this%temporary_grid
-      call transform%spectral_to_grid(state%delta(:, :, k), this%temporary_grid)
-      this%delta_grid(:, :, k) = this%temporary_grid
-      call transform%spectral_to_grid(state%temperature(:, :, k), this%temporary_grid)
-      this%temperature_grid(:, :, k) = this%temporary_grid
+      call transform%spectral_to_grid(state%zeta(:, :, k), grid)
+      this%zeta_grid(:, :, k) = grid
+      call transform%spectral_to_grid(state%delta(:, :, k), grid)
+      this%delta_grid(:, :, k) = grid
+      call transform%spectral_to_grid(state%temperature(:, :, k), grid)
+      this%temperature_grid(:, :, k) = grid
       call diagnose_horizontal_velocity(transform, this%truncation, state%zeta(:, :, k), &
-                                        state%delta(:, :, k), this%temporary_u, this%temporary_v)
-      this%u(:, :, k) = this%temporary_u
-      this%v(:, :, k) = this%temporary_v
+                                        state%delta(:, :, k), grid_u, grid_v)
+      this%u(:, :, k) = grid_u
+      this%v(:, :, k) = grid_v
       if (this%moisture_grids_ready) then
-        call transform%spectral_to_grid(state%specific_humidity(:, :, k), this%temporary_grid)
-        this%humidity_grid(:, :, k) = this%temporary_grid
+        call transform%spectral_to_grid(state%specific_humidity(:, :, k), grid)
+        this%humidity_grid(:, :, k) = grid
         this%virtual_temperature_grid(:, :, k) = (1.0_real64 + virtual_temperature_coefficient* &
           max(this%humidity_grid(:, :, k), 0.0_real64))*this%temperature_grid(:, :, k)
       else
         this%virtual_temperature_grid(:, :, k) = this%temperature_grid(:, :, k)
       end if
       if (this%physics_grids_ready) then
-        call transform%spectral_to_grid(physics_state%temperature(:, :, k), this%temporary_grid)
-        this%previous_temperature_grid(:, :, k) = this%temporary_grid
+        call transform%spectral_to_grid(physics_state%temperature(:, :, k), grid)
+        this%previous_temperature_grid(:, :, k) = grid
         call diagnose_horizontal_velocity(transform, this%truncation, physics_state%zeta(:, :, k), &
-                                          physics_state%delta(:, :, k), this%temporary_u, this%temporary_v)
-        this%previous_u(:, :, k) = this%temporary_u
-        this%previous_v(:, :, k) = this%temporary_v
+                                          physics_state%delta(:, :, k), grid_u, grid_v)
+        this%previous_u(:, :, k) = grid_u
+        this%previous_v(:, :, k) = grid_v
         if (this%moisture_grids_ready) then
-          call transform%spectral_to_grid(physics_state%specific_humidity(:, :, k), this%temporary_grid)
-          this%previous_humidity_grid(:, :, k) = this%temporary_grid
+          call transform%spectral_to_grid(physics_state%specific_humidity(:, :, k), grid)
+          this%previous_humidity_grid(:, :, k) = grid
         end if
       end if
     end do
+    !$omp end parallel do
     call transform%spectral_to_grid(state%log_surface_pressure, this%log_ps)
-    this%ps = exp(this%log_ps)
+    call compute_layer_geometry(this%nx, this%ny, levels, this%ring_nlon, coordinate%a_half, coordinate%b_half, &
+                                this%log_ps, this%ps, this%pressure_half, this%delta_p, this%layer_l, this%alpha)
     if (this%physics_grids_ready) then
       call transform%spectral_to_grid(physics_state%log_surface_pressure, this%previous_log_ps)
-      this%previous_ps = exp(this%previous_log_ps)
-      do k = 0, levels
-        this%previous_pressure_half(:, :, k) = coordinate%a_half(k) + coordinate%b_half(k)*this%previous_ps
-      end do
-      do k = 1, levels
-        this%previous_alpha(:, :, k) = 1.0_real64 - this%previous_pressure_half(:, :, k - 1)* &
-          log(this%previous_pressure_half(:, :, k)/this%previous_pressure_half(:, :, k - 1))/ &
-          (this%previous_pressure_half(:, :, k) - this%previous_pressure_half(:, :, k - 1))
-      end do
-      if (this%held_suarez_grids_ready) then
-        do k = 1, levels
-          this%previous_full_level_pressure(:, :, k) = this%previous_pressure_half(:, :, k)* &
-                                                       exp(-this%previous_alpha(:, :, k))
-        end do
-      end if
+      call compute_layer_geometry(this%nx, this%ny, levels, this%ring_nlon, coordinate%a_half, coordinate%b_half, &
+                                  this%previous_log_ps, this%previous_ps, this%previous_pressure_half, &
+                                  this%previous_delta_p, this%previous_layer_l, this%previous_alpha, &
+                                  full_level_pressure=this%previous_full_level_pressure)
     end if
     if (this%radiation_grids_ready) then
       call transform%spectral_to_grid(state%surface_temperature, this%surface_temperature_grid)
@@ -286,20 +289,6 @@ contains
                                       this%previous_deep_temperature_grid)
     end if
     call transform%gradient_to_grid(state%log_surface_pressure, this%dlogps_dlambda, this%dlogps_dphi)
-
-    this%pressure_half = 0.0_real64
-    this%delta_p = 0.0_real64
-    this%layer_l = 0.0_real64
-    this%alpha = 0.0_real64
-    do k = 0, levels
-      this%pressure_half(:, :, k) = coordinate%a_half(k) + coordinate%b_half(k)*this%ps
-    end do
-    do k = 1, levels
-      this%delta_p(:, :, k) = this%pressure_half(:, :, k) - this%pressure_half(:, :, k - 1)
-      this%layer_l(:, :, k) = log(this%pressure_half(:, :, k)/this%pressure_half(:, :, k - 1))
-      this%alpha(:, :, k) = 1.0_real64 - this%pressure_half(:, :, k - 1)* &
-                            this%layer_l(:, :, k)/this%delta_p(:, :, k)
-    end do
 
     ! The surface geopotential is a fixed lower boundary condition, not a prognostic field.
     ! The hydrostatic integration uses the virtual temperature.
@@ -328,6 +317,51 @@ contains
                                              this%humidity_grid, this%mass_flux, this%vertical_q)
     end if
   end subroutine prepare_workspace
+
+  !> Surface pressure, half-level pressures and the layer geometry (dp, ln(p_k/p_{k-1}),
+  !> alpha and optionally the full-level pressure) at the grid points of every ring.
+  !> The padding beyond ring_nlon(j) is left untouched: it is never transformed or read.
+  !> Only these loops evaluate exp/log per grid point, so they stay ring-limited.
+  subroutine compute_layer_geometry(nx, ny, levels, ring_nlon, a_half, b_half, log_ps, ps, pressure_half, &
+                                    delta_p, layer_l, alpha, full_level_pressure)
+    integer, intent(in) :: nx, ny, levels, ring_nlon(ny)
+    real(real64), intent(in) :: a_half(0:levels), b_half(0:levels), log_ps(nx, ny)
+    real(real64), intent(inout) :: ps(nx, ny), pressure_half(nx, ny, 0:levels)
+    real(real64), intent(inout) :: delta_p(nx, ny, levels), layer_l(nx, ny, levels), alpha(nx, ny, levels)
+    real(real64), intent(inout), optional :: full_level_pressure(nx, ny, levels)
+    integer :: i, j, k
+    real(real64) :: thickness, log_ratio
+    logical :: with_full_level
+
+    with_full_level = present(full_level_pressure)
+
+    do j = 1, ny
+      do i = 1, ring_nlon(j)
+        ps(i, j) = exp(log_ps(i, j))
+      end do
+    end do
+    do k = 0, levels
+      do j = 1, ny
+        do i = 1, ring_nlon(j)
+          pressure_half(i, j, k) = a_half(k) + b_half(k)*ps(i, j)
+        end do
+      end do
+    end do
+    !$omp parallel do default(shared) private(i, j, k, thickness, log_ratio) schedule(static)
+    do k = 1, levels
+      do j = 1, ny
+        do i = 1, ring_nlon(j)
+          thickness = pressure_half(i, j, k) - pressure_half(i, j, k - 1)
+          log_ratio = log(pressure_half(i, j, k)/pressure_half(i, j, k - 1))
+          delta_p(i, j, k) = thickness
+          layer_l(i, j, k) = log_ratio
+          alpha(i, j, k) = 1.0_real64 - pressure_half(i, j, k - 1)*log_ratio/thickness
+          if (with_full_level) full_level_pressure(i, j, k) = pressure_half(i, j, k)*exp(-alpha(i, j, k))
+        end do
+      end do
+    end do
+    !$omp end parallel do
+  end subroutine compute_layer_geometry
 
   !> The grid loops below are separate procedures with explicit-shape dummies so that the
   !> compiler sees contiguous arrays that cannot alias, as it did when these were local

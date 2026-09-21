@@ -27,6 +27,7 @@ contains
     real(real64) :: evaporation, lowest_thickness
 
     levels = workspace%number_of_levels
+    !$omp parallel do default(shared) private(i, j, evaporation, lowest_thickness) schedule(dynamic, 2)
     do j = 1, workspace%ny
       do i = 1, workspace%ring_nlon(j)
         evaporation = surface_evaporation_flux(surface, config%surface_wetness, &
@@ -41,6 +42,7 @@ contains
         workspace%latent_heat_flux(i, j) = latent_heat_of_condensation*evaporation
       end do
     end do
+    !$omp end parallel do
   end subroutine add_dry_evaporation_tendency
 
 end module dry_evaporation_tendency

@@ -11,7 +11,7 @@ module dry_convection
   implicit none
   private
 
-  public :: dry_convective_adjustment_tendency
+  public :: dry_convective_adjustment_tendency, dry_convective_adjustment_from_levels
 
 contains
 
@@ -25,37 +25,17 @@ contains
     real(real64), intent(out) :: temperature_tendency(:)
     real(real64), intent(in), optional :: humidity(:)
     real(real64), intent(out), optional :: humidity_tendency(:)
-    real(real64), allocatable :: exner(:), delta_p(:), clipped_humidity(:)
-    real(real64), allocatable :: block_weight(:), block_enthalpy(:), block_water(:), block_mass(:)
-    integer, allocatable :: block_top(:), block_bottom(:)
-    real(real64) :: layer_log_pressure, alpha, merged_potential_temperature, merged_humidity
-    integer :: number_of_levels, number_of_blocks, k, block
-    logical :: moist
+    real(real64) :: exner(size(temperature)), delta_p(size(temperature))
+    real(real64) :: layer_log_pressure, alpha
+    integer :: number_of_levels, k
 
     number_of_levels = size(temperature)
-    moist = present(humidity)
-    if (moist .neqv. present(humidity_tendency)) then
-      error stop 'dry convective adjustment humidity and its tendency must be supplied together'
-    end if
-    if (number_of_levels < 1 .or. size(pressure_half) /= number_of_levels + 1 .or. &
-        size(temperature_tendency) /= number_of_levels) then
+    if (number_of_levels < 1 .or. size(pressure_half) /= number_of_levels + 1) then
       error stop 'dry convective adjustment column has inconsistent vertical dimensions'
     end if
-    if (moist) then
-      if (size(humidity) /= number_of_levels .or. size(humidity_tendency) /= number_of_levels) then
-        error stop 'dry convective adjustment humidity has inconsistent vertical dimensions'
-      end if
-    end if
-    if (any(pressure_half <= 0.0_real64) .or. any(temperature <= 0.0_real64)) then
+    if (any(pressure_half <= 0.0_real64)) then
       error stop 'dry convective adjustment column contains a nonphysical state'
     end if
-
-    allocate (exner(number_of_levels), delta_p(number_of_levels), clipped_humidity(number_of_levels))
-    allocate (block_weight(number_of_levels), block_enthalpy(number_of_levels))
-    allocate (block_water(number_of_levels), block_mass(number_of_levels))
-    allocate (block_top(number_of_levels), block_bottom(number_of_levels))
-    clipped_humidity = 0.0_real64
-    if (moist) clipped_humidity = max(humidity, 0.0_real64)
     do k = 1, number_of_levels
       delta_p(k) = pressure_half(k) - pressure_half(k - 1)
       if (delta_p(k) <= 0.0_real64) then
@@ -65,6 +45,44 @@ contains
       alpha = 1.0_real64 - pressure_half(k - 1)*layer_log_pressure/delta_p(k)
       exner(k) = (pressure_half(k)*exp(-alpha)/reference_surface_pressure)**dry_air_kappa
     end do
+    call dry_convective_adjustment_from_levels(config, delta_p, exner, temperature, temperature_tendency, &
+                                               humidity, humidity_tendency)
+  end subroutine dry_convective_adjustment_tendency
+
+  !> As above with the layer thicknesses and the Exner function (p_k/p_0)^kappa supplied.
+  subroutine dry_convective_adjustment_from_levels(config, delta_p, exner, temperature, temperature_tendency, &
+                                                   humidity, humidity_tendency)
+    type(convection_config), intent(in) :: config
+    real(real64), intent(in) :: delta_p(:), exner(:), temperature(:)
+    real(real64), intent(out) :: temperature_tendency(:)
+    real(real64), intent(in), optional :: humidity(:)
+    real(real64), intent(out), optional :: humidity_tendency(:)
+    real(real64), dimension(size(temperature)) :: clipped_humidity, block_weight, block_enthalpy, block_water, block_mass
+    integer, dimension(size(temperature)) :: block_top, block_bottom
+    real(real64) :: merged_potential_temperature, merged_humidity
+    integer :: number_of_levels, number_of_blocks, k, block
+    logical :: moist
+
+    number_of_levels = size(temperature)
+    moist = present(humidity)
+    if (moist .neqv. present(humidity_tendency)) then
+      error stop 'dry convective adjustment humidity and its tendency must be supplied together'
+    end if
+    if (number_of_levels < 1 .or. size(delta_p) /= number_of_levels .or. size(exner) /= number_of_levels .or. &
+        size(temperature_tendency) /= number_of_levels) then
+      error stop 'dry convective adjustment column has inconsistent vertical dimensions'
+    end if
+    if (moist) then
+      if (size(humidity) /= number_of_levels .or. size(humidity_tendency) /= number_of_levels) then
+        error stop 'dry convective adjustment humidity has inconsistent vertical dimensions'
+      end if
+    end if
+    if (any(temperature <= 0.0_real64)) then
+      error stop 'dry convective adjustment column contains a nonphysical state'
+    end if
+
+    clipped_humidity = 0.0_real64
+    if (moist) clipped_humidity = max(humidity, 0.0_real64)
 
     ! Pool adjacent unstable blocks while walking from the surface upward.  The
     ! stack is ordered from lower to upper atmosphere, so its last element is
@@ -113,6 +131,6 @@ contains
       if (moist) theta = (1.0_real64 + virtual_temperature_coefficient*block_water(index)/block_mass(index))*theta
     end function block_potential_temperature
 
-  end subroutine dry_convective_adjustment_tendency
+  end subroutine dry_convective_adjustment_from_levels
 
 end module dry_convection

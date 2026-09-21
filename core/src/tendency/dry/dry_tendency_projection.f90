@@ -29,6 +29,8 @@ contains
     complex(real64), allocatable :: temporary_spectral(:, :)
     integer :: k, n, m
 
+    !$omp parallel do default(shared) private(k, n, m, curl_spectral, divergence_spectral, temporary_spectral) &
+    !$omp   schedule(dynamic, 1)
     do k = 1, workspace%number_of_levels
       call flux_curl_divergence(transform, workspace%forcing_u(:, :, k), workspace%forcing_v(:, :, k), &
                                 curl_spectral, divergence_spectral)
@@ -57,6 +59,7 @@ contains
       call enforce_dry_spectral_field(rhs%temperature(:, :, k), truncation, .false.)
       call enforce_dry_spectral_field(rhs%specific_humidity(:, :, k), truncation, .false.)
     end do
+    !$omp end parallel do
 
     call transform%grid_to_spectral(workspace%forcing_log_ps, temporary_spectral)
     rhs%log_surface_pressure = temporary_spectral

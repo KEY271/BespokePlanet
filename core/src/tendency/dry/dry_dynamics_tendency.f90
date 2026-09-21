@@ -35,9 +35,12 @@ contains
     real(real64), intent(out) :: maximum_speed
     integer :: k, levels
     real(real64) :: maximum_speed_squared, level_maximum_speed_squared
+    real(real64), allocatable :: dxdlambda(:, :), dxdphi(:, :)
 
     levels = workspace%number_of_levels
     maximum_speed_squared = 0.0_real64
+    !$omp parallel do default(shared) private(k, level_maximum_speed_squared, dxdlambda, dxdphi) &
+    !$omp   reduction(max: maximum_speed_squared) schedule(dynamic, 1)
     do k = 1, levels
       call add_momentum_forcing(workspace%nx, workspace%ny, workspace%ring_nlon, transform%mu, &
         workspace%active_rotation_rate, workspace%zeta_grid(:, :, k), workspace%u(:, :, k), &
@@ -48,9 +51,9 @@ contains
         workspace%kinetic_geopotential(:, :, k), level_maximum_speed_squared)
       maximum_speed_squared = max(maximum_speed_squared, level_maximum_speed_squared)
 
-      call transform%gradient_to_grid(state%temperature(:, :, k), workspace%dtdlambda, workspace%dtdphi)
+      call transform%gradient_to_grid(state%temperature(:, :, k), dxdlambda, dxdphi)
       call add_thermodynamic_forcing(workspace%nx, workspace%ny, workspace%ring_nlon, transform%mu, &
-        workspace%u(:, :, k), workspace%v(:, :, k), workspace%dtdlambda, workspace%dtdphi, &
+        workspace%u(:, :, k), workspace%v(:, :, k), dxdlambda, dxdphi, &
         workspace%virtual_temperature_grid(:, :, k), workspace%pressure_gradient_u(:, :, k), &
         workspace%pressure_gradient_v(:, :, k), workspace%vertical_t(:, :, k), &
         workspace%layer_l(:, :, k), workspace%alpha(:, :, k), workspace%delta_p(:, :, k), &
@@ -58,12 +61,13 @@ contains
         workspace%forcing_temperature(:, :, k))
       if (workspace%moisture_grids_ready) then
         ! Water vapour is a tracer of the dynamics: -u.grad(q) - W_k(q), on the signed grid humidity.
-        call transform%gradient_to_grid(state%specific_humidity(:, :, k), workspace%dtdlambda, workspace%dtdphi)
+        call transform%gradient_to_grid(state%specific_humidity(:, :, k), dxdlambda, dxdphi)
         call add_scalar_advection(workspace%nx, workspace%ny, workspace%ring_nlon, transform%mu, &
-          workspace%u(:, :, k), workspace%v(:, :, k), workspace%dtdlambda, workspace%dtdphi, &
+          workspace%u(:, :, k), workspace%v(:, :, k), dxdlambda, dxdphi, &
           workspace%vertical_q(:, :, k), workspace%forcing_humidity(:, :, k))
       end if
     end do
+    !$omp end parallel do
     maximum_speed = sqrt(maximum_speed_squared)
 
     call add_surface_pressure_forcing(workspace%nx, workspace%ny, workspace%ring_nlon, &
