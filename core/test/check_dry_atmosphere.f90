@@ -26,7 +26,8 @@ program check_dry_atmosphere
                                 surface_friction_config, rayleigh_friction_config, convection_config, &
                                 radiation_days_per_year, radiation_orbital_period, radiation_planet_rotation_rate, &
                                 radiation_surface_heat_capacity
-  use dry_state, only: dry_state_type, dry_tendency_type, allocate_dry_state, allocate_dry_tendency
+  use dry_state, only: dry_state_type, dry_tendency_type, allocate_dry_state, allocate_dry_surface_fields, &
+                       allocate_dry_tendency
   use dry_tendency_workspace, only: dry_workspace_type
   use dry_tendency_evaluator, only: evaluate_dry_tendency
   implicit none
@@ -959,7 +960,7 @@ contains
     type(dry_model_physics_config) :: physics
     complex(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     complex(real64), allocatable :: log_ps(:, :), surface_geopotential(:, :), warm(:, :)
-    real(real64), allocatable :: warm_grid(:, :)
+    real(real64), allocatable :: warm_grid(:, :), lowest_grid(:, :)
     real(real64) :: speed_base, speed_held, speed_convective, speed_both
     real(real64) :: speed_radiative, speed_radiative_convective
     real(real64), parameter :: tolerance = 1.0e-10_real64
@@ -982,17 +983,20 @@ contains
     state%delta = delta
     state%temperature = temperature
     state%log_surface_pressure = log_ps
-    state%surface_temperature = temperature(:, :, levels)
-    ! A deep ground colder than the surface gives the ground heat flux, and so the
-    ! deep temperature tendency, something to do.
-    state%deep_temperature = temperature(:, :, levels) - warm
+    ! The surface temperatures are grid fields: the surface starts at the lowest-level
+    ! temperature, and a deep ground colder than the surface gives the ground heat
+    ! flux, and so the deep temperature tendency, something to do.
+    call transform%spectral_to_grid(temperature(:, :, levels), lowest_grid)
+    call allocate_dry_surface_fields(state, size(lowest_grid, 1), size(lowest_grid, 2))
+    state%surface_temperature = lowest_grid
+    state%deep_temperature = lowest_grid - warm_grid
     call workspace%initialize(transform, truncation, levels)
-    call allocate_dry_tendency(base, truncation, levels)
-    call allocate_dry_tendency(held, truncation, levels)
-    call allocate_dry_tendency(convective, truncation, levels)
-    call allocate_dry_tendency(held_and_convective, truncation, levels)
-    call allocate_dry_tendency(radiative, truncation, levels)
-    call allocate_dry_tendency(radiative_and_convective, truncation, levels)
+    call allocate_dry_tendency(base, truncation, levels, workspace%nx, workspace%ny)
+    call allocate_dry_tendency(held, truncation, levels, workspace%nx, workspace%ny)
+    call allocate_dry_tendency(convective, truncation, levels, workspace%nx, workspace%ny)
+    call allocate_dry_tendency(held_and_convective, truncation, levels, workspace%nx, workspace%ny)
+    call allocate_dry_tendency(radiative, truncation, levels, workspace%nx, workspace%ny)
+    call allocate_dry_tendency(radiative_and_convective, truncation, levels, workspace%nx, workspace%ny)
 
     physics = dry_model_physics_config()
     call evaluate_dry_tendency(transform, truncation, coordinate, planet_config(), state, state, surface_geopotential, &

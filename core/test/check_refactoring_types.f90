@@ -10,7 +10,7 @@ program check_refactoring_types
                               copy_barotropic_state, swap_barotropic_states, enforce_barotropic_constraints
   use shallow_water_state, only: shallow_water_state_type, allocate_shallow_water_state, &
                                  enforce_shallow_water_constraints
-  use dry_state, only: dry_state_type, dry_tendency_type, allocate_dry_state, &
+  use dry_state, only: dry_state_type, dry_tendency_type, allocate_dry_state, allocate_dry_surface_fields, &
                        allocate_dry_tendency, copy_dry_state, swap_dry_states, enforce_dry_state_constraints
   implicit none
 
@@ -77,25 +77,30 @@ program check_refactoring_types
 
   call allocate_dry_state(dry, truncation, levels)
   call allocate_dry_state(dry_other, truncation, levels)
-  call allocate_dry_tendency(dry_rhs, truncation, levels)
+  ! The surface temperatures and the bucket water are grid fields with their own shape.
+  call allocate_dry_surface_fields(dry, 8, 4)
+  call allocate_dry_surface_fields(dry_other, 8, 4)
+  call allocate_dry_tendency(dry_rhs, truncation, levels, 8, 4)
   dry%zeta = cmplx(1.0_real64, 0.0_real64, kind=real64)
   dry%delta = dry%zeta
   dry%temperature = dry%zeta
   dry%log_surface_pressure = dry%zeta(:, :, 1)
-  dry%deep_temperature = cmplx(3.0_real64, 0.0_real64, kind=real64)
+  dry%deep_temperature = 3.0_real64
   call enforce_dry_state_constraints(dry, truncation)
   if (any(dry%zeta(0, 0, :) /= 0.0_real64) .or. any(dry%delta(0, 0, :) /= 0.0_real64)) then
     error stop 'dry zero-mean constraints failed'
   end if
-  if (any(dry_rhs%temperature /= 0.0_real64)) error stop 'dry tendency did not initialize to zero'
+  if (any(dry_rhs%temperature /= 0.0_real64) .or. any(dry_rhs%surface_temperature /= 0.0_real64)) then
+    error stop 'dry tendency did not initialize to zero'
+  end if
   call copy_dry_state(dry, dry_other)
   if (any(dry_other%temperature /= dry%temperature) .or. any(dry_other%deep_temperature /= dry%deep_temperature)) then
     error stop 'dry state copy failed'
   end if
-  dry_other%deep_temperature = cmplx(5.0_real64, 0.0_real64, kind=real64)
+  dry_other%deep_temperature = 5.0_real64
   call swap_dry_states(dry, dry_other)
-  if (dry%deep_temperature(0, 0) /= cmplx(5.0_real64, 0.0_real64, kind=real64) .or. &
-      dry_other%deep_temperature(0, 0) /= cmplx(3.0_real64, 0.0_real64, kind=real64)) then
+  if (dry%deep_temperature(1, 1) /= 5.0_real64 .or. dry_other%deep_temperature(1, 1) /= 3.0_real64 .or. &
+      any(shape(dry%deep_temperature) /= [8, 4])) then
     error stop 'dry state swap failed'
   end if
 

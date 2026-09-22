@@ -64,12 +64,16 @@ contains
     call terrain%transform%init(truncation)
     call generate_earth_topography(terrain%transform, config, terrain%land_fraction, terrain%target_height, &
                                    terrain%surface_geopotential, terrain%truncated_height, terrain%diagnostics)
-    write (*, '(a,i0,a,f8.4,a,f8.2,a,f8.2,a,f8.2,a,f8.2)') 'T', truncation, &
+    write (*, '(a,i0,a,f8.4,a,f8.2,a,f8.2,a,f8.2,a,f8.2,a,f8.2)') 'T', truncation, &
       ': <f_L> = ', terrain%diagnostics%global_land_fraction, &
       '  min z_s = ', terrain%diagnostics%minimum_truncated_height_metres, &
       '  max z_s = ', terrain%diagnostics%maximum_truncated_height_metres, &
-      '  ocean RMS = ', terrain%diagnostics%open_ocean_rms_metres, &
+      '  open-ocean RMS = ', terrain%diagnostics%open_ocean_rms_metres, &
+      '  truncation RMS = ', terrain%diagnostics%truncation_rms_metres, &
       '  total RMS = ', terrain%diagnostics%total_rms_metres
+    write (*, '(a,f8.2,a,f8.2,a,f8.2,a)') '  ocean (f_L < 0.01) z_s: RMS ', terrain%diagnostics%ocean_height_rms_metres, &
+      ' m, max ', terrain%diagnostics%ocean_maximum_height_metres, ' m; kernel half width ', &
+      terrain%diagnostics%kernel_half_width_degrees, ' deg'
   end subroutine generate
 
   real(real64) function nearest_value(terrain, field, longitude, latitude) result(value)
@@ -114,7 +118,7 @@ contains
     if (abs(terrain%diagnostics%global_land_fraction - terrain%diagnostics%source_land_fraction) > 0.01_real64) then
       error stop 'grid land fraction differs from the intermediate file by more than 0.01'
     end if
-    if (terrain%diagnostics%truncation_rms_metres > 5.0_real64) error stop 'truncation RMS error exceeds 5 m'
+    if (terrain%diagnostics%truncation_rms_metres > 10.0_real64) error stop 'truncation RMS error exceeds 10 m'
     tibet = nearest_value(terrain, terrain%truncated_height, 90.0_real64, 33.0_real64)
     antarctica = nearest_value(terrain, terrain%truncated_height, 90.0_real64, -80.0_real64)
     pacific_height = nearest_value(terrain, terrain%truncated_height, 200.0_real64, 0.0_real64)

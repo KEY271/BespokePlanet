@@ -5,7 +5,7 @@ module dry_stepper
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate
   use dry_gravity_wave, only: dry_gravity_wave_solver
   use dry_gravity_wave_operator, only: solve_dry_gravity_wave
-  use dry_state, only: dry_state_type, dry_tendency_type, allocate_dry_state, allocate_dry_surface_water, &
+  use dry_state, only: dry_state_type, dry_tendency_type, allocate_dry_state, allocate_dry_surface_fields, &
                        allocate_dry_tendency, copy_dry_state, swap_dry_states, enforce_dry_state_constraints
   use dry_physics_config, only: dry_model_physics_config
   use dry_tendency_evaluator, only: evaluate_dry_tendency
@@ -40,16 +40,16 @@ contains
 
     this%truncation = truncation
     this%number_of_levels = number_of_levels
-    call allocate_dry_tendency(this%rhs, truncation, number_of_levels)
+    call transform%allocate_field(grid)
+    call allocate_dry_tendency(this%rhs, truncation, number_of_levels, size(grid, 1), size(grid, 2))
     call allocate_dry_state(this%half, truncation, number_of_levels)
     call allocate_dry_state(this%candidate, truncation, number_of_levels)
     call allocate_dry_state(this%next, truncation, number_of_levels)
     call allocate_dry_state(this%filtered, truncation, number_of_levels)
-    call transform%allocate_field(grid)
-    call allocate_dry_surface_water(this%half, size(grid, 1), size(grid, 2))
-    call allocate_dry_surface_water(this%candidate, size(grid, 1), size(grid, 2))
-    call allocate_dry_surface_water(this%next, size(grid, 1), size(grid, 2))
-    call allocate_dry_surface_water(this%filtered, size(grid, 1), size(grid, 2))
+    call allocate_dry_surface_fields(this%half, size(grid, 1), size(grid, 2))
+    call allocate_dry_surface_fields(this%candidate, size(grid, 1), size(grid, 2))
+    call allocate_dry_surface_fields(this%next, size(grid, 1), size(grid, 2))
+    call allocate_dry_surface_fields(this%filtered, size(grid, 1), size(grid, 2))
   end subroutine initialize_dry_stepper
 
   !> Advances one step.  When radiation is enabled, diagnostics receives the
@@ -140,8 +140,9 @@ contains
         land_fraction=land_fraction)
     end if
 
-    ! Vorticity, specific humidity and the surface temperatures have no gravity-wave part
-    ! and are advanced explicitly; the semi-implicit solve below handles the rest.
+    ! Vorticity and specific humidity have no gravity-wave part and are advanced
+    ! explicitly; the semi-implicit solve below handles the rest.  The surface
+    ! temperatures and the bucket water are grid fields advanced point by point.
     candidate%zeta(:, :, :) = previous%zeta + centered_interval*rhs%zeta
     candidate%specific_humidity(:, :, :) = previous%specific_humidity + centered_interval*rhs%specific_humidity
     candidate%surface_temperature(:, :) = previous%surface_temperature + centered_interval*rhs%surface_temperature

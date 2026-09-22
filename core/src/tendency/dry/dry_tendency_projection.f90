@@ -65,13 +65,14 @@ contains
     rhs%log_surface_pressure = temporary_spectral
     call enforce_dry_spectral_field(rhs%log_surface_pressure, truncation, .false.)
 
+    ! The surface temperatures stay on the grid: their tendencies are copied, not transformed,
+    ! so a sharp land--sea contrast in the heat capacity cannot produce Gibbs ripples.
+    if (any(shape(rhs%surface_temperature) /= shape(workspace%forcing_surface_temperature))) then
+      error stop 'dry tendency surface temperature has an inconsistent grid shape'
+    end if
     if (radiation_enabled) then
-      call transform%grid_to_spectral(workspace%forcing_surface_temperature, temporary_spectral)
-      rhs%surface_temperature = temporary_spectral
-      call transform%grid_to_spectral(workspace%forcing_deep_temperature, temporary_spectral)
-      rhs%deep_temperature = temporary_spectral
-      call enforce_dry_spectral_field(rhs%surface_temperature, truncation, .false.)
-      call enforce_dry_spectral_field(rhs%deep_temperature, truncation, .false.)
+      rhs%surface_temperature = workspace%forcing_surface_temperature
+      rhs%deep_temperature = workspace%forcing_deep_temperature
     else
       rhs%surface_temperature = 0.0_real64
       rhs%deep_temperature = 0.0_real64

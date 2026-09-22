@@ -154,6 +154,7 @@ contains
     complex(real64), allocatable :: state_zeta(:, :, :), state_delta(:, :, :)
     complex(real64), allocatable :: state_temperature(:, :, :), state_log_ps(:, :)
     complex(real64), allocatable :: humidity(:, :, :)
+    real(real64), allocatable :: lowest_temperature(:, :)
     type(hybrid_sigma_coordinate) :: coordinate
     integer :: number_of_levels
 
@@ -174,8 +175,9 @@ contains
                                     specific_humidity=humidity)
       call solver%get_spectral_state(state_zeta, state_delta, state_temperature, state_log_ps)
     end if
-    call solver%set_surface_state(state_temperature(:, :, number_of_levels), &
-                                  state_temperature(:, :, number_of_levels))
+    ! T_s = T_d = T_N on the grid (docs/cases/radiation.md).
+    call transform%spectral_to_grid(state_temperature(:, :, number_of_levels), lowest_temperature)
+    call solver%set_surface_state(lowest_temperature, lowest_temperature)
     call solver%set_physics(physics)
   end subroutine set_radiation_case_state
 
@@ -190,7 +192,7 @@ contains
     complex(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :), log_ps(:, :)
     complex(real64), allocatable :: state_zeta(:, :, :), state_delta(:, :, :), state_temperature(:, :, :)
     complex(real64), allocatable :: state_log_ps(:, :), humidity(:, :, :)
-    real(real64), allocatable :: surface_water(:, :)
+    real(real64), allocatable :: surface_water(:, :), lowest_temperature(:, :)
     type(hybrid_sigma_coordinate) :: coordinate
     integer :: number_of_levels
 
@@ -209,8 +211,8 @@ contains
     allocate (surface_water, mold=land_fraction)
     surface_water = 0.0_real64
     where (land_fraction > 0.0_real64) surface_water = physics%bucket%initial_water
-    call solver%set_surface_state(state_temperature(:, :, number_of_levels), &
-                                  state_temperature(:, :, number_of_levels), surface_water)
+    call transform%spectral_to_grid(state_temperature(:, :, number_of_levels), lowest_temperature)
+    call solver%set_surface_state(lowest_temperature, lowest_temperature, surface_water)
     call solver%set_physics(physics)
   end subroutine set_land_sea_case_state
 

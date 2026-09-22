@@ -6,7 +6,7 @@ module dry_atmosphere
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate
   use dry_gravity_wave, only: dry_gravity_wave_solver
   use dry_radiation, only: radiation_diagnostics, move_radiation_diagnostics
-  use dry_state, only: dry_state_type, allocate_dry_state, allocate_dry_surface_water, copy_dry_state, &
+  use dry_state, only: dry_state_type, allocate_dry_state, allocate_dry_surface_fields, copy_dry_state, &
                        enforce_dry_state_constraints, enforce_dry_spectral_field
   use dry_physics_config, only: dry_model_physics_config, dry_reference_temperature
   use dry_stepper, only: dry_stepper_type
@@ -48,8 +48,8 @@ module dry_atmosphere
     procedure, public :: init => initialize_dry_solver
     procedure, public :: init_with_config => initialize_dry_solver_with_config
     procedure, public :: set_initial_state
-    !> Sets the surface and deep ground temperature on both time levels.  Which
-    !> initial condition they come from is a case decision, not a model one.
+    !> Sets the grid surface and deep ground temperature on both time levels.
+    !> Which initial condition they come from is a case decision, not a model one.
     procedure, public :: set_surface_state
     !> Selects the active physical processes; set_initial_state disables them all.
     procedure, public :: set_physics
@@ -106,8 +106,8 @@ contains
     call this%gravity_wave%init(truncation, dt, this%coordinate, this%gravity_wave_reference_temperature)
     call allocate_dry_state(this%previous, truncation, this%number_of_levels)
     call allocate_dry_state(this%current, truncation, this%number_of_levels)
-    call allocate_dry_surface_water(this%previous, this%workspace%nx, this%workspace%ny)
-    call allocate_dry_surface_water(this%current, this%workspace%nx, this%workspace%ny)
+    call allocate_dry_surface_fields(this%previous, this%workspace%nx, this%workspace%ny)
+    call allocate_dry_surface_fields(this%current, this%workspace%nx, this%workspace%ny)
     call this%stepper%initialize(this%transform, truncation, this%number_of_levels)
     if (allocated(this%surface_geopotential)) deallocate (this%surface_geopotential)
     allocate (this%surface_geopotential(0:truncation + 1, 0:truncation))
@@ -196,23 +196,22 @@ contains
     this%step_number = 0
   end subroutine set_initial_state
 
-  !> Overrides the surface and deep ground temperature on both time levels.
+  !> Overrides the grid surface and deep ground temperature on both time levels.
   !> set_initial_state leaves them at zero; cases that carry a ground energy
-  !> budget supply the initial values here.
+  !> budget supply the initial values here.  The fields have the padded grid
+  !> shape of the transform (transform%allocate_field).
   subroutine set_surface_state(this, surface_temperature, deep_temperature, surface_water)
     class(dry_atmosphere_solver), intent(inout) :: this
-    complex(real64), intent(in) :: surface_temperature(0:, 0:), deep_temperature(0:, 0:)
+    real(real64), intent(in) :: surface_temperature(:, :), deep_temperature(:, :)
     real(real64), intent(in), optional :: surface_water(:, :)
 
     call check_initialized(this)
-    if (ubound(surface_temperature, 1) < this%truncation + 1 .or. &
-        ubound(surface_temperature, 2) < this%truncation .or. &
-        ubound(deep_temperature, 1) < this%truncation + 1 .or. &
-        ubound(deep_temperature, 2) < this%truncation) then
+    if (any(shape(surface_temperature) /= shape(this%current%surface_temperature)) .or. &
+        any(shape(deep_temperature) /= shape(this%current%deep_temperature))) then
       error stop 'dry atmosphere surface state has an inconsistent shape'
     end if
-    this%current%surface_temperature = surface_temperature(0:this%truncation + 1, 0:this%truncation)
-    this%current%deep_temperature = deep_temperature(0:this%truncation + 1, 0:this%truncation)
+    this%current%surface_temperature = surface_temperature
+    this%current%deep_temperature = deep_temperature
     this%previous%surface_temperature = this%current%surface_temperature
     this%previous%deep_temperature = this%current%deep_temperature
     if (present(surface_water)) then
@@ -295,14 +294,10 @@ contains
     end do
     call this%transform%spectral_to_grid(this%current%log_surface_pressure, log_ps)
     surface_pressure = exp(log_ps)
-    ! The ground temperatures are prognostic fields of every dry run; they stay at
-    ! their initial values unless a process drives them.
-    if (present(surface_temperature)) then
-      call this%transform%spectral_to_grid(this%current%surface_temperature, surface_temperature)
-    end if
-    if (present(deep_temperature)) then
-      call this%transform%spectral_to_grid(this%current%deep_temperature, deep_temperature)
-    end if
+    ! The ground temperatures are grid prognostic fields of every dry run; they stay
+    ! at their initial values unless a process drives them.
+    if (present(surface_temperature)) surface_temperature = this%current%surface_temperature
+    if (present(deep_temperature)) deep_temperature = this%current%deep_temperature
     if (present(surface_water)) surface_water = this%current%surface_water
     if (present(cfl)) then
       nlon = this%transform%get_nlon()
@@ -317,13 +312,13 @@ contains
     end if
   end subroutine get_fields
 
-  subroutine get_spectral_state(this, zeta, delta, temperature, log_surface_pressure, specific_humidity, &
-                                surface_temperature, deep_temperature)
+  !> The spectral prognostic fields.  The surface temperatures are grid fields and
+  !> are read with get_fields.
+  subroutine get_spectral_state(this, zeta, delta, temperature, log_surface_pressure, specific_humidity)
     class(dry_atmosphere_solver), intent(in) :: this
     complex(real64), allocatable, intent(out) :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     complex(real64), allocatable, intent(out) :: log_surface_pressure(:, :)
-    complex(real64), allocatable, intent(out), optional :: specific_humidity(:, :, :), surface_temperature(:, :)
-    complex(real64), allocatable, intent(out), optional :: deep_temperature(:, :)
+    complex(real64), allocatable, intent(out), optional :: specific_humidity(:, :, :)
 
     call check_ready(this)
     zeta = this%current%zeta
@@ -331,8 +326,6 @@ contains
     temperature = this%current%temperature
     log_surface_pressure = this%current%log_surface_pressure
     if (present(specific_humidity)) specific_humidity = this%current%specific_humidity
-    if (present(surface_temperature)) surface_temperature = this%current%surface_temperature
-    if (present(deep_temperature)) deep_temperature = this%current%deep_temperature
   end subroutine get_spectral_state
 
   !> Model time of the current state, in seconds since the initial state.

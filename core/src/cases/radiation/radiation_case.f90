@@ -272,8 +272,7 @@ contains
     type(radiation_output_options), intent(in) :: options
     complex(real64), allocatable :: zeta_spectral(:, :, :), delta_spectral(:, :, :)
     complex(real64), allocatable :: temperature_spectral(:, :, :), log_ps_spectral(:, :)
-    complex(real64), allocatable :: humidity_spectral(:, :, :), surface_temperature_spectral(:, :)
-    complex(real64), allocatable :: deep_temperature_spectral(:, :)
+    complex(real64), allocatable :: humidity_spectral(:, :, :)
     real(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     real(real64), allocatable :: surface_pressure(:, :), log_surface_pressure(:, :)
     real(real64), allocatable :: u(:, :, :), v(:, :, :), humidity(:, :, :)
@@ -282,9 +281,7 @@ contains
 
     if (options%include_moisture) then
       call solver%get_spectral_state(zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
-                                     specific_humidity=humidity_spectral, &
-                                     surface_temperature=surface_temperature_spectral, &
-                                     deep_temperature=deep_temperature_spectral)
+                                     specific_humidity=humidity_spectral)
       call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
                              surface_temperature=surface_temperature, deep_temperature=deep_temperature, &
                              specific_humidity=humidity, surface_water=surface_water)
@@ -293,13 +290,10 @@ contains
       call write_radiation_yearly_snapshot(case_directory, year, ring_nlon, &
         zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
         zeta, delta, temperature, u, v, log_surface_pressure, surface_temperature, deep_temperature, &
-        options, humidity_spectral=humidity_spectral, humidity=humidity, &
-        surface_temperature_spectral=surface_temperature_spectral, time_seconds=solver%get_time(), &
-        step=solver%get_step(), deep_temperature_spectral=deep_temperature_spectral, cloud_cover=cloud_cover, &
-        surface_water=surface_water)
+        options, humidity_spectral=humidity_spectral, humidity=humidity, time_seconds=solver%get_time(), &
+        step=solver%get_step(), cloud_cover=cloud_cover, surface_water=surface_water)
     else
-      call solver%get_spectral_state(zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
-                                     deep_temperature=deep_temperature_spectral)
+      call solver%get_spectral_state(zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral)
       call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
                              surface_temperature=surface_temperature, deep_temperature=deep_temperature, &
                              surface_water=surface_water)
@@ -307,7 +301,7 @@ contains
       call write_radiation_yearly_snapshot(case_directory, year, ring_nlon, &
         zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
         zeta, delta, temperature, u, v, log_surface_pressure, surface_temperature, deep_temperature, options, &
-        deep_temperature_spectral=deep_temperature_spectral, surface_water=surface_water)
+        surface_water=surface_water)
     end if
   end subroutine write_current_radiation_snapshot
 

@@ -191,8 +191,8 @@ contains
                                               zeta_spectral, delta_spectral, temperature_spectral, &
                                               log_surface_pressure_spectral, zeta, delta, temperature, &
                                               u, v, log_surface_pressure, surface_temperature, deep_temperature, &
-                                              options, humidity_spectral, humidity, surface_temperature_spectral, &
-                                              time_seconds, step, deep_temperature_spectral, cloud_cover, surface_water)
+                                              options, humidity_spectral, humidity, time_seconds, step, &
+                                              cloud_cover, surface_water)
     character(*), intent(in) :: case_directory
     integer, intent(in) :: year
     integer, intent(in) :: nlon(:)
@@ -203,10 +203,10 @@ contains
     real(real64), intent(in) :: u(:, :, :), v(:, :, :), log_surface_pressure(:, :)
     real(real64), intent(in) :: surface_temperature(:, :), deep_temperature(:, :)
     type(radiation_output_options), intent(in) :: options
-    !> Moist-case additions: spectral and grid specific humidity, spectral surface
-    !> (ocean) temperature and the model time of the snapshot.
-    complex(real64), intent(in), optional :: humidity_spectral(0:, 0:, :), surface_temperature_spectral(0:, 0:)
-    complex(real64), intent(in), optional :: deep_temperature_spectral(0:, 0:)
+    !> Moist-case additions: spectral and grid specific humidity and the model time
+    !> of the snapshot.  The surface temperatures are grid fields and have no
+    !> spectral counterpart.
+    complex(real64), intent(in), optional :: humidity_spectral(0:, 0:, :)
     real(real64), intent(in), optional :: humidity(:, :, :), time_seconds
     integer, intent(in), optional :: step
     !> Diagnosed cloud cover of the most recent tendency evaluation (moist cases).
@@ -225,10 +225,9 @@ contains
       error stop 'radiation yearly snapshot fields have different level counts'
     end if
     if (options%include_moisture) then
-      if (.not. (present(humidity_spectral) .and. present(humidity) .and. &
-                 present(surface_temperature_spectral) .and. present(time_seconds) .and. present(step) .and. &
-                 present(cloud_cover))) then
-        error stop 'moist yearly snapshot requires the humidity, ocean temperature, cloud cover and time'
+      if (.not. (present(humidity_spectral) .and. present(humidity) .and. present(time_seconds) .and. &
+                 present(step) .and. present(cloud_cover))) then
+        error stop 'moist yearly snapshot requires the humidity, cloud cover and time'
       end if
       if (size(humidity, 3) /= size(zeta, 3) .or. size(humidity_spectral, 3) /= size(zeta, 3)) then
         error stop 'moist yearly snapshot humidity has a different level count'
@@ -249,11 +248,6 @@ contains
     if (options%include_deep_temperature) then
       call write_field(trim(case_directory)//'/yearly_deep_temperature_y'//year_text//'.bin', &
                        nlon, deep_temperature)
-      if (present(deep_temperature_spectral)) then
-        call check_spectral_finite('yearly_deep_temperature_spectral', deep_temperature_spectral)
-        call write_spectral_field(trim(case_directory)//'/yearly_deep_temperature_spectral_y'// &
-                                  year_text//'.bin', deep_temperature_spectral)
-      end if
     end if
     if (options%include_land_sea) then
       call check_finite('yearly_surface_water', nlon, surface_water)
@@ -262,9 +256,6 @@ contains
     call write_spectral_field(trim(case_directory)//'/yearly_log_surface_pressure_spectral_y'// &
                               year_text//'.bin', log_surface_pressure_spectral)
     if (options%include_moisture) then
-      call check_spectral_finite('yearly_surface_temperature_spectral', surface_temperature_spectral)
-      call write_spectral_field(trim(case_directory)//'/yearly_surface_temperature_spectral_y'// &
-                                year_text//'.bin', surface_temperature_spectral)
       call check_finite('yearly_cloud_cover', nlon, cloud_cover)
       call write_field(trim(case_directory)//'/yearly_cloud_cover_y'//year_text//'.bin', nlon, cloud_cover)
       open (newunit=unit, file=trim(case_directory)//'/yearly_time_y'//year_text//'.json', status='replace', &
@@ -613,6 +604,7 @@ contains
     write (unit, '(a,i0,a)') '    "spectral_truncation": ', truncation, ','
     write (unit, '(a)') '    "time_integrator": "semi-implicit RAW-filtered leapfrog",'
     write (unit, '(a)') '    "physics_tendency_state": "RAW-filtered previous time level",'
+    write (unit, '(a)') '    "surface_temperature_state": "grid; leapfrog with the RAW filter, no spectral transform",'
     if (physics%rayleigh_friction%enabled) then
       write (unit, '(a,i0,a)') '    "upper_rayleigh_friction_levels": ', physics%rayleigh_friction%top_levels, ','
     else
@@ -684,13 +676,7 @@ contains
     write (unit, '(a)') '    "yearly_spectral_surface_field": '// &
       '"yearly_log_surface_pressure_spectral_y{year:04d}.bin",'
     if (options%include_moisture) then
-      write (unit, '(a)') '    "yearly_spectral_surface_temperature": '// &
-        '"yearly_surface_temperature_spectral_y{year:04d}.bin",'
       write (unit, '(a)') '    "yearly_time": "yearly_time_y{year:04d}.json",'
-    end if
-    if (options%include_deep_temperature) then
-      write (unit, '(a)') '    "yearly_spectral_deep_temperature": '// &
-        '"yearly_deep_temperature_spectral_y{year:04d}.bin",'
     end if
     write (unit, '(a)') '    "binary_dtype": "float64 little-endian",'
     write (unit, '(a)') '    "spectral_dtype": "complex128 as interleaved float64 real,imag",'
@@ -724,14 +710,16 @@ contains
     write (unit, '(a)') '    "data_file": "'//trim(diagnostics%resolved_data_path)//'",'
     write (unit, '(a)') '    "data_description": "core/data/earth_topography_0p5deg.json",'
     write (unit, '(a)') '    "land_definition": "ETOPO surface elevation > 0 m",'
-    write (unit, '(a)') '    "method": "Gaussian kernel exp(-(theta/s)^2) in great-circle angle, '// &
-      'cut at window_factor * s, applied to land fraction and land height; g z_s truncated at T; '// &
-      'land fraction kept on the grid",'
+    write (unit, '(a)') '    "method": "land fraction: area average of the 0.5 degree cells over each grid '// &
+      'point''s latitude band and longitude sector, not smoothed, kept on the grid; land height: Gaussian kernel '// &
+      'exp(-(theta/s)^2) in great-circle angle cut at window_factor * s, then g z_s truncated at T",'
     write (unit, '(a,es24.16e3,a)') '    "kernel_scale_factor": ', terrain%kernel_scale_factor, ','
     write (unit, '(a,es24.16e3,a)') '    "kernel_half_width_degrees": ', diagnostics%kernel_half_width_degrees, ','
     write (unit, '(a,es24.16e3,a)') '    "window_factor": ', terrain%window_factor, ','
     write (unit, '(a,es24.16e3,a)') '    "residual_filter_strength": ', terrain%residual_filter_strength, ','
     write (unit, '(a,es24.16e3,a)') '    "open_ocean_land_fraction": ', terrain%open_ocean_land_fraction, ','
+    write (unit, '(a)') '    "open_ocean_definition": "kernel-smoothed land fraction below open_ocean_land_fraction '// &
+      '(beyond the kernel reach of any land); ocean_height_* use the grid land fraction instead",'
     write (unit, '(a,es24.16e3,a)') '    "source_global_land_fraction": ', diagnostics%source_land_fraction, ','
     write (unit, '(a,es24.16e3,a)') '    "source_maximum_height_m": ', diagnostics%source_maximum_height_metres, ','
     write (unit, '(a,es24.16e3,a)') '    "global_land_fraction": ', diagnostics%global_land_fraction, ','
@@ -746,7 +734,9 @@ contains
     write (unit, '(a,es24.16e3,a)') '    "truncation_rms_error_m": ', diagnostics%truncation_rms_metres, ','
     write (unit, '(a,es24.16e3,a)') '    "total_rms_error_m": ', diagnostics%total_rms_metres, ','
     write (unit, '(a,es24.16e3,a)') '    "open_ocean_rms_m": ', diagnostics%open_ocean_rms_metres, ','
-    write (unit, '(a,es24.16e3)') '    "open_ocean_minimum_m": ', diagnostics%open_ocean_minimum_metres
+    write (unit, '(a,es24.16e3,a)') '    "open_ocean_minimum_m": ', diagnostics%open_ocean_minimum_metres, ','
+    write (unit, '(a,es24.16e3,a)') '    "ocean_height_rms_m": ', diagnostics%ocean_height_rms_metres, ','
+    write (unit, '(a,es24.16e3)') '    "ocean_maximum_height_m": ', diagnostics%ocean_maximum_height_metres
   end subroutine write_earth_topography_metadata
 
 end module radiation_case_output

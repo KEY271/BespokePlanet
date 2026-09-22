@@ -1,10 +1,11 @@
 """Scan the smoothing width of docs/dynamics/earth-topography.md and draw the result.
 
 Reproduces the Fortran generation in numpy on the octahedral Gaussian grid:
-Gaussian-kernel smoothing of the 0.5 degree intermediate file with width
-s = c * 180 / T, triangular truncation of g z_s at T, and the diagnostics of
-the document (minimum, open-ocean ripple, truncation and total RMS, landmarks)
-for c in {0.75, 1.0, 1.25, 1.5} and T in {31, 63}.  Writes
+grid-cell average of the 0.5 degree land fraction (no smoothing), Gaussian-kernel
+smoothing of the land height with width s = c * 180 / T, triangular truncation
+of g z_s at T, and the diagnostics of the document (minimum, open-ocean ripple,
+truncation and total RMS, landmarks) for c in {0.5, 0.75, 1.0, 1.25} and
+T in {31, 63}.  Writes
 scripts/earth_terrain_scan.png (diagnostics against c) and
 scripts/earth_terrain.png (target and truncated z_s for the selected c).  Run with
 `uv run --project ~/.local/share/llm-python python scripts/plot_earth_terrain.py`.
@@ -29,7 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_BIN = ROOT / "core" / "data" / "earth_topography_0p5deg.bin"
 GRAVITY = 9.80616
 TRUNCATIONS = (31, 63)
-SCALE_FACTORS = (0.75, 1.0, 1.25, 1.5)
+SCALE_FACTORS = (0.5, 0.75, 1.0, 1.25)
 WINDOW_FACTOR = 3.0
 MIN_HEIGHT_CRITERION = -50.0  # m
 OCEAN_RMS_CRITERION = 10.0  # m
@@ -124,7 +125,9 @@ class Smoother:
         self.area = np.cos(np.radians(lat))
 
     def rows(self, lats_deg, lon_lists, s_deg):
-        """Kernel-smoothed (land fraction, height) for rows of points at lats_deg with the given longitudes."""
+        """Kernel-smoothed (land fraction, height) for rows of points at lats_deg with the given
+        longitudes.  The smoothed land fraction only delimits the open ocean in the diagnostics;
+        the model's land fraction is the box average."""
         s = np.radians(s_deg)
         cutoff = WINDOW_FACTOR * s
         land_rows, height_rows = [], []
@@ -140,8 +143,10 @@ class Smoother:
             height_rows.append(kernel @ self.height[band].ravel() / norm)
         return land_rows, height_rows
 
-    def box_average(self, grid: Octahedral):
-        """Raw height of the intermediate cells averaged over each grid point's latitude band and longitude sector."""
+    def box_average(self, grid: Octahedral, field):
+        """Intermediate cells of `field` area-averaged over each grid point's latitude band
+        (between ring midpoints) and nearest-longitude sector; this is the model's f_L and
+        the raw height of the total-error diagnostic."""
         edges = np.concatenate([[-90.0], 0.5 * (grid.lat[1:] + grid.lat[:-1]), [90.0]])
         ring_of_cell = np.clip(np.searchsorted(edges, self.lat) - 1, 0, grid.lat.size - 1)
         sums = [np.zeros(n) for n in grid.nlon]
@@ -149,7 +154,7 @@ class Smoother:
         for jc, j in enumerate(ring_of_cell):
             n = grid.nlon[j]
             i = np.round(self.lon / (360.0 / n)).astype(int) % n
-            np.add.at(sums[j], i, self.area[jc] * self.height[jc])
+            np.add.at(sums[j], i, self.area[jc] * field[jc])
             np.add.at(counts[j], i, self.area[jc])
         return [s / c for s, c in zip(sums, counts)]
 
@@ -160,17 +165,21 @@ def rms(grid, rings):
     return float(np.sqrt(grid.global_mean([r ** 2 for r in rings])))
 
 
-def evaluate(grid: Octahedral, smoother: Smoother, c: float, raw_rings):
+def evaluate(grid: Octahedral, smoother: Smoother, c: float, land_rings, raw_rings):
     s_deg = c * 180.0 / grid.T
-    land_rings, target_rings = smoother.rows(grid.lat, grid.lons, s_deg)
+    smoothed_land_rings, target_rings = smoother.rows(grid.lat, grid.lons, s_deg)
     coefficients = grid.analyze([GRAVITY * r for r in target_rings])
     truncated_rings = [r / GRAVITY for r in grid.synthesize_rings(coefficients)]
     flat = np.concatenate(truncated_rings)
-    ocean = np.concatenate(land_rings) < OPEN_OCEAN_LAND_FRACTION
+    # open ocean: beyond the kernel's reach of any land, where z_s should be exactly zero
+    ocean = np.concatenate(smoothed_land_rings) < OPEN_OCEAN_LAND_FRACTION
+    # every ocean grid point of the model, including the coast the smoothing leaks height onto
+    coastal = np.concatenate(land_rings) < OPEN_OCEAN_LAND_FRACTION
     ring_index = np.repeat(np.arange(grid.lat.size), grid.nlon)
     lon_flat = np.concatenate(grid.lons)
     k_min, k_max = int(flat.argmin()), int(flat.argmax())
-    ocean_area = np.repeat(grid.weights / grid.nlon, grid.nlon)[ocean]
+    area = np.repeat(grid.weights / grid.nlon, grid.nlon)
+    ocean_area = area[ocean]
     result = {
         "T": grid.T, "c": c, "s_deg": s_deg,
         "land_fraction": float(grid.global_mean(land_rings)),
@@ -180,6 +189,8 @@ def evaluate(grid: Octahedral, smoother: Smoother, c: float, raw_rings):
         "total_rms_m": rms(grid, [a - b for a, b in zip(truncated_rings, raw_rings)]),
         "ocean_rms_m": float(np.sqrt(np.sum(ocean_area * flat[ocean] ** 2) / np.sum(ocean_area))),
         "ocean_min_m": float(flat[ocean].min()),
+        "ocean_height_rms_m": float(np.sqrt(np.sum(area[coastal] * flat[coastal] ** 2) / np.sum(area[coastal]))),
+        "ocean_height_max_m": float(flat[coastal].max()),
         "landmarks_m": {name: grid.nearest(truncated_rings, x, y) for name, x, y in LANDMARKS},
     }
     return result, coefficients
@@ -191,14 +202,16 @@ def passes(result):
 
 def markdown_table(results):
     names = [name for name, *_ in LANDMARKS]
-    lines = ["| T | c | s [deg] | <f_L> | min z_s [m] (lon, lat) | ocean RMS [m] | ocean min [m] | "
-             "trunc. RMS [m] | total RMS [m] | max z_s [m] | " + " | ".join(names) + " | pass |",
-             "|" + "---|" * (11 + len(names))]
+    lines = ["| T | c | s [deg] | <f_L> | min z_s [m] (lon, lat) | open-ocean RMS [m] | open-ocean min [m] | "
+             "ocean z_s RMS [m] | ocean z_s max [m] | trunc. RMS [m] | total RMS [m] | max z_s [m] | "
+             + " | ".join(names) + " | pass |",
+             "|" + "---|" * (13 + len(names))]
     for r in results:
         lines.append(
             f"| {r['T']} | {r['c']:.2f} | {r['s_deg']:.2f} | {r['land_fraction']:.4f} | "
             f"{r['min_m']:.0f} ({r['min_lon_lat'][0]:.0f}, {r['min_lon_lat'][1]:.0f}) | {r['ocean_rms_m']:.1f} | "
-            f"{r['ocean_min_m']:.0f} | {r['truncation_rms_m']:.1f} | {r['total_rms_m']:.0f} | {r['max_m']:.0f} | "
+            f"{r['ocean_min_m']:.0f} | {r['ocean_height_rms_m']:.0f} | {r['ocean_height_max_m']:.0f} | "
+            f"{r['truncation_rms_m']:.1f} | {r['total_rms_m']:.0f} | {r['max_m']:.0f} | "
             + " | ".join(f"{r['landmarks_m'][n]:.0f}" for n in names) + f" | {'yes' if passes(r) else 'no'} |")
     return "\n".join(lines)
 
@@ -225,9 +238,11 @@ def draw_scan(results, selected_c, path):
               ("open-ocean RMS of z_s [m]", "ocean_rms_m", OCEAN_RMS_CRITERION),
               ("truncation RMS [m]", "truncation_rms_m", None),
               ("total RMS vs raw 0.5 deg cells [m]", "total_rms_m", None),
+              ("z_s RMS over ocean grid points (f_L < 0.01) [m]", "ocean_height_rms_m", None),
+              ("max z_s over ocean grid points [m]", "ocean_height_max_m", None),
               ("Tibet z_s [m]", ("landmarks_m", "Tibet"), None),
               ("Andes z_s [m]", ("landmarks_m", "Andes"), None)]
-    fig, axes = plt.subplots(2, 3, figsize=(12, 6.4), constrained_layout=True)
+    fig, axes = plt.subplots(2, 4, figsize=(15, 6.4), constrained_layout=True)
     fig.patch.set_facecolor(SURFACE)
     for ax, (title, key, criterion) in zip(axes.ravel(), panels):
         style_axis(ax)
@@ -258,19 +273,18 @@ def draw_maps(selected, smoother, path):
     fig, axes = plt.subplots(2, 2, figsize=(16, 8.6), constrained_layout=True)
     fig.patch.set_facecolor(SURFACE)
     for row, (T, result, coefficients) in enumerate(selected):
-        land_rows, target_rows = smoother.rows(lat, [lon] * lat.size, result["s_deg"])
-        land = np.array(land_rows)
-        target = np.array(target_rows)
+        target = np.array(smoother.rows(lat, [lon] * lat.size, result["s_deg"])[1])
         truncated = synthesize_regular(coefficients, T, lon, lat) / GRAVITY
         for col, (field, title) in enumerate([
-                (target, f"T = {T}: target z_s after smoothing (s = {result['s_deg']:.1f} deg); line: f_L = 0.5"),
+                (target, f"T = {T}: target z_s after smoothing (s = {result['s_deg']:.1f} deg); line: 0.5 deg f(0) = 0.5"),
                 (truncated, f"T = {T}: z_s after truncation   min {result['min_m']:.0f} m, max {result['max_m']:.0f} m, "
                             f"open-ocean RMS {result['ocean_rms_m']:.1f} m")]):
             ax = axes[row, col]
             ax.set_facecolor(OCEAN)
             masked = np.ma.masked_less(field, 50.0)
             im = ax.pcolormesh(lon, lat, masked, cmap=LAND_CMAP, vmin=0, vmax=4000, shading="nearest", rasterized=True)
-            ax.contour(lon, lat, land, levels=[0.5], colors=INK, linewidths=0.7, linestyles="--" if col else "-")
+            ax.contour(smoother.lon, smoother.lat, smoother.land, levels=[0.5], colors=INK, linewidths=0.5,
+                       linestyles="--" if col else "-")
             if col == 1:
                 ax.contour(lon, lat, field, levels=[-50, -20], colors=["#b03a2e", "#e08a7a"], linewidths=0.8)
             cb = fig.colorbar(im, ax=ax, shrink=0.9, pad=0.02, extend="max")
@@ -284,7 +298,7 @@ def draw_maps(selected, smoother, path):
             ax.tick_params(colors=MUTED, labelsize=8)
             ax.grid(True, color="#ffffff", alpha=0.6, linewidth=0.5)
             ax.set_aspect("equal")
-    axes[1, 1].text(2, -88, "red: z_s = -20 / -50 m (Gibbs undershoot); dashed: f_L = 0.5",
+    axes[1, 1].text(2, -88, "red: z_s = -20 / -50 m (Gibbs undershoot); dashed: 0.5 deg cell land fraction = 0.5",
                     fontsize=8, color="#333333", va="bottom",
                     bbox=dict(facecolor="white", edgecolor="none", alpha=0.8))
     fig.savefig(path, dpi=130)
@@ -299,13 +313,14 @@ def main():
     results, coefficient_store = [], {}
     for T in TRUNCATIONS:
         grid = Octahedral(T)
-        raw_rings = smoother.box_average(grid)
+        raw_rings = smoother.box_average(grid, smoother.height)
+        land_rings = [np.clip(r, 0.0, 1.0) for r in smoother.box_average(grid, smoother.land)]
         for c in SCALE_FACTORS:
-            result, coefficients = evaluate(grid, smoother, c, raw_rings)
+            result, coefficients = evaluate(grid, smoother, c, land_rings, raw_rings)
             results.append(result)
             coefficient_store[(T, c)] = coefficients
             print(f"T={T} c={c:.2f} done ({time.time() - started:.0f} s)", file=sys.stderr, flush=True)
-    candidates = [c for c in SCALE_FACTORS if c >= 1.25 and all(passes(r) for r in results if r["c"] == c)]
+    candidates = [c for c in SCALE_FACTORS if all(passes(r) for r in results if r["c"] == c)]
     selected_c = candidates[0] if candidates else SCALE_FACTORS[-1]
     print(markdown_table(results))
     print(f"\nselected c = {selected_c:.2f}" + ("" if candidates else " (no c meets both criteria; largest used)"))

@@ -1,6 +1,8 @@
 !> Earth's land fraction and surface geopotential from the ETOPO 2022 intermediate
-!> file, smoothed with a Gaussian kernel whose width follows the truncation
-!> (docs/dynamics/earth-topography.md).  Same outputs as the analytic topography.
+!> file (docs/dynamics/earth-topography.md).  The land fraction is the area average
+!> of the 0.5 degree cells over each grid point's own cell and is not smoothed; the
+!> land height is smoothed with a Gaussian kernel whose width follows the
+!> truncation before g z_s is truncated.  Same outputs as the analytic topography.
 module earth_topography
   use iso_fortran_env, only: real64
   use harmonics, only: harmonic_transform
@@ -17,13 +19,16 @@ module earth_topography
     !> Intermediate file written by scripts/prepare_earth_topography.py, relative to
     !> the working directory (core/) with core/ as the fallback prefix.
     character(len=128) :: data_path = 'data/earth_topography_0p5deg.bin'
-    !> Kernel half width s = kernel_scale_factor * 180 deg / T.
-    real(real64) :: kernel_scale_factor = 1.25_real64
+    !> Half width s = kernel_scale_factor * 180 deg / T of the Gaussian kernel that
+    !> smooths the land height before truncation.  The land fraction is not smoothed.
+    real(real64) :: kernel_scale_factor = 1.0_real64
     !> The kernel is cut off at window_factor * s.
     real(real64) :: window_factor = 3.0_real64
     !> Residual spectral filter exp(-kappa (n(n+1)/(T(T+1)))^2) on Phi_s; 0 disables it.
     real(real64) :: residual_filter_strength = 0.0_real64
-    !> Grid points with a smaller land fraction count as open ocean in the diagnostics.
+    !> Ocean threshold of the diagnostics.  Grid points whose land fraction is below it
+    !> are "ocean"; those whose kernel-smoothed land fraction is also below it are "open
+    !> ocean", beyond the kernel's reach from any land, where z_s should be zero.
     real(real64) :: open_ocean_land_fraction = 0.01_real64
   end type earth_topography_config
 
@@ -43,8 +48,14 @@ module earth_topography
     real(real64) :: truncation_rms_metres = 0.0_real64
     !> RMS of truncated minus raw cell heights box-averaged to the grid.
     real(real64) :: total_rms_metres = 0.0_real64
+    !> Truncated z_s where the kernel-smoothed land fraction is below the threshold:
+    !> the Gibbs ripple of the truncation, since no land height reaches these points.
     real(real64) :: open_ocean_rms_metres = 0.0_real64
     real(real64) :: open_ocean_minimum_metres = 0.0_real64
+    !> Truncated z_s at every ocean grid point (grid land fraction below the threshold):
+    !> mostly land height that the smoothing spreads across the coast.
+    real(real64) :: ocean_height_rms_metres = 0.0_real64
+    real(real64) :: ocean_maximum_height_metres = 0.0_real64
   end type earth_topography_diagnostics
 
   public :: generate_earth_topography, read_earth_topography_data, earth_data_cell_centre
@@ -101,7 +112,8 @@ contains
     end if
   end subroutine read_earth_topography_data
 
-  !> Smooth the intermediate fields onto the grid, truncate g z_s, and diagnose the result.
+  !> Box-average the land fraction and smooth the land height onto the grid,
+  !> truncate g z_s, and diagnose the result.
   subroutine generate_earth_topography(transform, config, land_fraction, target_height, &
                                        surface_geopotential, truncated_height, diagnostics)
     type(harmonic_transform), intent(in) :: transform
@@ -111,12 +123,12 @@ contains
     real(real64), allocatable, intent(out) :: truncated_height(:, :)
     type(earth_topography_diagnostics), intent(out) :: diagnostics
     real(real64), allocatable :: data_land(:, :), data_height(:, :), raw_height(:, :), geopotential_grid(:, :)
-    real(real64), allocatable :: weights(:), latitude(:)
+    real(real64), allocatable :: smoothed_land(:, :), weights(:), latitude(:)
     character(len=:), allocatable :: resolved_path
     integer, allocatable :: nlon(:)
     integer :: truncation, i, j, n, m
     real(real64) :: half_width, area_weight, truncation_error, total_error, ocean_error, ocean_area
-    real(real64) :: laplacian_ratio, longitude
+    real(real64) :: coastal_error, coastal_area, laplacian_ratio, longitude
 
     if (config%kernel_scale_factor <= 0.0_real64) error stop 'earth topography kernel scale must be positive'
     if (config%window_factor <= 0.0_real64) error stop 'earth topography window factor must be positive'
@@ -135,11 +147,18 @@ contains
     call transform%allocate_field(land_fraction)
     allocate (target_height, mold=land_fraction)
     allocate (geopotential_grid, mold=land_fraction)
+    allocate (raw_height, mold=land_fraction)
+    allocate (smoothed_land, mold=land_fraction)
     land_fraction = 0.0_real64
     target_height = 0.0_real64
     geopotential_grid = 0.0_real64
+    raw_height = 0.0_real64
+    smoothed_land = 0.0_real64
+    call box_average_onto_grid(data_land, nlon, latitude, land_fraction)
+    land_fraction = max(0.0_real64, min(1.0_real64, land_fraction))
+    ! The smoothed land fraction is only used to delimit the open ocean in the diagnostics.
     call smooth_onto_grid(data_land, data_height, nlon, latitude, half_width, config%window_factor, &
-                          land_fraction, target_height)
+                          smoothed_land, target_height)
     do j = 1, size(nlon)
       geopotential_grid(1:nlon(j), j) = earth_gravity*target_height(1:nlon(j), j)
     end do
@@ -169,6 +188,8 @@ contains
     total_error = 0.0_real64
     ocean_error = 0.0_real64
     ocean_area = 0.0_real64
+    coastal_error = 0.0_real64
+    coastal_area = 0.0_real64
     do j = 1, size(nlon)
       area_weight = 0.5_real64*weights(j)/real(nlon(j), real64)
       do i = 1, nlon(j)
@@ -186,10 +207,15 @@ contains
         end if
         truncation_error = truncation_error + area_weight*(truncated_height(i, j) - target_height(i, j))**2
         total_error = total_error + area_weight*(truncated_height(i, j) - raw_height(i, j))**2
-        if (land_fraction(i, j) < config%open_ocean_land_fraction) then
+        if (smoothed_land(i, j) < config%open_ocean_land_fraction) then
           ocean_area = ocean_area + area_weight
           ocean_error = ocean_error + area_weight*truncated_height(i, j)**2
           diagnostics%open_ocean_minimum_metres = min(diagnostics%open_ocean_minimum_metres, truncated_height(i, j))
+        end if
+        if (land_fraction(i, j) < config%open_ocean_land_fraction) then
+          coastal_area = coastal_area + area_weight
+          coastal_error = coastal_error + area_weight*truncated_height(i, j)**2
+          diagnostics%ocean_maximum_height_metres = max(diagnostics%ocean_maximum_height_metres, truncated_height(i, j))
         end if
       end do
     end do
@@ -199,6 +225,9 @@ contains
       diagnostics%open_ocean_rms_metres = sqrt(max(ocean_error/ocean_area, 0.0_real64))
     else
       diagnostics%open_ocean_minimum_metres = 0.0_real64
+    end if
+    if (coastal_area > 0.0_real64) then
+      diagnostics%ocean_height_rms_metres = sqrt(max(coastal_error/coastal_area, 0.0_real64))
     end if
   end subroutine generate_earth_topography
 
@@ -222,12 +251,13 @@ contains
   !> Gaussian-kernel average of the intermediate fields at every grid point.  The
   !> kernel exp(-(theta/s)^2) in great-circle angle theta is cut off at
   !> window_factor * s and normalized over the included cells, so a land fraction
-  !> in [0,1] and a non-negative height are preserved.
+  !> in [0,1] and a non-negative height are preserved.  The smoothed land fraction
+  !> is a diagnostic aid only; the model's land fraction is the box average.
   subroutine smooth_onto_grid(data_land, data_height, nlon, latitude, half_width, window_factor, &
-                              land_fraction, target_height)
+                              smoothed_land, target_height)
     real(real64), intent(in) :: data_land(:, :), data_height(:, :), latitude(:), half_width, window_factor
     integer, intent(in) :: nlon(:)
-    real(real64), intent(inout) :: land_fraction(:, :), target_height(:, :)
+    real(real64), intent(inout) :: smoothed_land(:, :), target_height(:, :)
     real(real64) :: cell_longitude(earth_data_longitudes), cell_latitude(earth_data_latitudes)
     real(real64) :: cell_cos(earth_data_latitudes), cell_sin(earth_data_latitudes)
     real(real64) :: cell_cos_lon(earth_data_longitudes), cell_sin_lon(earth_data_longitudes)
@@ -296,26 +326,34 @@ contains
           end do
         end do
         if (weight_sum <= 0.0_real64) error stop 'earth topography kernel window contains no cells'
-        land_fraction(i, j) = max(0.0_real64, min(1.0_real64, land_sum/weight_sum))
+        smoothed_land(i, j) = max(0.0_real64, min(1.0_real64, land_sum/weight_sum))
         target_height(i, j) = max(0.0_real64, height_sum/weight_sum)
       end do
     end do
     !$omp end parallel do
   end subroutine smooth_onto_grid
 
-  !> Raw cell heights averaged over each grid point's latitude band (between ring
-  !> midpoints) and nearest-longitude sector, for the total-error diagnostic.
-  subroutine box_average_onto_grid(data_height, nlon, latitude, raw_height)
-    real(real64), intent(in) :: data_height(:, :), latitude(:)
+  !> Intermediate cells area-averaged over each grid point's latitude band (between
+  !> ring midpoints) and nearest-longitude sector.  This is the grid land fraction
+  !> (the SpeedyWeather-style grid-cell average of a high-resolution mask) and the
+  !> raw height of the total-error diagnostic.  `averaged` must have the padded grid
+  !> shape; entries beyond nlon(j) are left untouched.
+  subroutine box_average_onto_grid(data, nlon, latitude, averaged)
+    real(real64), intent(in) :: data(:, :), latitude(:)
     integer, intent(in) :: nlon(:)
-    real(real64), allocatable, intent(out) :: raw_height(:, :)
+    real(real64), intent(inout) :: averaged(:, :)
     real(real64), allocatable :: weight_sum(:, :), edges(:)
     real(real64) :: cell_longitude, cell_latitude, area
     integer :: i, j, ic, jc, rings
 
     rings = size(nlon)
-    allocate (raw_height(maxval(nlon), rings), weight_sum(maxval(nlon), rings), edges(0:rings))
-    raw_height = 0.0_real64
+    if (size(averaged, 1) < maxval(nlon) .or. size(averaged, 2) /= rings) then
+      error stop 'earth topography box average target has the wrong shape'
+    end if
+    allocate (weight_sum(size(averaged, 1), rings), edges(0:rings))
+    do j = 1, rings
+      averaged(1:nlon(j), j) = 0.0_real64
+    end do
     weight_sum = 0.0_real64
     edges(0) = -90.0_real64
     edges(rings) = 90.0_real64
@@ -332,14 +370,14 @@ contains
       do ic = 1, earth_data_longitudes
         call earth_data_cell_centre(ic, jc, cell_longitude, cell_latitude)
         i = modulo(nint(cell_longitude*real(nlon(j), real64)/360.0_real64), nlon(j)) + 1
-        raw_height(i, j) = raw_height(i, j) + area*data_height(ic, jc)
+        averaged(i, j) = averaged(i, j) + area*data(ic, jc)
         weight_sum(i, j) = weight_sum(i, j) + area
       end do
     end do
     do j = 1, rings
       do i = 1, nlon(j)
         if (weight_sum(i, j) <= 0.0_real64) error stop 'earth topography box average has an empty grid cell'
-        raw_height(i, j) = raw_height(i, j)/weight_sum(i, j)
+        averaged(i, j) = averaged(i, j)/weight_sum(i, j)
       end do
     end do
   end subroutine box_average_onto_grid

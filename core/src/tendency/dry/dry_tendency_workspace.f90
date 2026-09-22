@@ -161,6 +161,10 @@ contains
     allocate (this%previous_deep_temperature_grid(nx, ny))
     allocate (this%surface_temperature_grid(nx, ny), this%deep_temperature_grid(nx, ny))
     allocate (this%previous_surface_water(nx, ny), this%surface_water(nx, ny))
+    this%previous_surface_temperature_grid = 0.0_real64
+    this%previous_deep_temperature_grid = 0.0_real64
+    this%surface_temperature_grid = 0.0_real64
+    this%deep_temperature_grid = 0.0_real64
 
     allocate (this%forcing_u(nx, ny, levels), this%forcing_v(nx, ny, levels))
     allocate (this%forcing_temperature(nx, ny, levels), this%forcing_humidity(nx, ny, levels))
@@ -329,14 +333,13 @@ contains
                                   this%previous_delta_p, this%previous_layer_l, this%previous_alpha, &
                                   full_level_pressure=this%previous_full_level_pressure)
     end if
-    if (this%radiation_grids_ready) then
-      call transform%spectral_to_grid(state%surface_temperature, this%surface_temperature_grid)
-      call transform%spectral_to_grid(state%deep_temperature, this%deep_temperature_grid)
-      call transform%spectral_to_grid(physics_state%surface_temperature, &
-                                      this%previous_surface_temperature_grid)
-      call transform%spectral_to_grid(physics_state%deep_temperature, &
-                                      this%previous_deep_temperature_grid)
-    end if
+    ! The surface temperatures are grid prognostic fields; no transform is involved.
+    call copy_surface_field(state%surface_temperature, this%surface_temperature_grid, 'surface temperature')
+    call copy_surface_field(state%deep_temperature, this%deep_temperature_grid, 'deep temperature')
+    call copy_surface_field(physics_state%surface_temperature, this%previous_surface_temperature_grid, &
+                            'previous surface temperature')
+    call copy_surface_field(physics_state%deep_temperature, this%previous_deep_temperature_grid, &
+                            'previous deep temperature')
     call transform%gradient_to_grid(state%log_surface_pressure, this%dlogps_dlambda, this%dlogps_dphi)
 
     ! The surface geopotential is a fixed lower boundary condition, not a prognostic field.
@@ -366,6 +369,21 @@ contains
                                              this%humidity_grid, this%mass_flux, this%vertical_q)
     end if
   end subroutine prepare_workspace
+
+  !> Copies a grid surface field of the state; an unallocated field reads as zero.
+  subroutine copy_surface_field(source, destination, name)
+    real(real64), allocatable, intent(in) :: source(:, :)
+    real(real64), intent(inout) :: destination(:, :)
+    character(*), intent(in) :: name
+    if (.not. allocated(source)) then
+      destination = 0.0_real64
+      return
+    end if
+    if (any(shape(source) /= shape(destination))) then
+      error stop 'dry tendency '//name//' has an inconsistent shape'
+    end if
+    destination = source
+  end subroutine copy_surface_field
 
   !> Surface pressure, half-level pressures and the layer geometry (dp, ln(p_k/p_{k-1}),
   !> alpha and optionally the full-level pressure) at the grid points of every ring.

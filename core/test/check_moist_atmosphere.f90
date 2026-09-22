@@ -25,7 +25,8 @@ program check_moist_atmosphere
                                          set_radiation_case_state
   use dry_held_suarez, only: held_suarez_initial_state
   use dry_atmosphere, only: dry_atmosphere_solver
-  use dry_state, only: dry_state_type, dry_tendency_type, allocate_dry_state, allocate_dry_tendency
+  use dry_state, only: dry_state_type, dry_tendency_type, allocate_dry_state, allocate_dry_surface_fields, &
+                       allocate_dry_tendency
   use dry_tendency_workspace, only: dry_workspace_type
   use dry_tendency_evaluator, only: evaluate_dry_tendency
   use radiation_diagnostics_collector, only: radiation_case_diagnostics, radiation_monthly_means
@@ -541,6 +542,7 @@ contains
     type(dry_model_physics_config) :: physics
     complex(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     complex(real64), allocatable :: log_ps(:, :), surface_geopotential(:, :)
+    real(real64), allocatable :: lowest_grid(:, :)
     real(real64) :: speed_dry, speed_moist
     integer :: levels
 
@@ -554,11 +556,13 @@ contains
     state%delta = delta
     state%temperature = temperature
     state%log_surface_pressure = log_ps
-    state%surface_temperature = temperature(:, :, levels)
-    state%deep_temperature = temperature(:, :, levels)
+    call transform%spectral_to_grid(temperature(:, :, levels), lowest_grid)
+    call allocate_dry_surface_fields(state, size(lowest_grid, 1), size(lowest_grid, 2))
+    state%surface_temperature = lowest_grid
+    state%deep_temperature = lowest_grid
     call workspace%initialize(transform, truncation, levels)
-    call allocate_dry_tendency(dry, truncation, levels)
-    call allocate_dry_tendency(moist, truncation, levels)
+    call allocate_dry_tendency(dry, truncation, levels, workspace%nx, workspace%ny)
+    call allocate_dry_tendency(moist, truncation, levels, workspace%nx, workspace%ny)
     physics = slab_ocean_case_physics()
     physics%radiation%longwave_reference_surface_humidity = 0.0_real64
     call evaluate_dry_tendency(transform, truncation, coordinate, planet_config(), state, state, surface_geopotential, &
@@ -609,10 +613,9 @@ contains
     ! A warm ocean under a uniform 264 K atmosphere drives evaporation and convection;
     ! saturating two mid-levels drives large-scale condensation as well.
     call transform%allocate_field(humidity_grid)
-    humidity_grid = 300.0_real64
-    call transform%grid_to_spectral(humidity_grid, humidity_spectral)
-    state%surface_temperature = humidity_spectral
-    state%deep_temperature = humidity_spectral
+    call allocate_dry_surface_fields(state, size(humidity_grid, 1), size(humidity_grid, 2))
+    state%surface_temperature = 300.0_real64
+    state%deep_temperature = 300.0_real64
     allocate (full_level_pressure(levels), delta_pressure(levels))
     pressure_half_column = coordinate%reference_p_half
     call full_level_pressures(pressure_half_column, full_level_pressure, delta_pressure)
@@ -623,7 +626,7 @@ contains
       state%specific_humidity(:, :, k) = humidity_spectral
     end do
     call workspace%initialize(transform, truncation, levels)
-    call allocate_dry_tendency(rhs, truncation, levels)
+    call allocate_dry_tendency(rhs, truncation, levels, workspace%nx, workspace%ny)
     physics = moist_case_physics()
     call evaluate_dry_tendency(transform, truncation, coordinate, planet_config(), state, state, surface_geopotential, &
                                physics, workspace, 0.0_real64, 2.0_real64*time_step, rhs, speed, sample)

@@ -52,4 +52,4 @@ T_s^{n+1}=\overline T_s^{n-1}+2\Delta t\left(\frac{\partial T_s}{\partial t}\rig
 T_d^{n+1}=\overline T_d^{n-1}+2\Delta t\left(\frac{\partial T_d}{\partial t}\right)\left[\overline X^{n-1}\right]
 $$
 
-と進め、最初の 2 ステップも[乾燥大気](../dynamics/dry.md#初期化)の $F$ と同じ時間幅・同じ引数で扱う。重力波・超粘性の処理については $T_s,T_d$ には適用しない。ただし RAW フィルターについては適用する。
+と進め、最初の 2 ステップも[乾燥大気](../dynamics/dry.md#初期化)の $F$ と同じ時間幅・同じ引数で扱う。$T_s,T_d$ は水平移流を持たないので、大気の予報変数と違ってスペクトルでは持たず、格子点ごとの値として保持する（[陸と海の混合](./land-sea-surface.md#t_s-を格子で持つ理由)）。スペクトル変換・重力波・超粘性の処理は適用せず、RAW フィルターは格子点ごとに適用する。
