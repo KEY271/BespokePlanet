@@ -125,6 +125,14 @@ module dry_physics_config
     real(real64) :: ocean_surface_wetness = 1.0_real64
   end type evaporation_config
 
+  !> One-layer finite land-water reservoir (docs/tendency/bucket.md).
+  type, public :: bucket_config
+    logical :: enabled = .false.
+    real(real64) :: capacity = 150.0_real64
+    real(real64) :: initial_water = 75.0_real64
+    real(real64) :: dry_threshold_fraction = 0.1_real64
+  end type bucket_config
+
   !> Simplified Betts-Miller moist convective adjustment (Frierson 2007).
   type, public :: moist_convection_config
     logical :: enabled = .false.
@@ -162,6 +170,7 @@ module dry_physics_config
     type(convection_config) :: convection
     type(moisture_config) :: moisture
     type(evaporation_config) :: evaporation
+    type(bucket_config) :: bucket
     type(moist_convection_config) :: moist_convection
     type(condensation_config) :: condensation
     type(cloud_config) :: cloud
@@ -202,6 +211,8 @@ contains
   end function radiation_surface_heat_capacity
 
   !> Time-independent surface coefficients at one mixed land--ocean grid point.
+  !> Wetness is retained for legacy callers; bucket-enabled evaporation diagnoses
+  !> its land value from the prognostic surface water instead.
   pure subroutine mixed_surface_properties(radiation, evaporation, land_fraction, heat_capacity, albedo, &
                                            wetness, ground_exchange)
     type(radiation_config), intent(in) :: radiation

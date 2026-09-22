@@ -112,6 +112,7 @@ precipitation_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year
 evaporation_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
 cloud_cover_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
 surface_pressure_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
+surface_water_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
 zonal_v_monthly <- array(NA_real_, dim = c(nlat, nlev, months_per_year))
 
 for (m in seq_along(final_months)) {
@@ -121,6 +122,7 @@ for (m in seq_along(final_months)) {
   evaporation_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_evaporation_", suffix)))
   cloud_cover_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_cloud_cover_", suffix)))
   surface_pressure_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_surface_pressure_", suffix)))
+  surface_water_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_surface_water_", suffix)))
   zonal_v_monthly[, , m] <- read_zonal(file.path(case_dir, paste0("monthly_zonal_v_", suffix)))
 }
 
@@ -133,6 +135,7 @@ precipitation_annual_mm <- rowSums(precipitation_monthly * days_per_month)
 evaporation_annual_mm <- rowSums(evaporation_monthly * days_per_month)
 cloud_cover_annual <- rowMeans(cloud_cover_monthly)
 surface_pressure_annual_hpa <- rowMeans(surface_pressure_monthly) / 100
+surface_water_annual <- rowMeans(surface_water_monthly)
 
 # Gauss-Legendre weights are reconstructed from P_N'(mu) and split evenly over
 # the longitudes of each ring, so the point weights sum to one.
@@ -257,6 +260,7 @@ climate_table <- data.frame(
   annual_precipitation_mm = precipitation_annual_mm,
   annual_evaporation_mm = evaporation_annual_mm,
   annual_mean_cloud_cover = cloud_cover_annual,
+  annual_mean_surface_water_kg_m2 = surface_water_annual,
   koppen_group = koppen_group,
   koppen_type = koppen_type
 )
@@ -303,7 +307,8 @@ site_table <- data.frame(
   koppen_type = koppen_type[selected],
   earth_reference_koppen = target_points$earth_koppen,
   annual_mean_temperature_c = temperature_annual_c[selected],
-  annual_precipitation_mm = precipitation_annual_mm[selected]
+  annual_precipitation_mm = precipitation_annual_mm[selected],
+  annual_mean_surface_water_kg_m2 = surface_water_annual[selected]
 )
 write.csv(site_table, file.path(analysis_dir, "representative_land_sites.csv"), row.names = FALSE)
 
@@ -501,6 +506,27 @@ legend("topleft", legend = c(temperature_labels, "Ocean"),
        fill = c(temperature_colors, ocean_colour), border = "#555555", bg = "white", cex = 0.74,
        title = "Temperature")
 mtext("Land is land fraction >= 0.5", side = 1, line = 4.6, cex = 0.72)
+dev.off()
+
+# --- Annual-mean land-bucket water -----------------------------------------
+# Fixed bins span the configured 150 kg/m2 capacity and match the analytic
+# land/sea analysis, making the two maps directly comparable.
+surface_water_breaks <- seq(0, 150, by = 15)
+surface_water_colors <- hcl.colors(length(surface_water_breaks) - 1, palette = "YlGnBu")
+surface_water_class <- cut(pmin(150, pmax(0, surface_water_annual)),
+                           breaks = surface_water_breaks, labels = FALSE, include.lowest = TRUE)
+surface_water_labels <- sprintf("%d–%d", head(surface_water_breaks, -1), tail(surface_water_breaks, -1))
+
+open_map_png("final_year_land_surface_water_map.png")
+par(mar = c(6.2, 5.0, 4.1, 1.0), las = 1)
+map_frame(sprintf("Annual-mean land surface water, %s", period_label))
+draw_cells(surface_water_colors[surface_water_class], land)
+map_axes()
+draw_coastline()
+legend("topleft", legend = c(surface_water_labels, "Ocean"),
+       fill = c(surface_water_colors, ocean_colour), border = "#555555", bg = "white", cex = 0.70,
+       title = expression(W~(kg~m^{-2})))
+mtext("Final-year mean; land is land fraction >= 0.5", side = 1, line = 4.6, cex = 0.72)
 dev.off()
 
 # --- Annual land precipitation ---------------------------------------------
@@ -925,6 +951,7 @@ summary_table <- data.frame(
     "global_area_mean_cloud_cover", "land_area_mean_cloud_cover", "ocean_area_mean_cloud_cover",
     "global_area_mean_surface_temperature_c",
     "land_area_mean_surface_temperature_c", "ocean_area_mean_surface_temperature_c",
+    "land_area_mean_surface_water_kg_m-2",
     "land_precipitation_minus_evaporation_mm_yr",
     "ocean_precipitation_minus_evaporation_mm_yr",
     "minimum_land_annual_temperature_c", "maximum_land_annual_temperature_c",
@@ -951,6 +978,7 @@ summary_table <- data.frame(
     area_mean(temperature_annual_c, point_weight),
     area_mean(temperature_annual_c, land_weight),
     area_mean(temperature_annual_c, ocean_weight),
+    area_mean(surface_water_annual, land_weight),
     area_mean(budget_annual_mm, land_weight),
     area_mean(budget_annual_mm, ocean_weight),
     min(temperature_annual_c[land]), max(temperature_annual_c[land]),
@@ -987,6 +1015,7 @@ notes <- c(
   "The observed Earth Koppen type of each site is listed for reference only; it is not a model output.",
   "Zonal means include both land and ocean grid cells.",
   "The cloud map shows final-year mean diagnosed effective column cloud fraction over land and ocean in fixed 10-percentage-point bins.",
+  "The surface-water map shows final-year mean land-bucket water in fixed 15 kg/m2 bins spanning the 150 kg/m2 capacity; ocean is masked.",
   "P - E over land is the runoff discarded by the land surface; over the ocean it is the net moisture source.",
   "The monsoon figure uses June-August minus December-February monthly means of precipitation and surface pressure.",
   "The ocean surface pressure map shows the departure of the annual mean from the ocean area mean, as the check for terrain-induced ripples.",
@@ -999,5 +1028,6 @@ writeLines(notes, file.path(analysis_dir, "README.txt"))
 cat("Analysis written to", analysis_dir, "\n")
 print(site_table[, c("site", "longitude_deg", "latitude_deg", "snap_distance_deg",
                      "surface_height_m", "koppen_type", "earth_reference_koppen",
-                     "annual_mean_temperature_c", "annual_precipitation_mm")], row.names = FALSE)
+                     "annual_mean_temperature_c", "annual_precipitation_mm",
+                     "annual_mean_surface_water_kg_m2")], row.names = FALSE)
 print(summary_table, row.names = FALSE)

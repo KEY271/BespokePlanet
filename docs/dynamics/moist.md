@@ -166,24 +166,25 @@ $$
 物理過程 $\mathcal{P}$ は[物理過程を評価する時刻](../tendency/physics-time-level.md)のとおり、RAW フィルター適用済みの前時刻 $\overline X^{n-1}$ の場で評価する。湿潤大気では次の過程を含む。
 
 - [長波放射](../tendency/longwave-radiation.md)（水蒸気による光学的厚さは $q^+$ に依存する）、[短波放射](../tendency/shortwave-radiation.md)（雲量に依存する）、[オゾン](../tendency/ozone.md)
-- [地面](../tendency/ground.md)または [slab ocean](../tendency/slab-ocean.md) との顕熱交換、および[蒸発](../tendency/evaporation.md)
+- [地面](../tendency/ground.md)または [slab ocean](../tendency/slab-ocean.md) との顕熱交換、および[蒸発](../tendency/evaporation.md)。陸面を持つケースでは[バケツモデル](../tendency/bucket.md)による有限水量の予報を含む
 - [Held–Suarez 強制](../tendency/Held-Suarez.md)の形の地表摩擦と、ケースによっては[上層の Rayleigh 摩擦](../tendency/upper-rayleigh-friction.md)
 - [乾燥対流調節](../tendency/dry-convective-adjustment.md)（[湿潤対流調節](../tendency/moist-convective-adjustment.md#乾燥対流調節の変更)の節で述べる変更を含む）
 - [湿潤対流調節](../tendency/moist-convective-adjustment.md)
 - [大規模凝結](../tendency/large-scale-condensation.md)
 - [雲](../tendency/cloud.md)（気柱の実効雲量の診断。傾向は持たず、短波の反射にだけ使う）
 
-放射、顕熱、蒸発、摩擦、乾燥対流調節は互いに独立に $\overline X^{n-1}$ から評価し、傾向を足し合わせる。ただし評価の順序は蒸発 → 対流調節・大規模凝結 → 雲量の診断 → 放射とする。放射が地表の熱収支に使う潜熱フラックスは先に評価した蒸発から、短波に使う雲量は先に評価した雲量の診断から受け取るためである。対流調節と凝結は同じ不安定・過飽和を重複して除かないように、次の順序で逐次に評価する。
+放射、顕熱、蒸発、摩擦、乾燥対流調節は互いに独立に $\overline X^{n-1}$ から評価し、傾向を足し合わせる。ただし評価の順序は蒸発候補 → 対流調節・大規模凝結 → 雲量の診断 → バケツの更新 → 放射とする。放射が地表の熱収支に使う潜熱フラックスは制限後の蒸発から、短波に使う雲量は先に評価した雲量の診断から受け取るためである。対流調節と凝結は同じ不安定・過飽和を重複して除かないように、次の順序で逐次に評価する。
 
 1. $\overline X^{n-1}$ の格子値 $\overline T_k,\overline q_k^+,\overline{\bm u}_k,\overline p_s$ から乾燥対流調節の傾向 $C^{\mathrm{dry}}_{T,k},C^{\mathrm{dry}}_{q,k}$ を作る。
 2. 暫定場 $T^{(1)}_k=\overline T_k+2\Delta tC^{\mathrm{dry}}_{T,k}$、$q^{(1)}_k=\overline q_k^++2\Delta tC^{\mathrm{dry}}_{q,k}$ から湿潤対流調節の傾向 $C^{\mathrm{conv}}_{T,k},C^{\mathrm{conv}}_{q,k}$ と対流性降水 $P_{\mathrm{conv}}$ を作る。
 3. 暫定場 $T^{(2)}_k=T^{(1)}_k+2\Delta tC^{\mathrm{conv}}_{T,k}$、$q^{(2)}_k=q^{(1)}_k+2\Delta tC^{\mathrm{conv}}_{q,k}$ から大規模凝結の傾向 $C^{\mathrm{ls}}_{T,k},C^{\mathrm{ls}}_{q,k}$ と降水 $P_{\mathrm{ls}}$ を作る。
 4. 暫定場 $T^{(3)}_k=T^{(2)}_k+2\Delta tC^{\mathrm{ls}}_{T,k}$、$q^{(3)}_k=q^{(2)}_k+2\Delta tC^{\mathrm{ls}}_{q,k}$ の相対湿度と、2 の対流性降水から気柱の実効雲量 $C$ を診断する。
-5. 長波・短波放射と地表の熱収支を $\overline X^{n-1}$ から評価する。短波の雲による反射には 4 の雲量を使う。
+5. 陸面を持つケースでは $P=P_{\mathrm{conv}}+P_{\mathrm{ls}}$ と制限後の陸面蒸発 $E_L$ からバケツの $W$ と流出 $R$ を更新する。純海洋ケースではこの段階を省く。
+6. 長波・短波放射と地表の熱収支を $\overline X^{n-1}$ から評価する。短波の雲による反射には 4 の雲量、潜熱には制限後の蒸発を使う。
 
 暫定場に使う $2\Delta t$ は LeapFrog で場を進める時間幅で、初期化の 2 ステップでは $F$ の第 1 引数を $\Delta t$ とみなして同じ規則を使う。暫定場には放射、顕熱、蒸発の傾向は加えない。雲量は暫定場から診断するが、放射の傾向は $\overline X^{n-1}$ に対して加える。暫定場を作るのは格子空間だけで済むので、スペクトルへの変換回数は増えない。温度と比湿の傾向はすべて格子で足し合わせ、他の項とまとめて 1 回だけスペクトルへ変換する。
 
-$\mathcal{P}$ に含まれる各過程は、大気・地表面の間で交換する水とエネルギーについて次を満たす。蒸発で地表面が失う潜熱 $LE$ は同じ $E$ として大気最下層の比湿に入り、凝結・対流で大気から除かれた水蒸気はすべて降水 $P_{\mathrm{conv}}+P_{\mathrm{ls}}$ として地表へ落ち、その潜熱は同じ気柱の温度に加わる。したがって水と湿潤エンタルピー $c_pT+Lq$ の収支は、放射と顕熱を除いて気柱ごとに閉じる。
+$\mathcal{P}$ に含まれる各過程は、大気・地表面の間で交換する水とエネルギーについて次を満たす。蒸発で地表面が失う潜熱 $LE$ は同じ $E$ として大気最下層の比湿に入り、凝結・対流で大気から除かれた水蒸気はすべて降水 $P_{\mathrm{conv}}+P_{\mathrm{ls}}$ として地表へ落ち、その潜熱は同じ気柱の温度に加わる。陸面では降水をバケツに入れ、$P-E_L$ のうち容量を超えた分だけを流出 $R$ とする。したがって流出を系外への水のフラックスとして数えれば水収支が閉じ、湿潤エンタルピー $c_pT+Lq$ の収支は放射と顕熱を除いて気柱ごとに閉じる。
 
 ## 初期化
 

@@ -107,6 +107,7 @@ temperature_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
 precipitation_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
 cloud_cover_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
 surface_pressure_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
+surface_water_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
 zonal_v_monthly <- array(NA_real_, dim = c(nlat, nlev, months_per_year))
 
 for (m in seq_along(final_months)) {
@@ -115,6 +116,7 @@ for (m in seq_along(final_months)) {
   precipitation_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_precipitation_", suffix)))
   cloud_cover_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_cloud_cover_", suffix)))
   surface_pressure_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_surface_pressure_", suffix)))
+  surface_water_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_surface_water_", suffix)))
   zonal_v_monthly[, , m] <- read_zonal(file.path(case_dir, paste0("monthly_zonal_v_", suffix)))
 }
 
@@ -125,6 +127,7 @@ temperature_annual_c <- temperature_annual_k - 273.15
 precipitation_annual_mm <- rowSums(precipitation_monthly * days_per_month)
 precipitation_mean_mm_day <- rowMeans(precipitation_monthly)
 cloud_cover_annual <- rowMeans(cloud_cover_monthly)
+surface_water_annual <- rowMeans(surface_water_monthly)
 
 # Köppen first-letter climate group. We use the original -3 C C/D boundary.
 # B is tested first using annual temperature, annual precipitation, and the
@@ -176,6 +179,7 @@ climate_table <- data.frame(
   annual_mean_surface_temperature_c = temperature_annual_c,
   annual_precipitation_mm = precipitation_annual_mm,
   annual_mean_cloud_cover = cloud_cover_annual,
+  annual_mean_surface_water_kg_m2 = surface_water_annual,
   koppen_group = koppen_group
 )
 write.csv(climate_table, file.path(analysis_dir, "final_year_koppen_groups.csv"), row.names = FALSE)
@@ -209,7 +213,8 @@ site_table <- data.frame(
   land_fraction = land_fraction[selected],
   koppen_group = koppen_group[selected],
   annual_mean_temperature_c = temperature_annual_c[selected],
-  annual_precipitation_mm = precipitation_annual_mm[selected]
+  annual_precipitation_mm = precipitation_annual_mm[selected],
+  annual_mean_surface_water_kg_m2 = surface_water_annual[selected]
 )
 write.csv(site_table, file.path(analysis_dir, "representative_land_sites.csv"), row.names = FALSE)
 
@@ -388,6 +393,59 @@ legend("topleft", legend = c(temperature_labels, "Ocean"),
        fill = c(temperature_colors, "#b9d9eb"), border = "#555555", bg = "white", cex = 0.74,
        title = "Temperature")
 mtext("Land is defined as land fraction >= 0.5", side = 1, line = 4.6, cex = 0.72)
+dev.off()
+
+# Final-year annual-mean land-bucket water. The fixed bins span the configured
+# 150 kg/m2 capacity so maps remain directly comparable between runs.
+surface_water_breaks <- seq(0, 150, by = 15)
+surface_water_colors <- hcl.colors(length(surface_water_breaks) - 1, palette = "YlGnBu")
+surface_water_class <- cut(pmin(150, pmax(0, surface_water_annual)),
+                           breaks = surface_water_breaks, labels = FALSE, include.lowest = TRUE)
+surface_water_labels <- sprintf("%d–%d", head(surface_water_breaks, -1), tail(surface_water_breaks, -1))
+
+png(file.path(analysis_dir, "final_year_land_surface_water_map.png"),
+    width = 2200, height = 1250, res = 180, type = png_device_type)
+par(mar = c(6.2, 5.0, 4.1, 1.0), las = 1)
+plot(NA, xlim = c(-180, 180), ylim = c(-90, 90), xaxs = "i", yaxs = "i",
+     xlab = "Longitude", ylab = "Latitude",
+     main = sprintf("Annual-mean land surface water, final year (months %d–%d)",
+                    min(final_months), max(final_months)),
+     axes = FALSE)
+rect(-180, -90, 180, 90, col = "#b9d9eb", border = NA)
+offset <- 0L
+for (j in seq_len(nlat)) {
+  delta_lon <- 360 / nlon[[j]]
+  for (i in seq_len(nlon[[j]])) {
+    index <- offset + i
+    if (!land[[index]]) next
+    centre <- map_longitude[[index]]
+    left <- centre - delta_lon / 2
+    right <- centre + delta_lon / 2
+    colour <- surface_water_colors[[surface_water_class[[index]]]]
+    if (left < -180) {
+      rect(-180, latitude_edges[[j]], right, latitude_edges[[j + 1]], col = colour, border = NA)
+      rect(360 + left, latitude_edges[[j]], 180, latitude_edges[[j + 1]], col = colour, border = NA)
+    } else if (right > 180) {
+      rect(left, latitude_edges[[j]], 180, latitude_edges[[j + 1]], col = colour, border = NA)
+      rect(-180, latitude_edges[[j]], right - 360, latitude_edges[[j + 1]], col = colour, border = NA)
+    } else {
+      rect(left, latitude_edges[[j]], right, latitude_edges[[j + 1]], col = colour, border = NA)
+    }
+  }
+  offset <- offset + nlon[[j]]
+}
+abline(h = seq(-60, 60, 30), v = seq(-180, 180, 60),
+       col = adjustcolor("white", 0.65), lwd = 0.7)
+axis(1, at = seq(-180, 180, 60),
+     labels = c("180°W", "120°W", "60°W", "0°", "60°E", "120°E", "180°E"))
+axis(2, at = seq(-90, 90, 30),
+     labels = c("90°S", "60°S", "30°S", "0°", "30°N", "60°N", "90°N"))
+box()
+legend("topleft", legend = c(surface_water_labels, "Ocean"),
+       fill = c(surface_water_colors, "#b9d9eb"), border = "#555555", bg = "white", cex = 0.70,
+       title = expression(W~(kg~m^{-2})))
+mtext("Final-year mean; land is defined as land fraction >= 0.5",
+      side = 1, line = 4.6, cex = 0.72)
 dev.off()
 
 # Final-year annual land precipitation map. Monthly output is a mean rate in
@@ -662,7 +720,7 @@ summary_table <- data.frame(
   metric = c("final_month_start", "final_month_end", "maximum_streamfunction_1e9_kg_s",
              "minimum_streamfunction_1e9_kg_s", "maximum_surface_mass_residual_1e9_kg_s",
              "global_area_mean_cloud_cover", "land_area_mean_cloud_cover",
-             "ocean_area_mean_cloud_cover",
+             "ocean_area_mean_cloud_cover", "land_area_mean_surface_water_kg_m-2",
              paste0("land_area_fraction_group_", names(group_fraction))),
   value = c(min(final_months), max(final_months), max(psi_billion), min(psi_billion),
             max(abs(rowMeans(surface_mass_residual))) / 1e9,
@@ -670,6 +728,7 @@ summary_table <- data.frame(
             sum(group_weight * land_fraction * cloud_cover_annual) / sum(group_weight * land_fraction),
             sum(group_weight * (1 - land_fraction) * cloud_cover_annual) /
               sum(group_weight * (1 - land_fraction)),
+            sum(group_weight * land_fraction * surface_water_annual) / sum(group_weight * land_fraction),
             group_fraction)
 )
 write.csv(summary_table, file.path(analysis_dir, "analysis_summary.csv"), row.names = FALSE)
@@ -682,6 +741,7 @@ notes <- c(
   "The C/D boundary is -3 degC. A requires every month >=18 degC; E has warmest month <10 degC.",
   "Zonal means include both land and ocean grid cells.",
   "The cloud map shows final-year mean diagnosed effective column cloud fraction over land and ocean in fixed 10-percentage-point bins.",
+  "The surface-water map shows final-year mean land-bucket water in fixed 15 kg/m2 bins spanning the 150 kg/m2 capacity; ocean is masked.",
   "Mass streamfunction uses monthly zonal-mean v and monthly zonal-mean surface pressure; pressure shown is the reference full-level pressure.",
   "Climographs use snapped native-grid cells with land_fraction >= 0.75, are reordered to January-December, and share both vertical-axis ranges across all panels.",
   "All annual means use the final 12 monthly means with equal weights."

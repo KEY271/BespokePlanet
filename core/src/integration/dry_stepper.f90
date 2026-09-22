@@ -5,8 +5,8 @@ module dry_stepper
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate
   use dry_gravity_wave, only: dry_gravity_wave_solver
   use dry_gravity_wave_operator, only: solve_dry_gravity_wave
-  use dry_state, only: dry_state_type, dry_tendency_type, allocate_dry_state, allocate_dry_tendency, &
-                       copy_dry_state, swap_dry_states, enforce_dry_state_constraints
+  use dry_state, only: dry_state_type, dry_tendency_type, allocate_dry_state, allocate_dry_surface_water, &
+                       allocate_dry_tendency, copy_dry_state, swap_dry_states, enforce_dry_state_constraints
   use dry_physics_config, only: dry_model_physics_config
   use dry_tendency_evaluator, only: evaluate_dry_tendency
   use dry_radiation, only: radiation_diagnostics
@@ -32,9 +32,11 @@ module dry_stepper
 
 contains
 
-  subroutine initialize_dry_stepper(this, truncation, number_of_levels)
+  subroutine initialize_dry_stepper(this, transform, truncation, number_of_levels)
     class(dry_stepper_type), intent(inout) :: this
+    type(harmonic_transform), intent(inout) :: transform
     integer, intent(in) :: truncation, number_of_levels
+    real(real64), allocatable :: grid(:, :)
 
     this%truncation = truncation
     this%number_of_levels = number_of_levels
@@ -43,6 +45,11 @@ contains
     call allocate_dry_state(this%candidate, truncation, number_of_levels)
     call allocate_dry_state(this%next, truncation, number_of_levels)
     call allocate_dry_state(this%filtered, truncation, number_of_levels)
+    call transform%allocate_field(grid)
+    call allocate_dry_surface_water(this%half, size(grid, 1), size(grid, 2))
+    call allocate_dry_surface_water(this%candidate, size(grid, 1), size(grid, 2))
+    call allocate_dry_surface_water(this%next, size(grid, 1), size(grid, 2))
+    call allocate_dry_surface_water(this%filtered, size(grid, 1), size(grid, 2))
   end subroutine initialize_dry_stepper
 
   !> Advances one step.  When radiation is enabled, diagnostics receives the
@@ -139,6 +146,10 @@ contains
     candidate%specific_humidity(:, :, :) = previous%specific_humidity + centered_interval*rhs%specific_humidity
     candidate%surface_temperature(:, :) = previous%surface_temperature + centered_interval*rhs%surface_temperature
     candidate%deep_temperature(:, :) = previous%deep_temperature + centered_interval*rhs%deep_temperature
+    candidate%surface_water = previous%surface_water + centered_interval*workspace%forcing_surface_water
+    if (physics%bucket%enabled) then
+      candidate%surface_water = min(physics%bucket%capacity, max(0.0_real64, candidate%surface_water))
+    end if
     call solve_dry_gravity_wave(gravity_wave, centered_interval, previous, current, rhs, candidate)
     do k = 1, coordinate%number_of_levels
       call apply_spectral_hyperdiffusion(truncation, centered_interval, candidate%zeta(:, :, k), &
@@ -173,6 +184,12 @@ contains
       call apply_raw_filter(previous%deep_temperature, current%deep_temperature, &
         candidate%deep_temperature, filtered%deep_temperature, next%deep_temperature, &
         numerics%raw_filter)
+      call apply_raw_filter(previous%surface_water, current%surface_water, candidate%surface_water, &
+                            filtered%surface_water, next%surface_water, numerics%raw_filter)
+      if (physics%bucket%enabled) then
+        filtered%surface_water = min(physics%bucket%capacity, max(0.0_real64, filtered%surface_water))
+        next%surface_water = min(physics%bucket%capacity, max(0.0_real64, next%surface_water))
+      end if
     else
       call copy_dry_state(current, filtered)
       call copy_dry_state(candidate, next)

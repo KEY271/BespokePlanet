@@ -19,6 +19,7 @@ module radiation_diagnostics_collector
     !> Moist fields; unallocated in a dry run.
     real(real64), allocatable :: precipitation(:, :), evaporation(:, :), precipitable_water(:, :)
     real(real64), allocatable :: cloud_cover(:, :)
+    real(real64), allocatable :: surface_water(:, :), surface_wetness(:, :), runoff(:, :)
     real(real64), allocatable :: zonal_humidity(:, :), eddy_vq(:, :)
   end type radiation_monthly_means
 
@@ -39,6 +40,7 @@ module radiation_diagnostics_collector
     real(real64), allocatable :: evaporation_sum(:, :)
     real(real64), allocatable :: precipitable_water_sum(:, :)
     real(real64), allocatable :: cloud_cover_sum(:, :)
+    real(real64), allocatable :: surface_water_sum(:, :), surface_wetness_sum(:, :), runoff_sum(:, :)
     real(real64), allocatable :: zonal_humidity_sum(:, :)
     real(real64), allocatable :: zonal_vq_sum(:, :)
   contains
@@ -63,6 +65,12 @@ module radiation_diagnostics_collector
     real(real64) :: ocean_precipitation_sum = 0.0_real64
     real(real64) :: land_evaporation_sum = 0.0_real64
     real(real64) :: ocean_evaporation_sum = 0.0_real64
+    real(real64) :: surface_water_sum = 0.0_real64
+    real(real64) :: surface_wetness_sum = 0.0_real64
+    real(real64) :: runoff_sum = 0.0_real64
+    real(real64) :: dry_land_fraction_sum = 0.0_real64
+    real(real64) :: water_budget_residual_sum = 0.0_real64
+    real(real64) :: maximum_water_budget_residual = 0.0_real64
     real(real64) :: kinetic_energy_sum = 0.0_real64
     real(real64) :: surface_pressure_sum = 0.0_real64
     real(real64) :: incoming_shortwave_sum = 0.0_real64
@@ -146,6 +154,9 @@ contains
       allocate (this%zonal_v_sum, mold=sample%zonal_v)
       allocate (this%zonal_uv_sum, mold=sample%zonal_uv)
       allocate (this%zonal_vt_sum, mold=sample%zonal_vt)
+      allocate (this%surface_water_sum, mold=sample%surface_water)
+      allocate (this%surface_wetness_sum, mold=sample%surface_wetness)
+      allocate (this%runoff_sum, mold=sample%runoff)
       this%moist = allocated(sample%precipitation)
       if (this%moist) then
         if (.not. allocated(sample%evaporation) .or. .not. allocated(sample%precipitable_water) .or. &
@@ -173,6 +184,9 @@ contains
     this%zonal_v_sum = this%zonal_v_sum + sample%zonal_v
     this%zonal_uv_sum = this%zonal_uv_sum + sample%zonal_uv
     this%zonal_vt_sum = this%zonal_vt_sum + sample%zonal_vt
+    this%surface_water_sum = this%surface_water_sum + sample%surface_water
+    this%surface_wetness_sum = this%surface_wetness_sum + sample%surface_wetness
+    this%runoff_sum = this%runoff_sum + sample%runoff
     if (this%moist) then
       this%precipitation_sum = this%precipitation_sum + sample%precipitation
       this%evaporation_sum = this%evaporation_sum + sample%evaporation
@@ -199,6 +213,9 @@ contains
     means%zonal_v = this%zonal_v_sum*inverse_count
     means%eddy_uv = this%zonal_uv_sum*inverse_count - means%zonal_u*means%zonal_v
     means%eddy_vt = this%zonal_vt_sum*inverse_count - means%zonal_v*means%zonal_temperature
+    means%surface_water = this%surface_water_sum*inverse_count
+    means%surface_wetness = this%surface_wetness_sum*inverse_count
+    means%runoff = this%runoff_sum*inverse_count
     if (this%moist) then
       means%precipitation = this%precipitation_sum*inverse_count
       means%evaporation = this%evaporation_sum*inverse_count
@@ -222,6 +239,9 @@ contains
     if (allocated(this%zonal_v_sum)) this%zonal_v_sum = 0.0_real64
     if (allocated(this%zonal_uv_sum)) this%zonal_uv_sum = 0.0_real64
     if (allocated(this%zonal_vt_sum)) this%zonal_vt_sum = 0.0_real64
+    if (allocated(this%surface_water_sum)) this%surface_water_sum = 0.0_real64
+    if (allocated(this%surface_wetness_sum)) this%surface_wetness_sum = 0.0_real64
+    if (allocated(this%runoff_sum)) this%runoff_sum = 0.0_real64
     if (allocated(this%precipitation_sum)) this%precipitation_sum = 0.0_real64
     if (allocated(this%evaporation_sum)) this%evaporation_sum = 0.0_real64
     if (allocated(this%precipitable_water_sum)) this%precipitable_water_sum = 0.0_real64
@@ -250,6 +270,13 @@ contains
     this%ocean_precipitation_sum = this%ocean_precipitation_sum + sample%mean_ocean_precipitation
     this%land_evaporation_sum = this%land_evaporation_sum + sample%mean_land_evaporation
     this%ocean_evaporation_sum = this%ocean_evaporation_sum + sample%mean_ocean_evaporation
+    this%surface_water_sum = this%surface_water_sum + sample%mean_surface_water
+    this%surface_wetness_sum = this%surface_wetness_sum + sample%mean_surface_wetness
+    this%runoff_sum = this%runoff_sum + sample%mean_runoff
+    this%dry_land_fraction_sum = this%dry_land_fraction_sum + sample%dry_land_fraction
+    this%water_budget_residual_sum = this%water_budget_residual_sum + sample%mean_water_budget_residual
+    this%maximum_water_budget_residual = max(this%maximum_water_budget_residual, &
+      sample%maximum_water_budget_residual)
     this%kinetic_energy_sum = this%kinetic_energy_sum + sample%mean_kinetic_energy
     this%surface_pressure_sum = this%surface_pressure_sum + sample%mean_surface_pressure
     this%incoming_shortwave_sum = this%incoming_shortwave_sum + sample%mean_incoming_shortwave
@@ -293,6 +320,12 @@ contains
     means%mean_ocean_precipitation = this%ocean_precipitation_sum*inverse_count
     means%mean_land_evaporation = this%land_evaporation_sum*inverse_count
     means%mean_ocean_evaporation = this%ocean_evaporation_sum*inverse_count
+    means%mean_surface_water = this%surface_water_sum*inverse_count
+    means%mean_surface_wetness = this%surface_wetness_sum*inverse_count
+    means%mean_runoff = this%runoff_sum*inverse_count
+    means%dry_land_fraction = this%dry_land_fraction_sum*inverse_count
+    means%mean_water_budget_residual = this%water_budget_residual_sum*inverse_count
+    means%maximum_water_budget_residual = this%maximum_water_budget_residual
     means%mean_kinetic_energy = this%kinetic_energy_sum*inverse_count
     means%mean_surface_pressure = this%surface_pressure_sum*inverse_count
     means%mean_incoming_shortwave = this%incoming_shortwave_sum*inverse_count
@@ -328,6 +361,12 @@ contains
     this%ocean_precipitation_sum = 0.0_real64
     this%land_evaporation_sum = 0.0_real64
     this%ocean_evaporation_sum = 0.0_real64
+    this%surface_water_sum = 0.0_real64
+    this%surface_wetness_sum = 0.0_real64
+    this%runoff_sum = 0.0_real64
+    this%dry_land_fraction_sum = 0.0_real64
+    this%water_budget_residual_sum = 0.0_real64
+    this%maximum_water_budget_residual = 0.0_real64
     this%kinetic_energy_sum = 0.0_real64
     this%surface_pressure_sum = 0.0_real64
     this%incoming_shortwave_sum = 0.0_real64

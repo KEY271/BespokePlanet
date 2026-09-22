@@ -278,6 +278,7 @@ contains
     real(real64), allocatable :: surface_pressure(:, :), log_surface_pressure(:, :)
     real(real64), allocatable :: u(:, :, :), v(:, :, :), humidity(:, :, :)
     real(real64), allocatable :: surface_temperature(:, :), deep_temperature(:, :), cloud_cover(:, :)
+    real(real64), allocatable :: surface_water(:, :)
 
     if (options%include_moisture) then
       call solver%get_spectral_state(zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
@@ -286,7 +287,7 @@ contains
                                      deep_temperature=deep_temperature_spectral)
       call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
                              surface_temperature=surface_temperature, deep_temperature=deep_temperature, &
-                             specific_humidity=humidity)
+                             specific_humidity=humidity, surface_water=surface_water)
       call solver%get_cloud_cover(cloud_cover)
       log_surface_pressure = log(surface_pressure)
       call write_radiation_yearly_snapshot(case_directory, year, ring_nlon, &
@@ -294,17 +295,19 @@ contains
         zeta, delta, temperature, u, v, log_surface_pressure, surface_temperature, deep_temperature, &
         options, humidity_spectral=humidity_spectral, humidity=humidity, &
         surface_temperature_spectral=surface_temperature_spectral, time_seconds=solver%get_time(), &
-        step=solver%get_step(), deep_temperature_spectral=deep_temperature_spectral, cloud_cover=cloud_cover)
+        step=solver%get_step(), deep_temperature_spectral=deep_temperature_spectral, cloud_cover=cloud_cover, &
+        surface_water=surface_water)
     else
       call solver%get_spectral_state(zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
                                      deep_temperature=deep_temperature_spectral)
       call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
-                             surface_temperature=surface_temperature, deep_temperature=deep_temperature)
+                             surface_temperature=surface_temperature, deep_temperature=deep_temperature, &
+                             surface_water=surface_water)
       log_surface_pressure = log(surface_pressure)
       call write_radiation_yearly_snapshot(case_directory, year, ring_nlon, &
         zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
         zeta, delta, temperature, u, v, log_surface_pressure, surface_temperature, deep_temperature, options, &
-        deep_temperature_spectral=deep_temperature_spectral)
+        deep_temperature_spectral=deep_temperature_spectral, surface_water=surface_water)
     end if
   end subroutine write_current_radiation_snapshot
 

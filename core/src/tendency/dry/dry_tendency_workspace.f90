@@ -66,6 +66,7 @@ module dry_tendency_workspace
     real(real64), allocatable :: previous_surface_temperature_grid(:, :)
     real(real64), allocatable :: previous_deep_temperature_grid(:, :)
     real(real64), allocatable :: surface_temperature_grid(:, :), deep_temperature_grid(:, :)
+    real(real64), allocatable :: previous_surface_water(:, :), surface_water(:, :)
 
     !> Grid-space right-hand side that the tendency modules add into.
     !> forcing_u/forcing_v hold the combined vector whose curl and divergence
@@ -76,11 +77,14 @@ module dry_tendency_workspace
     real(real64), allocatable :: kinetic_geopotential(:, :, :)
     real(real64), allocatable :: forcing_log_ps(:, :)
     real(real64), allocatable :: forcing_surface_temperature(:, :), forcing_deep_temperature(:, :)
+    real(real64), allocatable :: forcing_surface_water(:, :)
 
     !> Column fluxes of the physical processes, kept for the diagnostics sample.
     !> The latent heat flux L E is what the radiation tendency takes from the surface.
     real(real64), allocatable :: incoming_shortwave(:, :), reflected_shortwave(:, :), outgoing_longwave(:, :)
-    real(real64), allocatable :: evaporation(:, :), latent_heat_flux(:, :)
+    real(real64), allocatable :: evaporation(:, :), land_evaporation(:, :), ocean_evaporation(:, :)
+    real(real64), allocatable :: latent_heat_flux(:, :), surface_wetness(:, :)
+    real(real64), allocatable :: runoff(:, :), water_budget_residual(:, :)
     real(real64), allocatable :: convective_precipitation(:, :), large_scale_precipitation(:, :)
     !> Effective column cloud cover diagnosed after the convective processes and
     !> used by the shortwave reflection of the same evaluation (docs/tendency/cloud.md).
@@ -93,6 +97,8 @@ module dry_tendency_workspace
     real(real64) :: evaluation_time = 0.0_real64
     !> Planet rotation rate the dynamics use, supplied by the model configuration.
     real(real64) :: active_rotation_rate = 0.0_real64
+    !> Wetness below this configured fraction is counted as dry land.
+    real(real64) :: bucket_dry_threshold_fraction = 0.1_real64
     logical :: physics_grids_ready = .false.
     logical :: held_suarez_grids_ready = .false.
     logical :: radiation_grids_ready = .false.
@@ -154,15 +160,19 @@ contains
     allocate (this%previous_surface_temperature_grid(nx, ny))
     allocate (this%previous_deep_temperature_grid(nx, ny))
     allocate (this%surface_temperature_grid(nx, ny), this%deep_temperature_grid(nx, ny))
+    allocate (this%previous_surface_water(nx, ny), this%surface_water(nx, ny))
 
     allocate (this%forcing_u(nx, ny, levels), this%forcing_v(nx, ny, levels))
     allocate (this%forcing_temperature(nx, ny, levels), this%forcing_humidity(nx, ny, levels))
     allocate (this%kinetic_geopotential(nx, ny, levels))
     allocate (this%forcing_log_ps(nx, ny))
     allocate (this%forcing_surface_temperature(nx, ny), this%forcing_deep_temperature(nx, ny))
+    allocate (this%forcing_surface_water(nx, ny))
 
     allocate (this%incoming_shortwave(nx, ny), this%reflected_shortwave(nx, ny), this%outgoing_longwave(nx, ny))
-    allocate (this%evaporation(nx, ny), this%latent_heat_flux(nx, ny))
+    allocate (this%evaporation(nx, ny), this%land_evaporation(nx, ny), this%ocean_evaporation(nx, ny))
+    allocate (this%latent_heat_flux(nx, ny), this%surface_wetness(nx, ny))
+    allocate (this%runoff(nx, ny), this%water_budget_residual(nx, ny))
     allocate (this%convective_precipitation(nx, ny), this%large_scale_precipitation(nx, ny))
     allocate (this%cloud_cover(nx, ny))
     this%cloud_cover = 0.0_real64
@@ -184,6 +194,8 @@ contains
     this%previous_delta_p = 1.0_real64
     this%previous_layer_l = 0.0_real64
     this%previous_full_level_pressure = 1.0_real64
+    this%previous_surface_water = 0.0_real64
+    this%surface_water = 0.0_real64
   end subroutine initialize_workspace
 
   !> Zeroes the grid-space right-hand side and the flux records.  Points outside a
@@ -199,11 +211,17 @@ contains
     this%forcing_log_ps = 0.0_real64
     this%forcing_surface_temperature = 0.0_real64
     this%forcing_deep_temperature = 0.0_real64
+    this%forcing_surface_water = 0.0_real64
     this%incoming_shortwave = 0.0_real64
     this%reflected_shortwave = 0.0_real64
     this%outgoing_longwave = 0.0_real64
     this%evaporation = 0.0_real64
+    this%land_evaporation = 0.0_real64
+    this%ocean_evaporation = 0.0_real64
     this%latent_heat_flux = 0.0_real64
+    this%surface_wetness = 0.0_real64
+    this%runoff = 0.0_real64
+    this%water_budget_residual = 0.0_real64
     this%convective_precipitation = 0.0_real64
     this%large_scale_precipitation = 0.0_real64
     this%cloud_cover = 0.0_real64
@@ -243,12 +261,27 @@ contains
     this%radiation_grids_ready = physics%radiation%enabled
     this%moisture_grids_ready = physics%moisture%enabled
     this%active_rotation_rate = rotation_rate
+    this%bucket_dry_threshold_fraction = physics%bucket%dry_threshold_fraction
     this%land_fraction = 0.0_real64
     if (present(land_fraction)) then
       if (any(shape(land_fraction) /= shape(this%land_fraction))) then
         error stop 'dry tendency land fraction has an inconsistent shape'
       end if
       this%land_fraction = land_fraction
+    end if
+    this%surface_water = 0.0_real64
+    this%previous_surface_water = 0.0_real64
+    if (allocated(state%surface_water)) then
+      if (any(shape(state%surface_water) /= shape(this%surface_water))) then
+        error stop 'dry tendency surface water has an inconsistent shape'
+      end if
+      this%surface_water = state%surface_water
+    end if
+    if (allocated(physics_state%surface_water)) then
+      if (any(shape(physics_state%surface_water) /= shape(this%previous_surface_water))) then
+        error stop 'dry tendency previous surface water has an inconsistent shape'
+      end if
+      this%previous_surface_water = physics_state%surface_water
     end if
 
     ! Every level is transformed independently; the scratch arrays are private to the thread.

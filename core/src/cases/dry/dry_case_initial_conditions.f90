@@ -125,8 +125,8 @@ contains
 
     physics = moist_case_physics()
     physics%radiation%land_sea_mixing_enabled = .true.
-    physics%evaporation%land_surface_wetness = 0.5_real64
     physics%evaporation%ocean_surface_wetness = 1.0_real64
+    physics%bucket%enabled = .true.
   end function land_sea_case_physics
 
   !> The planet of the radiation case rotates with the calendar of its radiation
@@ -190,6 +190,7 @@ contains
     complex(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :), log_ps(:, :)
     complex(real64), allocatable :: state_zeta(:, :, :), state_delta(:, :, :), state_temperature(:, :, :)
     complex(real64), allocatable :: state_log_ps(:, :), humidity(:, :, :)
+    real(real64), allocatable :: surface_water(:, :)
     type(hybrid_sigma_coordinate) :: coordinate
     integer :: number_of_levels
 
@@ -205,8 +206,11 @@ contains
     call solver%set_initial_state(state_zeta, state_delta, state_temperature, state_log_ps, surface_geopotential, &
                                   specific_humidity=humidity, land_fraction=land_fraction)
     call solver%get_spectral_state(state_zeta, state_delta, state_temperature, state_log_ps)
+    allocate (surface_water, mold=land_fraction)
+    surface_water = 0.0_real64
+    where (land_fraction > 0.0_real64) surface_water = physics%bucket%initial_water
     call solver%set_surface_state(state_temperature(:, :, number_of_levels), &
-                                  state_temperature(:, :, number_of_levels))
+                                  state_temperature(:, :, number_of_levels), surface_water)
     call solver%set_physics(physics)
   end subroutine set_land_sea_case_state
 

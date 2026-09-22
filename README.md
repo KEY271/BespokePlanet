@@ -99,6 +99,7 @@ Rscript scripts/analyze_moist_land_sea_earth.R output/moist_land_sea_earth_t31
 - [Betts–Miller 型の乾燥対流調節](./docs/tendency/dry-convective-adjustment.md)
 - [飽和比湿](./docs/tendency/saturation-specific-humidity.md)
 - [蒸発](./docs/tendency/evaporation.md)
+- [陸面のバケツモデル](./docs/tendency/bucket.md)
 - [大規模凝結](./docs/tendency/large-scale-condensation.md)
 - [簡略化 Betts–Miller 型の湿潤対流調節](./docs/tendency/moist-convective-adjustment.md)
 - [雲](./docs/tendency/cloud.md)

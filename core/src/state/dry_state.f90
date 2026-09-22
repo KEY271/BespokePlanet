@@ -15,6 +15,9 @@ module dry_state
     complex(real64), allocatable :: log_surface_pressure(:, :)
     complex(real64), allocatable :: surface_temperature(:, :)
     complex(real64), allocatable :: deep_temperature(:, :)
+    !> Land-bucket water in grid space (kg m^-2 of land area).  It has no
+    !> horizontal dynamics and is therefore not represented spectrally.
+    real(real64), allocatable :: surface_water(:, :)
   end type dry_state_type
 
   type, public :: dry_tendency_type
@@ -27,7 +30,7 @@ module dry_state
     complex(real64), allocatable :: deep_temperature(:, :)
   end type dry_tendency_type
 
-  public :: allocate_dry_state, allocate_dry_tendency, zero_dry_tendency
+  public :: allocate_dry_state, allocate_dry_surface_water, allocate_dry_tendency, zero_dry_tendency
   public :: copy_dry_state, swap_dry_states
   public :: enforce_dry_state_constraints, enforce_dry_spectral_field
 
@@ -40,6 +43,7 @@ contains
       deallocate (state%zeta, state%delta, state%temperature, state%specific_humidity, state%log_surface_pressure)
       deallocate (state%surface_temperature, state%deep_temperature)
     end if
+    if (allocated(state%surface_water)) deallocate (state%surface_water)
     allocate (state%zeta(0:truncation + 1, 0:truncation, number_of_levels))
     allocate (state%delta(0:truncation + 1, 0:truncation, number_of_levels))
     allocate (state%temperature(0:truncation + 1, 0:truncation, number_of_levels))
@@ -55,6 +59,15 @@ contains
     state%surface_temperature = cmplx(0.0_real64, 0.0_real64, kind=real64)
     state%deep_temperature = cmplx(0.0_real64, 0.0_real64, kind=real64)
   end subroutine allocate_dry_state
+
+  subroutine allocate_dry_surface_water(state, nx, ny)
+    type(dry_state_type), intent(inout) :: state
+    integer, intent(in) :: nx, ny
+    if (nx < 1 .or. ny < 1) error stop 'dry surface-water shape must be positive'
+    if (allocated(state%surface_water)) deallocate (state%surface_water)
+    allocate (state%surface_water(nx, ny))
+    state%surface_water = 0.0_real64
+  end subroutine allocate_dry_surface_water
 
   subroutine allocate_dry_tendency(tendency, truncation, number_of_levels)
     type(dry_tendency_type), intent(inout) :: tendency
@@ -97,6 +110,14 @@ contains
     destination%log_surface_pressure(:, :) = source%log_surface_pressure
     destination%surface_temperature(:, :) = source%surface_temperature
     destination%deep_temperature(:, :) = source%deep_temperature
+    if (allocated(source%surface_water)) then
+      if (.not. allocated(destination%surface_water)) then
+        allocate (destination%surface_water, mold=source%surface_water)
+      else if (any(shape(source%surface_water) /= shape(destination%surface_water))) then
+        error stop 'dry surface-water copy shape mismatch'
+      end if
+      destination%surface_water = source%surface_water
+    end if
   end subroutine copy_dry_state
 
   !> Exchanges storage without copying array data.
@@ -109,6 +130,7 @@ contains
     call swap_surface_field(first%log_surface_pressure, second%log_surface_pressure)
     call swap_surface_field(first%surface_temperature, second%surface_temperature)
     call swap_surface_field(first%deep_temperature, second%deep_temperature)
+    call swap_grid_field(first%surface_water, second%surface_water)
   end subroutine swap_dry_states
 
   subroutine swap_level_field(first, second)
@@ -126,6 +148,14 @@ contains
     call move_alloc(second, first)
     call move_alloc(temporary, second)
   end subroutine swap_surface_field
+
+  subroutine swap_grid_field(first, second)
+    real(real64), allocatable, intent(inout) :: first(:, :), second(:, :)
+    real(real64), allocatable :: temporary(:, :)
+    call move_alloc(first, temporary)
+    call move_alloc(second, first)
+    call move_alloc(temporary, second)
+  end subroutine swap_grid_field
 
   !> Zeroes the global mean of vorticity and divergence and the unused spectral
   !> entries of every field.  The global mean of specific humidity is not constrained.

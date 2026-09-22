@@ -28,6 +28,7 @@ module dry_tendency_evaluator
   use dry_rayleigh_friction_tendency, only: add_dry_rayleigh_friction_tendency
   use dry_held_suarez_tendency, only: add_dry_held_suarez_tendency
   use dry_evaporation_tendency, only: add_dry_evaporation_tendency
+  use dry_bucket_tendency, only: add_dry_bucket_tendency
   use dry_radiation_tendency, only: add_dry_radiation_tendency
   use dry_convection_tendency, only: add_dry_convection_tendency
   use dry_tendency_diagnostics, only: collect_dry_diagnostics
@@ -70,6 +71,21 @@ contains
     if (physics%evaporation%enabled .and. .not. physics%radiation%enabled) then
       error stop 'evaporation requires the radiation surface energy budget'
     end if
+    if (physics%bucket%enabled .and. (.not. physics%evaporation%enabled .or. &
+        .not. physics%moisture%enabled .or. .not. physics%radiation%land_sea_mixing_enabled)) then
+      error stop 'land bucket requires moisture, evaporation and land-sea mixing'
+    end if
+    if (physics%bucket%enabled .and. physics%bucket%capacity <= 0.0_real64) then
+      error stop 'land bucket capacity must be positive'
+    end if
+    if (physics%bucket%enabled .and. (physics%bucket%initial_water < 0.0_real64 .or. &
+        physics%bucket%initial_water > physics%bucket%capacity)) then
+      error stop 'land bucket initial water must lie between zero and capacity'
+    end if
+    if (physics%bucket%enabled .and. (physics%bucket%dry_threshold_fraction < 0.0_real64 .or. &
+        physics%bucket%dry_threshold_fraction > 1.0_real64)) then
+      error stop 'land bucket dry threshold fraction must lie between zero and one'
+    end if
     if (physics%cloud%enabled .and. .not. physics%moisture%enabled) then
       error stop 'the cloud diagnosis requires the moisture (specific humidity) prognostic variable'
     end if
@@ -96,12 +112,13 @@ contains
       call add_dry_held_suarez_tendency(physics%held_suarez, transform, workspace)
     end if
     if (physics%evaporation%enabled) then
-      call add_dry_evaporation_tendency(physics%evaporation, physics%radiation, workspace)
+      call add_dry_evaporation_tendency(physics%evaporation, physics%radiation, physics%bucket, interval, workspace)
     end if
     if (physics%convection%enabled .or. physics%moist_convection%enabled .or. physics%condensation%enabled .or. &
         physics%cloud%enabled) then
       call add_dry_convection_tendency(physics, interval, workspace)
     end if
+    if (physics%bucket%enabled) call add_dry_bucket_tendency(physics%bucket, interval, workspace)
     if (physics%radiation%enabled) then
       call add_dry_radiation_tendency(physics%radiation, physics%moisture%enabled, transform%mu, workspace)
     end if

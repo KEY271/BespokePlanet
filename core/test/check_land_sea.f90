@@ -9,10 +9,11 @@ program check_land_sea
                                     topographic_surface_pressure
   use dry_physics_config, only: dry_model_physics_config, mixed_surface_properties
   use dry_case_initial_conditions, only: land_sea_case_physics, radiation_case_planet
-  use dry_radiation, only: radiation_tendency
+  use dry_radiation, only: radiation_tendency, radiation_diagnostics
   use planet_parameters, only: earth_gravity, planet_config
   use dry_atmosphere, only: dry_atmosphere_solver
   use numerics_config, only: model_numerics_config
+  use land_bucket, only: bucket_wetness, limit_bucket_evaporation, advance_bucket
   use dry_case_initial_conditions, only: set_land_sea_case_state
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   implicit none
@@ -21,6 +22,7 @@ program check_land_sea
   call check_flat_initial_state_identity()
   call check_surface_pressure()
   call check_mixed_surface_budget()
+  call check_bucket_model()
   call check_land_integration()
   write (*, '(a)') 'check_land_sea: all checks passed'
 
@@ -132,7 +134,7 @@ contains
       error stop 'mixed surface coefficients are not linear in land fraction'
     end if
     call radiation_tendency(physics%radiation, pressure_half, temperature, 288.0_real64, 286.0_real64, &
-      3.0_real64, 4.0_real64, 0.0_real64, acos(-1.0_real64), 0.0_real64, atmospheric_tendency, &
+      3.0_real64, 4.0_real64, 0.0_real64, 0.0_real64, 0.0_real64, atmospheric_tendency, &
       surface_tendency, deep_tendency, incoming, reflected, outgoing, latent_heat_flux=latent_heat_flux, &
       land_fraction=land)
     total_energy_tendency = sum(physics%radiation%dry_air_specific_heat* &
@@ -147,7 +149,7 @@ contains
     end if
     ! With clouds the reflection grows and the budget still closes.
     call radiation_tendency(physics%radiation, pressure_half, temperature, 288.0_real64, 286.0_real64, &
-      3.0_real64, 4.0_real64, 0.0_real64, acos(-1.0_real64), 0.0_real64, atmospheric_tendency, &
+      3.0_real64, 4.0_real64, 0.0_real64, 0.0_real64, 0.0_real64, atmospheric_tendency, &
       surface_tendency, deep_tendency, incoming, cloudy_reflected, outgoing, latent_heat_flux=latent_heat_flux, &
       cloud_cover=0.5_real64, land_fraction=land)
     total_energy_tendency = sum(physics%radiation%dry_air_specific_heat* &
@@ -159,6 +161,33 @@ contains
     end if
   end subroutine check_mixed_surface_budget
 
+  subroutine check_bucket_model()
+    real(real64), parameter :: capacity = 150.0_real64, interval = 1200.0_real64
+    real(real64) :: evaporation, tendency, runoff, water
+
+    if (bucket_wetness(0.0_real64, capacity) /= 0.0_real64 .or. &
+        bucket_wetness(0.5_real64*capacity, capacity) /= 0.5_real64 .or. &
+        bucket_wetness(capacity, capacity) /= 1.0_real64) then
+      error stop 'land-bucket wetness does not follow W/W_max'
+    end if
+    evaporation = limit_bucket_evaporation(1.0_real64, 0.25_real64, capacity, interval)
+    if (evaporation /= 0.25_real64/interval) error stop 'land-bucket evaporation availability limit failed'
+    if (limit_bucket_evaporation(1.0e-4_real64, 0.0_real64, capacity, interval) /= 0.0_real64) then
+      error stop 'empty land bucket evaporates'
+    end if
+
+    water = 100.0_real64
+    call advance_bucket(water, 0.1_real64, 0.0_real64, capacity, interval, tendency, runoff)
+    if (runoff /= (water + interval*0.1_real64 - capacity)/interval .or. &
+        abs(water + interval*tendency - capacity) > 1.0e-12_real64) then
+      error stop 'land-bucket overflow runoff failed'
+    end if
+    call advance_bucket(capacity, 0.0_real64, -1.0e-3_real64, capacity, interval, tendency, runoff)
+    if (abs(tendency) > 1.0e-15_real64 .or. abs(runoff - 1.0e-3_real64) > 1.0e-15_real64) then
+      error stop 'land-bucket condensation overflow failed'
+    end if
+  end subroutine check_bucket_model
+
   subroutine check_land_integration()
     type(harmonic_transform) :: transform
     type(topography_config) :: terrain
@@ -167,10 +196,12 @@ contains
     type(planet_config) :: planet
     type(model_numerics_config) :: numerics
     type(dry_atmosphere_solver) :: solver
+    type(radiation_diagnostics) :: diagnostics
     real(real64), allocatable :: land_fraction(:, :), analytic_height(:, :), height(:, :)
     real(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     real(real64), allocatable :: surface_pressure(:, :), u(:, :, :), v(:, :, :)
     real(real64), allocatable :: surface_temperature(:, :), deep_temperature(:, :), humidity(:, :, :)
+    real(real64), allocatable :: surface_water(:, :)
     complex(real64), allocatable :: surface_geopotential(:, :)
     integer :: step
 
@@ -187,12 +218,33 @@ contains
     do step = 1, 3
       call solver%advance()
     end do
+    call solver%take_latest_diagnostics(diagnostics)
     call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
-      surface_temperature=surface_temperature, deep_temperature=deep_temperature, specific_humidity=humidity)
+      surface_temperature=surface_temperature, deep_temperature=deep_temperature, specific_humidity=humidity, &
+      surface_water=surface_water)
     if (.not. all(ieee_is_finite(temperature)) .or. .not. all(ieee_is_finite(surface_pressure)) .or. &
         .not. all(ieee_is_finite(surface_temperature)) .or. .not. all(ieee_is_finite(deep_temperature)) .or. &
-        .not. all(ieee_is_finite(humidity))) then
+        .not. all(ieee_is_finite(humidity)) .or. .not. all(ieee_is_finite(surface_water))) then
       error stop 'short land-sea integration produced a non-finite field'
+    end if
+    if (minval(surface_water) < 0.0_real64 .or. maxval(surface_water) > physics%bucket%capacity) then
+      error stop 'short land-sea integration surface water is outside the bucket bounds'
+    end if
+    if (.not. allocated(diagnostics%surface_water) .or. .not. allocated(diagnostics%surface_wetness) .or. &
+        .not. allocated(diagnostics%runoff)) then
+      error stop 'short land-sea integration did not produce bucket diagnostics'
+    end if
+    if (.not. all(ieee_is_finite(diagnostics%surface_water)) .or. &
+        .not. all(ieee_is_finite(diagnostics%surface_wetness)) .or. &
+        .not. all(ieee_is_finite(diagnostics%runoff)) .or. &
+        .not. ieee_is_finite(diagnostics%mean_water_budget_residual)) then
+      error stop 'short land-sea integration produced non-finite bucket diagnostics'
+    end if
+    if (diagnostics%mean_surface_water < 0.0_real64 .or. &
+        diagnostics%mean_surface_water > physics%bucket%capacity .or. &
+        diagnostics%mean_surface_wetness < 0.0_real64 .or. diagnostics%mean_surface_wetness > 1.0_real64 .or. &
+        diagnostics%dry_land_fraction < 0.0_real64 .or. diagnostics%dry_land_fraction > 1.0_real64) then
+      error stop 'short land-sea integration produced out-of-range bucket diagnostics'
     end if
   end subroutine check_land_integration
 

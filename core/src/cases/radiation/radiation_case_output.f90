@@ -61,7 +61,9 @@ contains
     if (options%include_land_sea) then
       header = header//',mean_land_surface_temperature_k,mean_ocean_surface_temperature_k,'// &
         'land_precipitation_mm_day-1,ocean_precipitation_mm_day-1,'// &
-        'land_evaporation_mm_day-1,ocean_evaporation_mm_day-1'
+        'land_evaporation_mm_day-1,ocean_evaporation_mm_day-1,'// &
+        'land_surface_water_kg_m-2,land_surface_wetness,land_runoff_mm_day-1,dry_land_fraction,'// &
+        'land_water_budget_residual_mm_day-1,maximum_land_water_budget_residual_mm_day-1'
     end if
     call write_csv_header(trim(case_directory)//'/daily_global.csv', header)
   end subroutine initialize_radiation_daily_output
@@ -101,7 +103,11 @@ contains
         csv_real(mm_per_day*means%mean_land_precipitation)//','// &
         csv_real(mm_per_day*means%mean_ocean_precipitation)//','// &
         csv_real(mm_per_day*means%mean_land_evaporation)//','// &
-        csv_real(mm_per_day*means%mean_ocean_evaporation)
+        csv_real(mm_per_day*means%mean_ocean_evaporation)//','// &
+        csv_real(means%mean_surface_water)//','//csv_real(means%mean_surface_wetness)//','// &
+        csv_real(mm_per_day*means%mean_runoff)//','//csv_real(means%dry_land_fraction)//','// &
+        csv_real(mm_per_day*means%mean_water_budget_residual)//','// &
+        csv_real(mm_per_day*means%maximum_water_budget_residual)
     end if
     call append_csv_row(trim(case_directory)//'/daily_global.csv', row)
   end subroutine append_radiation_daily_output
@@ -168,6 +174,17 @@ contains
                                    means%zonal_humidity)
       call write_rectangular_field(trim(case_directory)//'/monthly_eddy_vq_m'//month_text//'.bin', means%eddy_vq)
     end if
+    if (options%include_land_sea) then
+      call check_finite('monthly_surface_water', nlon, means%surface_water)
+      call check_finite('monthly_surface_wetness', nlon, means%surface_wetness)
+      call check_finite('monthly_runoff', nlon, means%runoff)
+      call write_field(trim(case_directory)//'/monthly_surface_water_m'//month_text//'.bin', &
+                       nlon, means%surface_water)
+      call write_field(trim(case_directory)//'/monthly_surface_wetness_m'//month_text//'.bin', &
+                       nlon, means%surface_wetness)
+      call write_field(trim(case_directory)//'/monthly_runoff_m'//month_text//'.bin', &
+                       nlon, mm_per_day*means%runoff)
+    end if
   end subroutine write_radiation_monthly_output
 
   subroutine write_radiation_yearly_snapshot(case_directory, year, nlon, &
@@ -175,7 +192,7 @@ contains
                                               log_surface_pressure_spectral, zeta, delta, temperature, &
                                               u, v, log_surface_pressure, surface_temperature, deep_temperature, &
                                               options, humidity_spectral, humidity, surface_temperature_spectral, &
-                                              time_seconds, step, deep_temperature_spectral, cloud_cover)
+                                              time_seconds, step, deep_temperature_spectral, cloud_cover, surface_water)
     character(*), intent(in) :: case_directory
     integer, intent(in) :: year
     integer, intent(in) :: nlon(:)
@@ -194,6 +211,7 @@ contains
     integer, intent(in), optional :: step
     !> Diagnosed cloud cover of the most recent tendency evaluation (moist cases).
     real(real64), intent(in), optional :: cloud_cover(:, :)
+    real(real64), intent(in), optional :: surface_water(:, :)
     character(len=4) :: year_text
     character(len=2) :: level_text
     integer :: k, unit
@@ -216,6 +234,9 @@ contains
         error stop 'moist yearly snapshot humidity has a different level count'
       end if
     end if
+    if (options%include_land_sea .and. .not. present(surface_water)) then
+      error stop 'land-sea yearly snapshot requires surface water'
+    end if
     write (year_text, '(i4.4)') year
     call check_finite('yearly_log_surface_pressure', nlon, log_surface_pressure)
     call check_finite('yearly_surface_temperature', nlon, surface_temperature)
@@ -233,6 +254,10 @@ contains
         call write_spectral_field(trim(case_directory)//'/yearly_deep_temperature_spectral_y'// &
                                   year_text//'.bin', deep_temperature_spectral)
       end if
+    end if
+    if (options%include_land_sea) then
+      call check_finite('yearly_surface_water', nlon, surface_water)
+      call write_field(trim(case_directory)//'/yearly_surface_water_y'//year_text//'.bin', nlon, surface_water)
     end if
     call write_spectral_field(trim(case_directory)//'/yearly_log_surface_pressure_spectral_y'// &
                               year_text//'.bin', log_surface_pressure_spectral)
@@ -473,11 +498,21 @@ contains
           physics%cloud%convective_reference_precipitation, ','
         write (unit, '(a,es24.16e3)') '      "convective_maximum_cover": ', physics%cloud%convective_maximum_cover
         write (unit, '(a)') '    },'
-        write (unit, '(a)') '    "physics_order": "evaporation; dry adjustment, moist adjustment, condensation '// &
-          'and cloud diagnosis on provisional fields; radiation"'
+        if (physics%bucket%enabled) then
+          write (unit, '(a)') '    "physics_order": "evaporation candidate; dry adjustment, moist adjustment, '// &
+            'condensation and cloud diagnosis on provisional fields; land bucket; radiation"'
+        else
+          write (unit, '(a)') '    "physics_order": "evaporation; dry adjustment, moist adjustment, condensation '// &
+            'and cloud diagnosis on provisional fields; radiation"'
+        end if
       else
-        write (unit, '(a)') '    "physics_order": "evaporation; dry adjustment, moist adjustment, condensation '// &
-          'on provisional fields; radiation"'
+        if (physics%bucket%enabled) then
+          write (unit, '(a)') '    "physics_order": "evaporation candidate; dry adjustment, moist adjustment, '// &
+            'condensation on provisional fields; land bucket; radiation"'
+        else
+          write (unit, '(a)') '    "physics_order": "evaporation; dry adjustment, moist adjustment, condensation '// &
+            'on provisional fields; radiation"'
+        end if
       end if
       write (unit, '(a)') '  },'
     end if
@@ -496,8 +531,13 @@ contains
         radiation%ground_exchange_coefficient, ','
       write (unit, '(a,es24.16e3,a)') '    "land_albedo": ', radiation%land_shortwave_albedo, ','
       write (unit, '(a,es24.16e3,a)') '    "ocean_albedo": ', radiation%ocean_shortwave_albedo, ','
-      write (unit, '(a,es24.16e3,a)') '    "land_wetness": ', physics%evaporation%land_surface_wetness, ','
-      write (unit, '(a,es24.16e3)') '    "ocean_wetness": ', physics%evaporation%ocean_surface_wetness
+      write (unit, '(a,es24.16e3,a)') '    "ocean_wetness": ', physics%evaporation%ocean_surface_wetness, ','
+      write (unit, '(a)') '    "land_bucket": {'
+      write (unit, '(a)') '      "wetness": "min(1,max(0,W/W_max))",'
+      write (unit, '(a,es24.16e3,a)') '      "capacity_kg_m-2": ', physics%bucket%capacity, ','
+      write (unit, '(a,es24.16e3,a)') '      "initial_water_kg_m-2": ', physics%bucket%initial_water, ','
+      write (unit, '(a,es24.16e3)') '      "dry_threshold_fraction": ', physics%bucket%dry_threshold_fraction
+      write (unit, '(a)') '    }'
       write (unit, '(a)') '  },'
       if (earth) then
         call write_earth_topography_metadata(unit, earth_terrain, earth_terrain_diagnostics)
@@ -630,6 +670,10 @@ contains
     if (options%include_land_sea) then
       write (unit, '(a)') '    "static_land_fraction": "land_fraction.bin",'
       write (unit, '(a)') '    "static_surface_height": "surface_height.bin",'
+      write (unit, '(a)') '    "monthly_surface_water": "monthly_surface_water_m{month:04d}.bin",'
+      write (unit, '(a)') '    "monthly_surface_wetness": "monthly_surface_wetness_m{month:04d}.bin",'
+      write (unit, '(a)') '    "monthly_runoff": "monthly_runoff_m{month:04d}.bin",'
+      write (unit, '(a)') '    "yearly_surface_water": "yearly_surface_water_y{year:04d}.bin",'
     end if
     write (unit, '(a)') '    "monthly_zonal_fields": "monthly_{name}_m{month:04d}.bin",'
     write (unit, '(a)') '    "yearly_grid_level_fields": '// &

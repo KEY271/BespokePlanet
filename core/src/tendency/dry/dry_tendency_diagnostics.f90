@@ -30,6 +30,9 @@ contains
     diagnostics%surface_temperature = workspace%surface_temperature_grid
     diagnostics%deep_temperature = workspace%deep_temperature_grid
     diagnostics%surface_pressure = workspace%ps
+    diagnostics%surface_water = workspace%surface_water
+    diagnostics%surface_wetness = workspace%surface_wetness
+    diagnostics%runoff = workspace%runoff
     allocate (diagnostics%zonal_temperature(workspace%ny, levels))
     allocate (diagnostics%zonal_u(workspace%ny, levels), diagnostics%zonal_v(workspace%ny, levels))
     allocate (diagnostics%zonal_uv(workspace%ny, levels), diagnostics%zonal_vt(workspace%ny, levels))
@@ -138,9 +141,21 @@ contains
           diagnostics%mean_ocean_precipitation = diagnostics%mean_ocean_precipitation + &
             ocean_weight*total_precipitation
           diagnostics%mean_land_evaporation = diagnostics%mean_land_evaporation + &
-            land_weight*workspace%evaporation(i, j)
+            land_weight*workspace%land_evaporation(i, j)
           diagnostics%mean_ocean_evaporation = diagnostics%mean_ocean_evaporation + &
-            ocean_weight*workspace%evaporation(i, j)
+            ocean_weight*workspace%ocean_evaporation(i, j)
+          diagnostics%mean_surface_water = diagnostics%mean_surface_water + &
+            land_weight*workspace%surface_water(i, j)
+          diagnostics%mean_surface_wetness = diagnostics%mean_surface_wetness + &
+            land_weight*workspace%surface_wetness(i, j)
+          diagnostics%mean_runoff = diagnostics%mean_runoff + land_weight*workspace%runoff(i, j)
+          if (workspace%surface_wetness(i, j) < workspace%bucket_dry_threshold_fraction) then
+            diagnostics%dry_land_fraction = diagnostics%dry_land_fraction + land_weight
+          end if
+          diagnostics%mean_water_budget_residual = diagnostics%mean_water_budget_residual + &
+            land_weight*workspace%water_budget_residual(i, j)
+          diagnostics%maximum_water_budget_residual = max(diagnostics%maximum_water_budget_residual, &
+            abs(workspace%water_budget_residual(i, j)))
         end if
       end do
     end do
@@ -150,6 +165,11 @@ contains
       diagnostics%mean_land_surface_temperature = diagnostics%mean_land_surface_temperature/land_area
       diagnostics%mean_land_precipitation = diagnostics%mean_land_precipitation/land_area
       diagnostics%mean_land_evaporation = diagnostics%mean_land_evaporation/land_area
+      diagnostics%mean_surface_water = diagnostics%mean_surface_water/land_area
+      diagnostics%mean_surface_wetness = diagnostics%mean_surface_wetness/land_area
+      diagnostics%mean_runoff = diagnostics%mean_runoff/land_area
+      diagnostics%dry_land_fraction = diagnostics%dry_land_fraction/land_area
+      diagnostics%mean_water_budget_residual = diagnostics%mean_water_budget_residual/land_area
     end if
     if (ocean_area > 0.0_real64) then
       diagnostics%mean_ocean_surface_temperature = diagnostics%mean_ocean_surface_temperature/ocean_area
