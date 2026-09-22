@@ -99,6 +99,14 @@ module dry_tendency_workspace
     real(real64) :: active_rotation_rate = 0.0_real64
     !> Wetness below this configured fraction is counted as dry land.
     real(real64) :: bucket_dry_threshold_fraction = 0.1_real64
+    logical :: surface_tiles_enabled = .false.
+    logical :: sea_ice_enabled = .false.
+    real(real64), allocatable :: land_temperature(:, :), previous_land_temperature(:, :), forcing_land_temperature(:, :)
+    real(real64), allocatable :: ocean_temperature(:, :), previous_ocean_temperature(:, :), forcing_ocean_temperature(:, :)
+    real(real64), allocatable :: sea_ice_fraction(:, :), previous_sea_ice_fraction(:, :), forcing_sea_ice_fraction(:, :)
+    real(real64), allocatable :: sea_ice_volume(:, :), previous_sea_ice_volume(:, :), forcing_sea_ice_volume(:, :)
+    real(real64), allocatable :: sea_ice_temperature(:, :), sea_ice_thickness(:, :)
+    real(real64), allocatable :: ice_energy_residual(:, :), ice_surface_residual(:, :)
     logical :: physics_grids_ready = .false.
     logical :: held_suarez_grids_ready = .false.
     logical :: radiation_grids_ready = .false.
@@ -198,6 +206,22 @@ contains
     this%previous_delta_p = 1.0_real64
     this%previous_layer_l = 0.0_real64
     this%previous_full_level_pressure = 1.0_real64
+    allocate (this%land_temperature(nx, ny), this%previous_land_temperature(nx, ny), this%forcing_land_temperature(nx, ny))
+    this%land_temperature = 0.0_real64
+    this%previous_land_temperature = 0.0_real64
+    allocate (this%ocean_temperature(nx, ny), this%previous_ocean_temperature(nx, ny), this%forcing_ocean_temperature(nx, ny))
+    this%ocean_temperature = 0.0_real64
+    this%previous_ocean_temperature = 0.0_real64
+    allocate (this%sea_ice_fraction(nx, ny), this%previous_sea_ice_fraction(nx, ny), this%forcing_sea_ice_fraction(nx, ny))
+    this%sea_ice_fraction = 0.0_real64
+    this%previous_sea_ice_fraction = 0.0_real64
+    allocate (this%sea_ice_volume(nx, ny), this%previous_sea_ice_volume(nx, ny), this%forcing_sea_ice_volume(nx, ny))
+    this%sea_ice_volume = 0.0_real64
+    this%previous_sea_ice_volume = 0.0_real64
+    allocate (this%sea_ice_temperature(nx, ny), this%sea_ice_thickness(nx, ny))
+    allocate (this%ice_energy_residual(nx, ny), this%ice_surface_residual(nx, ny))
+    this%sea_ice_temperature = 0.0_real64
+    this%sea_ice_thickness = 0.0_real64
     this%previous_surface_water = 0.0_real64
     this%surface_water = 0.0_real64
   end subroutine initialize_workspace
@@ -216,6 +240,12 @@ contains
     this%forcing_surface_temperature = 0.0_real64
     this%forcing_deep_temperature = 0.0_real64
     this%forcing_surface_water = 0.0_real64
+    this%forcing_land_temperature = 0.0_real64
+    this%forcing_ocean_temperature = 0.0_real64
+    this%forcing_sea_ice_fraction = 0.0_real64
+    this%forcing_sea_ice_volume = 0.0_real64
+    this%ice_energy_residual = 0.0_real64
+    this%ice_surface_residual = 0.0_real64
     this%incoming_shortwave = 0.0_real64
     this%reflected_shortwave = 0.0_real64
     this%outgoing_longwave = 0.0_real64
@@ -254,6 +284,16 @@ contains
       error stop 'dry nonlinear state has the wrong number of vertical levels'
     end if
     this%evaluation_time = evaluation_time
+    this%surface_tiles_enabled = physics%radiation%land_sea_mixing_enabled .or. physics%sea_ice%enabled
+    this%sea_ice_enabled = physics%sea_ice%enabled
+    call copy_surface_field(state%land_temperature, this%land_temperature, 'land_temperature')
+    call copy_surface_field(physics_state%land_temperature, this%previous_land_temperature, 'land_temperature')
+    call copy_surface_field(state%ocean_temperature, this%ocean_temperature, 'ocean_temperature')
+    call copy_surface_field(physics_state%ocean_temperature, this%previous_ocean_temperature, 'ocean_temperature')
+    call copy_surface_field(state%sea_ice_fraction, this%sea_ice_fraction, 'sea_ice_fraction')
+    call copy_surface_field(physics_state%sea_ice_fraction, this%previous_sea_ice_fraction, 'sea_ice_fraction')
+    call copy_surface_field(state%sea_ice_volume, this%sea_ice_volume, 'sea_ice_volume')
+    call copy_surface_field(physics_state%sea_ice_volume, this%previous_sea_ice_volume, 'sea_ice_volume')
     this%full_level_eta = coordinate%full_level_eta
     this%physics_grids_ready = physics%held_suarez%enabled .or. physics%surface_friction%enabled .or. &
                                physics%rayleigh_friction%enabled .or. physics%radiation%enabled .or. &

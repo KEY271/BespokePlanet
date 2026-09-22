@@ -67,6 +67,8 @@ Rscript scripts/analyze_moist_land_sea.R
 Rscript scripts/analyze_moist_land_sea_earth.R output/moist_land_sea_earth_t31
 ```
 
+地球地形ケースの解析結果は `output/moist_land_sea_earth_t31/analysis/` に保存される。雨温図・気候区分・降水量などに加え、海氷の3月・9月の面積率分布、最終年平均の氷厚と氷表面温度、南北半球別の面積・体積の季節変化、日次診断からの全期間の推移を図示する。海氷の月別集計は `final_year_sea_ice_monthly.csv` に書く。
+
 ソルバーはスペクトル変換の鉛直層ループと物理過程の格子列ループを OpenMP で並列化している。スレッド数は既定でコア数で、`OMP_NUM_THREADS=4 just run moist` のように環境変数で変えられる。スレッド数を変えても結果はビット単位で同一である。
 
 計算結果は `output/` に保存されます。ビジュアライザについて詳しくは [viz/README.md](./viz/README.md) を参照してください。
@@ -97,6 +99,7 @@ Rscript scripts/analyze_moist_land_sea_earth.R output/moist_land_sea_earth_t31
 - [地面](./docs/tendency/ground.md)
 - [Slab ocean](./docs/tendency/slab-ocean.md)
 - [陸と海の混合](./docs/tendency/land-sea-surface.md)
+- [海氷と陸海別温度](./docs/tendency/sea-ice.md)
 - [上層の Rayleigh 摩擦](./docs/tendency/upper-rayleigh-friction.md)
 - [Held–Suarez 強制](./docs/tendency/Held-Suarez.md)
 - [Betts–Miller 型の乾燥対流調節](./docs/tendency/dry-convective-adjustment.md)

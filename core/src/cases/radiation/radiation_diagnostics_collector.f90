@@ -7,12 +7,19 @@
 !> carry them.
 module radiation_diagnostics_collector
   use iso_fortran_env, only: real64
+  use sea_ice, only: sea_ice_checks
   use dry_radiation, only: radiation_diagnostics
   implicit none
   private
 
   !> Monthly means of the grid and zonal fields, returned in one bundle.
   type, public :: radiation_monthly_means
+    real(real64), allocatable :: land_temperature(:, :)
+    real(real64), allocatable :: ocean_temperature(:, :)
+    real(real64), allocatable :: sea_ice_fraction(:, :)
+    real(real64), allocatable :: sea_ice_volume(:, :)
+    real(real64), allocatable :: sea_ice_temperature(:, :)
+    real(real64), allocatable :: sea_ice_thickness(:, :)
     real(real64), allocatable :: surface_temperature(:, :), deep_temperature(:, :), surface_pressure(:, :)
     real(real64), allocatable :: zonal_temperature(:, :), zonal_u(:, :), zonal_v(:, :)
     real(real64), allocatable :: eddy_uv(:, :), eddy_vt(:, :)
@@ -28,6 +35,12 @@ module radiation_diagnostics_collector
     private
     integer :: sample_count = 0
     logical :: moist = .false.
+    logical :: tiles = .false.
+    real(real64), allocatable :: land_temperature_sum(:, :)
+    real(real64), allocatable :: ocean_temperature_sum(:, :)
+    real(real64), allocatable :: sea_ice_fraction_sum(:, :)
+    real(real64), allocatable :: sea_ice_volume_sum(:, :)
+    real(real64), allocatable :: sea_ice_temperature_sum(:, :)
     real(real64), allocatable :: surface_temperature_sum(:, :)
     real(real64), allocatable :: deep_temperature_sum(:, :)
     real(real64), allocatable :: surface_pressure_sum(:, :)
@@ -54,7 +67,10 @@ module radiation_diagnostics_collector
   !> interval, together with the interval maximum of the wind speed.
   type, public :: radiation_daily_accumulator
     private
+    type(sea_ice_checks) :: ice_checks
     integer :: sample_count = 0
+    real(real64) :: sea_ice_area_sum = 0.0_real64
+    real(real64) :: sea_ice_total_volume_sum = 0.0_real64
     real(real64) :: first_time_seconds = 0.0_real64
     real(real64) :: atmospheric_temperature_sum = 0.0_real64
     real(real64) :: surface_temperature_sum = 0.0_real64
@@ -157,6 +173,14 @@ contains
       allocate (this%surface_water_sum, mold=sample%surface_water)
       allocate (this%surface_wetness_sum, mold=sample%surface_wetness)
       allocate (this%runoff_sum, mold=sample%runoff)
+      this%tiles = allocated(sample%sea_ice_fraction)
+      if (this%tiles) then
+        allocate (this%land_temperature_sum, mold=sample%land_temperature)
+        allocate (this%ocean_temperature_sum, mold=sample%ocean_temperature)
+        allocate (this%sea_ice_fraction_sum, mold=sample%sea_ice_fraction)
+        allocate (this%sea_ice_volume_sum, mold=sample%sea_ice_volume)
+        allocate (this%sea_ice_temperature_sum, mold=sample%sea_ice_temperature)
+      end if
       this%moist = allocated(sample%precipitation)
       if (this%moist) then
         if (.not. allocated(sample%evaporation) .or. .not. allocated(sample%precipitable_water) .or. &
@@ -175,6 +199,14 @@ contains
     end if
     if (this%moist .neqv. allocated(sample%precipitation)) then
       error stop 'radiation diagnostic samples must all carry, or all lack, the moist fields'
+    end if
+    if (this%tiles .neqv. allocated(sample%sea_ice_fraction)) error stop 'inconsistent tile diagnostics'
+    if (this%tiles) then
+      this%land_temperature_sum = this%land_temperature_sum + sample%land_temperature
+      this%ocean_temperature_sum = this%ocean_temperature_sum + sample%ocean_temperature
+      this%sea_ice_fraction_sum = this%sea_ice_fraction_sum + sample%sea_ice_fraction
+      this%sea_ice_volume_sum = this%sea_ice_volume_sum + sample%sea_ice_volume
+      this%sea_ice_temperature_sum = this%sea_ice_temperature_sum + sample%sea_ice_fraction*sample%sea_ice_temperature
     end if
     this%surface_temperature_sum = this%surface_temperature_sum + sample%surface_temperature
     this%deep_temperature_sum = this%deep_temperature_sum + sample%deep_temperature
@@ -205,6 +237,20 @@ contains
 
     if (this%sample_count <= 0) error stop 'radiation monthly accumulator is empty'
     inverse_count = 1.0_real64/real(this%sample_count, real64)
+    if (this%tiles) then
+      means%land_temperature = this%land_temperature_sum*inverse_count
+      means%ocean_temperature = this%ocean_temperature_sum*inverse_count
+      means%sea_ice_fraction = this%sea_ice_fraction_sum*inverse_count
+      means%sea_ice_volume = this%sea_ice_volume_sum*inverse_count
+      allocate (means%sea_ice_temperature, mold=this%sea_ice_fraction_sum)
+      allocate (means%sea_ice_thickness, mold=this%sea_ice_fraction_sum)
+      means%sea_ice_temperature = 0.0_real64
+      means%sea_ice_thickness = 0.0_real64
+      where (this%sea_ice_fraction_sum > 0.0_real64)
+        means%sea_ice_temperature = this%sea_ice_temperature_sum/this%sea_ice_fraction_sum
+        means%sea_ice_thickness = this%sea_ice_volume_sum/this%sea_ice_fraction_sum
+      end where
+    end if
     means%surface_temperature = this%surface_temperature_sum*inverse_count
     means%deep_temperature = this%deep_temperature_sum*inverse_count
     means%surface_pressure = this%surface_pressure_sum*inverse_count
@@ -231,6 +277,11 @@ contains
     class(radiation_monthly_accumulator), intent(inout) :: this
 
     this%sample_count = 0
+    if (allocated(this%land_temperature_sum)) this%land_temperature_sum = 0.0_real64
+    if (allocated(this%ocean_temperature_sum)) this%ocean_temperature_sum = 0.0_real64
+    if (allocated(this%sea_ice_fraction_sum)) this%sea_ice_fraction_sum = 0.0_real64
+    if (allocated(this%sea_ice_volume_sum)) this%sea_ice_volume_sum = 0.0_real64
+    if (allocated(this%sea_ice_temperature_sum)) this%sea_ice_temperature_sum = 0.0_real64
     if (allocated(this%surface_temperature_sum)) this%surface_temperature_sum = 0.0_real64
     if (allocated(this%deep_temperature_sum)) this%deep_temperature_sum = 0.0_real64
     if (allocated(this%surface_pressure_sum)) this%surface_pressure_sum = 0.0_real64
@@ -261,6 +312,9 @@ contains
     type(radiation_diagnostics), intent(in) :: sample
 
     if (this%sample_count == 0) this%first_time_seconds = sample%time_seconds
+    call this%ice_checks%merge(sample%ice_checks)
+    this%sea_ice_area_sum = this%sea_ice_area_sum + sample%sea_ice_area
+    this%sea_ice_total_volume_sum = this%sea_ice_total_volume_sum + sample%sea_ice_total_volume
     this%atmospheric_temperature_sum = this%atmospheric_temperature_sum + sample%mean_atmospheric_temperature
     this%surface_temperature_sum = this%surface_temperature_sum + sample%mean_surface_temperature
     this%deep_temperature_sum = this%deep_temperature_sum + sample%mean_deep_temperature
@@ -309,7 +363,12 @@ contains
     real(real64) :: inverse_count
 
     if (this%sample_count <= 0) error stop 'radiation daily accumulator is empty'
+    means%ice_checks = this%ice_checks
     inverse_count = 1.0_real64/real(this%sample_count, real64)
+    means%sea_ice_area = this%sea_ice_area_sum*inverse_count
+    means%sea_ice_total_volume = this%sea_ice_total_volume_sum*inverse_count
+    if (this%sea_ice_area_sum > 0.0_real64) &
+      means%mean_sea_ice_thickness = this%sea_ice_total_volume_sum/this%sea_ice_area_sum
     means%time_seconds = this%first_time_seconds
     means%mean_atmospheric_temperature = this%atmospheric_temperature_sum*inverse_count
     means%mean_surface_temperature = this%surface_temperature_sum*inverse_count
@@ -350,8 +409,11 @@ contains
   subroutine reset_daily_accumulator(this)
     class(radiation_daily_accumulator), intent(inout) :: this
 
+    this%ice_checks = sea_ice_checks()
     this%sample_count = 0
     this%first_time_seconds = 0.0_real64
+    this%sea_ice_area_sum = 0.0_real64
+    this%sea_ice_total_volume_sum = 0.0_real64
     this%atmospheric_temperature_sum = 0.0_real64
     this%surface_temperature_sum = 0.0_real64
     this%deep_temperature_sum = 0.0_real64

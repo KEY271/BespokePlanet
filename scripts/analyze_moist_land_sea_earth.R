@@ -108,22 +108,43 @@ calendar_month <- ((final_months + 2L) %% 12L) + 1L
 calendar_labels <- month.abb[calendar_month]
 
 temperature_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
+land_temperature_monthly <- ocean_temperature_monthly <- temperature_monthly
 precipitation_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
 evaporation_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
 cloud_cover_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
 surface_pressure_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
 surface_water_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
 zonal_v_monthly <- array(NA_real_, dim = c(nlat, nlev, months_per_year))
+ice_fields <- c("sea_ice_fraction", "sea_ice_volume", "sea_ice_thickness", "sea_ice_temperature")
+ice_files <- outer(ice_fields, final_months, function(field, month)
+  file.path(case_dir, sprintf("monthly_%s_m%04d.bin", field, month)))
+has_sea_ice <- all(file.exists(ice_files))
+if (any(file.exists(ice_files)) && !has_sea_ice) stop("Incomplete monthly sea-ice output")
+if (has_sea_ice) {
+  sea_ice_fraction_monthly <- sea_ice_volume_monthly <-
+    sea_ice_thickness_monthly <- sea_ice_temperature_monthly <-
+      matrix(NA_real_, nrow = npoints, ncol = months_per_year)
+}
 
 for (m in seq_along(final_months)) {
   suffix <- sprintf("m%04d.bin", final_months[[m]])
   temperature_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_surface_temperature_", suffix)))
+  land_path <- file.path(case_dir, paste0("monthly_land_temperature_", suffix))
+  ocean_path <- file.path(case_dir, paste0("monthly_ocean_temperature_", suffix))
+  land_temperature_monthly[, m] <- if (file.exists(land_path)) read_grid(land_path) else temperature_monthly[, m]
+  ocean_temperature_monthly[, m] <- if (file.exists(ocean_path)) read_grid(ocean_path) else temperature_monthly[, m]
   precipitation_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_precipitation_", suffix)))
   evaporation_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_evaporation_", suffix)))
   cloud_cover_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_cloud_cover_", suffix)))
   surface_pressure_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_surface_pressure_", suffix)))
   surface_water_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_surface_water_", suffix)))
   zonal_v_monthly[, , m] <- read_zonal(file.path(case_dir, paste0("monthly_zonal_v_", suffix)))
+  if (has_sea_ice) {
+    sea_ice_fraction_monthly[, m] <- read_grid(ice_files[1, m])
+    sea_ice_volume_monthly[, m] <- read_grid(ice_files[2, m])
+    sea_ice_thickness_monthly[, m] <- read_grid(ice_files[3, m])
+    sea_ice_temperature_monthly[, m] <- read_grid(ice_files[4, m])
+  }
 }
 
 land_fraction <- read_grid(file.path(case_dir, "land_fraction.bin"))
@@ -131,6 +152,8 @@ surface_height <- read_grid(file.path(case_dir, "surface_height.bin"))
 land <- land_fraction >= 0.5
 temperature_annual_k <- rowMeans(temperature_monthly)
 temperature_annual_c <- temperature_annual_k - 273.15
+land_temperature_annual_c <- rowMeans(land_temperature_monthly) - 273.15
+ocean_temperature_annual_c <- rowMeans(ocean_temperature_monthly) - 273.15
 precipitation_annual_mm <- rowSums(precipitation_monthly * days_per_month)
 evaporation_annual_mm <- rowSums(evaporation_monthly * days_per_month)
 cloud_cover_annual <- rowMeans(cloud_cover_monthly)
@@ -167,7 +190,7 @@ summer_mask <- matrix(FALSE, nrow = npoints, ncol = months_per_year)
 summer_mask[northern, summer_columns_north] <- TRUE
 summer_mask[!northern, summer_columns_south] <- TRUE
 
-temperatures_c <- temperature_monthly - 273.15
+temperatures_c <- land_temperature_monthly - 273.15
 precipitation_mm_month <- precipitation_monthly * days_per_month
 annual_temperature_c <- rowMeans(temperatures_c)
 warmest_month_c <- apply(temperatures_c, 1, max)
@@ -257,6 +280,8 @@ climate_table <- data.frame(
   land_fraction = land_fraction,
   surface_height_m = surface_height,
   annual_mean_surface_temperature_c = temperature_annual_c,
+  annual_mean_land_temperature_c = ifelse(land_fraction > 0, land_temperature_annual_c, NA_real_),
+  annual_mean_ocean_temperature_c = ifelse(land_fraction < 1, ocean_temperature_annual_c, NA_real_),
   annual_precipitation_mm = precipitation_annual_mm,
   annual_evaporation_mm = evaporation_annual_mm,
   annual_mean_cloud_cover = cloud_cover_annual,
@@ -306,7 +331,7 @@ site_table <- data.frame(
   koppen_group = koppen_group[selected],
   koppen_type = koppen_type[selected],
   earth_reference_koppen = target_points$earth_koppen,
-  annual_mean_temperature_c = temperature_annual_c[selected],
+  annual_mean_temperature_c = land_temperature_annual_c[selected],
   annual_precipitation_mm = precipitation_annual_mm[selected],
   annual_mean_surface_water_kg_m2 = surface_water_annual[selected]
 )
@@ -411,6 +436,129 @@ open_map_png <- function(name, width = 2200, height = 1250, res = 180) {
 
 period_label <- sprintf("final year (months %d–%d)", min(final_months), max(final_months))
 
+# --- Sea ice ---------------------------------------------------------------
+# A and V are per ocean area. Point weights include the native Gaussian cell
+# area; multiplying by ocean fraction converts them to whole-Earth fractions.
+if (has_sea_ice) {
+  ocean_fraction <- 1 - land_fraction
+  ocean_weight <- point_weight * ocean_fraction
+  earth_area_m2 <- 4 * pi * earth_radius^2
+  ice_area_fraction <- function(indices, month) {
+    sum(ocean_weight[indices] * sea_ice_fraction_monthly[indices, month])
+  }
+  ice_volume_fraction <- function(indices, month) {
+    sum(ocean_weight[indices] * sea_ice_volume_monthly[indices, month])
+  }
+  hemisphere <- list(global = seq_len(npoints), north = which(grid_latitude >= 0),
+                     south = which(grid_latitude < 0))
+  ice_monthly <- do.call(rbind, lapply(names(hemisphere), function(region) {
+    indices <- hemisphere[[region]]
+    area <- vapply(seq_len(months_per_year), function(m) ice_area_fraction(indices, m), numeric(1))
+    volume <- vapply(seq_len(months_per_year), function(m) ice_volume_fraction(indices, m), numeric(1))
+    data.frame(region = region, output_month = final_months,
+               calendar_month = calendar_month, month = calendar_labels,
+               ice_area_m2 = area * earth_area_m2,
+               ice_volume_m3 = volume * earth_area_m2,
+               mean_thickness_m = ifelse(area > 0, volume / area, NA_real_))
+  }))
+  write.csv(ice_monthly, file.path(analysis_dir, "final_year_sea_ice_monthly.csv"), row.names = FALSE)
+
+  ice_annual_fraction <- rowMeans(sea_ice_fraction_monthly)
+  ice_annual_volume <- rowMeans(sea_ice_volume_monthly)
+  ice_annual_thickness <- ifelse(ice_annual_fraction > 0,
+                                 ice_annual_volume / ice_annual_fraction, NA_real_)
+  ice_annual_temperature_c <- rowSums(sea_ice_fraction_monthly * sea_ice_temperature_monthly) /
+    rowSums(sea_ice_fraction_monthly) - 273.15
+  ice_annual_temperature_c[ice_annual_fraction == 0] <- NA_real_
+  ice_annual_thickness[ocean_fraction == 0] <- NA_real_
+  ice_annual_temperature_c[ocean_fraction == 0] <- NA_real_
+
+  ice_fraction_breaks <- c(-0.001, 0.001, 0.15, 0.3, 0.5, 0.7, 0.85, 1.001)
+  ice_fraction_colors <- c("#b9d9eb", hcl.colors(6, "Blues 3", rev = TRUE))
+  ice_fraction_labels <- c("0", "0–15%", "15–30%", "30–50%", "50–70%", "70–85%", "85–100%")
+  draw_ice_fraction_map <- function(values, title) {
+    classes <- cut(pmin(1, pmax(0, values)), breaks = ice_fraction_breaks,
+                   labels = FALSE, include.lowest = TRUE)
+    map_frame(title, background = "#e6e2d8")
+    draw_cells(ice_fraction_colors[classes], ocean_fraction > 0)
+    map_axes(grid_alpha = 0.4)
+    draw_coastline()
+    legend("bottomleft", legend = c(ice_fraction_labels, "Land"),
+           fill = c(ice_fraction_colors, "#e6e2d8"), border = "#555555",
+           bg = "white", cex = 0.72, ncol = 2, title = "Ocean ice concentration")
+  }
+
+  march <- which(calendar_month == 3)
+  september <- which(calendar_month == 9)
+  png(file.path(analysis_dir, "final_year_sea_ice_seasonal_maps.png"),
+      width = 2200, height = 2300, res = 180, type = png_device_type)
+  par(mfrow = c(2, 1), mar = c(4.6, 5, 3.4, 1), oma = c(0.4, 0, 2.2, 0), las = 1)
+  draw_ice_fraction_map(sea_ice_fraction_monthly[, march], "March monthly-mean sea ice")
+  draw_ice_fraction_map(sea_ice_fraction_monthly[, september], "September monthly-mean sea ice")
+  mtext(sprintf("Sea-ice concentration, %s", period_label), side = 3,
+        outer = TRUE, line = 0.4, cex = 1.12)
+  dev.off()
+
+  ice_thickness_breaks <- c(-0.001, 0.25, 0.5, 1, 2, 4, 8, Inf)
+  ice_thickness_colors <- hcl.colors(length(ice_thickness_breaks) - 1, "YlOrRd")
+  ice_thickness_class <- cut(ice_annual_thickness, breaks = ice_thickness_breaks,
+                             labels = FALSE, include.lowest = TRUE)
+  open_map_png("final_year_sea_ice_mean_thickness_map.png")
+  par(mar = c(6.2, 5, 4.1, 1), las = 1)
+  map_frame(sprintf("Ice-area-weighted mean thickness, %s", period_label), background = "#e6e2d8")
+  draw_cells(rep(ocean_colour, npoints), ocean_fraction > 0)
+  draw_cells(ice_thickness_colors[ice_thickness_class], ice_annual_fraction > 0 & ocean_fraction > 0)
+  map_axes(grid_alpha = 0.4)
+  draw_coastline()
+  legend("bottomleft", legend = c("<0.25", "0.25–0.5", "0.5–1", "1–2", "2–4", "4–8", ">=8", "No ice", "Land"),
+         fill = c(ice_thickness_colors, ocean_colour, "#e6e2d8"),
+         border = "#555555", bg = "white", cex = 0.72, ncol = 2, title = "Thickness (m)")
+  mtext("Mean volume divided by mean ice concentration; only ice-covered ocean cells are coloured",
+        side = 1, line = 4.6, cex = 0.72)
+  dev.off()
+
+  ice_temperature_breaks <- c(-Inf, -40, -30, -20, -10, -5, 0, Inf)
+  ice_temperature_colors <- hcl.colors(length(ice_temperature_breaks) - 1, "Blue-Red 3")
+  ice_temperature_class <- cut(ice_annual_temperature_c, breaks = ice_temperature_breaks,
+                               labels = FALSE, include.lowest = TRUE)
+  open_map_png("final_year_sea_ice_surface_temperature_map.png")
+  par(mar = c(6.2, 5, 4.1, 1), las = 1)
+  map_frame(sprintf("Ice-area-weighted surface temperature, %s", period_label), background = "#e6e2d8")
+  draw_cells(rep(ocean_colour, npoints), ocean_fraction > 0)
+  draw_cells(ice_temperature_colors[ice_temperature_class], ice_annual_fraction > 0 & ocean_fraction > 0)
+  map_axes(grid_alpha = 0.4)
+  draw_coastline()
+  legend("bottomleft", legend = c("<-40", "-40–-30", "-30–-20", "-20–-10", "-10–-5", "-5–0", ">=0", "No ice", "Land"),
+         fill = c(ice_temperature_colors, ocean_colour, "#e6e2d8"),
+         border = "#555555", bg = "white", cex = 0.72, ncol = 2, title = "Ice skin (°C)")
+  mtext("Ice-area and time weighted; only ice-covered ocean cells are coloured",
+        side = 1, line = 4.6, cex = 0.72)
+  dev.off()
+
+  png(file.path(analysis_dir, "final_year_sea_ice_seasonal_cycle.png"),
+      width = 1800, height = 1500, res = 180, type = png_device_type)
+  par(mfrow = c(2, 1), mar = c(4.4, 5.4, 3, 1.1), oma = c(0, 0, 2.4, 0), las = 1)
+  north_ice <- ice_monthly[ice_monthly$region == "north", ][order(ice_monthly$calendar_month[ice_monthly$region == "north"]), ]
+  south_ice <- ice_monthly[ice_monthly$region == "south", ][order(ice_monthly$calendar_month[ice_monthly$region == "south"]), ]
+  for (quantity in c("ice_area_m2", "ice_volume_m3")) {
+    scale <- if (quantity == "ice_area_m2") 1e12 else 1e13
+    label <- if (quantity == "ice_area_m2") expression("Ice area (10"^12*" m"^2*")") else
+      expression("Ice volume (10"^13*" m"^3*")")
+    plot(1:12, north_ice[[quantity]] / scale, type = "o", pch = 16, col = "#2368a2", lwd = 2.5,
+         ylim = range(0, north_ice[[quantity]], south_ice[[quantity]]) / scale,
+         xaxt = "n", xlab = "Calendar month", ylab = label,
+         main = if (quantity == "ice_area_m2") "Sea-ice area" else "Sea-ice volume",
+         panel.first = grid(col = "#dddddd"))
+    lines(1:12, south_ice[[quantity]] / scale, type = "o", pch = 16, col = "#c26541", lwd = 2.5)
+    axis(1, at = 1:12, labels = month.abb)
+    legend("topright", c("Northern Hemisphere", "Southern Hemisphere"),
+           col = c("#2368a2", "#c26541"), lwd = 2.5, pch = 16, bg = "white", cex = 0.8)
+  }
+  mtext(sprintf("Sea ice in the %s (native-grid area weighted)", period_label),
+        side = 3, outer = TRUE, line = 0.5, cex = 1.12)
+  dev.off()
+}
+
 # --- Koppen first-letter groups -------------------------------------------
 koppen_colors <- c(A = "#2f9e44", B = "#d8b365", C = "#ffd43b", D = "#4dabf7", E = "#f1f3f5")
 koppen_labels <- c(A = "A Tropical", B = "B Dry", C = "C Temperate", D = "D Continental", E = "E Polar")
@@ -493,7 +641,7 @@ temperature_breaks <- c(-Inf, -30, -20, -10, 0, 10, 20, 30, Inf)
 temperature_colors <- hcl.colors(length(temperature_breaks) - 1, palette = "Blue-Red 3")
 temperature_labels <- c("<-30 °C", "-30 to -20 °C", "-20 to -10 °C", "-10 to 0 °C",
                         "0 to 10 °C", "10 to 20 °C", "20 to 30 °C", ">=30 °C")
-temperature_class <- cut(temperature_annual_c, breaks = temperature_breaks, labels = FALSE,
+temperature_class <- cut(land_temperature_annual_c, breaks = temperature_breaks, labels = FALSE,
                          include.lowest = TRUE, right = FALSE)
 
 open_map_png("final_year_land_surface_temperature_map.png")
@@ -821,6 +969,31 @@ daily_year <- daily[["simulation_day"]] / 360
 toa_imbalance <- daily[["incoming_shortwave_w_m-2"]] - daily[["reflected_shortwave_w_m-2"]] -
   daily[["outgoing_longwave_w_m-2"]]
 
+if (has_sea_ice) {
+  required_daily_ice <- c("sea_ice_area_m2", "sea_ice_volume_m3", "mean_sea_ice_thickness_m")
+  if (!all(required_daily_ice %in% names(daily))) stop("Missing daily sea-ice diagnostics")
+  png(file.path(analysis_dir, "spinup_sea_ice_timeseries.png"),
+      width = 1900, height = 1800, res = 180, type = png_device_type)
+  par(mfrow = c(3, 1), mar = c(2.3, 5.5, 2.8, 1.2), oma = c(4.1, 0, 2.4, 0), las = 1)
+  for (quantity in required_daily_ice) {
+    scale <- switch(quantity, sea_ice_area_m2 = 1e12, sea_ice_volume_m3 = 1e13,
+                    mean_sea_ice_thickness_m = 1)
+    label <- switch(quantity, sea_ice_area_m2 = expression(10^12*" m"^2),
+                    sea_ice_volume_m3 = expression(10^13*" m"^3),
+                    mean_sea_ice_thickness_m = "m")
+    title <- switch(quantity, sea_ice_area_m2 = "Global sea-ice area",
+                    sea_ice_volume_m3 = "Global sea-ice volume",
+                    mean_sea_ice_thickness_m = "Ice-area-weighted thickness")
+    plot(daily_year, daily[[quantity]] / scale, type = "l", lwd = 1.5,
+         col = "#2368a2", xlab = "", ylab = label, main = title,
+         panel.first = grid(col = "#dddddd"))
+  }
+  mtext("Simulation year", side = 1, outer = TRUE, line = 2.3)
+  mtext("Sea-ice evolution (daily global diagnostics)", side = 3, outer = TRUE,
+        line = 0.5, cex = 1.12)
+  dev.off()
+}
+
 png(file.path(analysis_dir, "spinup_global_timeseries.png"),
     width = 2000, height = 2200, res = 180, type = png_device_type)
 par(mfrow = c(4, 1), mar = c(2.2, 5.4, 2.6, 1.2), oma = c(4.0, 0, 2.6, 0), las = 1)
@@ -853,8 +1026,8 @@ mtext("Spin-up of the Earth-terrain land-sea run (daily global means)",
 dev.off()
 
 # --- Comparison with the analytic-continent run -----------------------------
-# The analytic land/sea run shares the resolution, the physics and the length of
-# the integration, so the difference isolates the effect of the terrain.
+# A saved analytic-continent run may predate the sea-ice physics. Mark that
+# comparison explicitly so its differences are not attributed to terrain alone.
 reference_dir <- if (length(args) >= 3) args[[3]] else "output/moist_land_sea_t31"
 reference_zonal_path <- file.path(reference_dir, "analysis", "final_year_zonal_means.csv")
 reference_daily_path <- file.path(reference_dir, "daily_global.csv")
@@ -863,6 +1036,14 @@ if (file.exists(reference_zonal_path) && file.exists(reference_daily_path)) {
   reference_daily <- read.csv(reference_daily_path, check.names = FALSE)
   reference_year <- reference_daily[["simulation_day"]] / 360
   reference_label <- basename(reference_dir)
+  reference_metadata_path <- file.path(reference_dir, "metadata.json")
+  reference_metadata <- if (file.exists(reference_metadata_path))
+    paste(readLines(reference_metadata_path, warn = FALSE), collapse = "\n") else ""
+  reference_has_sea_ice <- grepl('"sea_ice"\\s*:\\s*\\{\\s*"enabled"\\s*:\\s*true',
+                                  reference_metadata, perl = TRUE)
+  comparison_note <- if (has_sea_ice && !reference_has_sea_ice)
+    "reference lacks sea ice; physics also differs" else
+    "same sea-ice setting"
 
   png(file.path(analysis_dir, "comparison_with_analytic_continents.png"),
       width = 2000, height = 1800, res = 180, type = png_device_type)
@@ -906,8 +1087,8 @@ if (file.exists(reference_zonal_path) && file.exists(reference_daily_path)) {
   lines(reference_year, reference_toa, lwd = 1.2, col = "#555555")
   abline(h = 0, lty = 2, col = "#777777")
 
-  mtext(sprintf("Earth terrain (colour) against %s (grey)", reference_label),
-        side = 3, outer = TRUE, line = 0.6, cex = 1.1)
+  mtext(sprintf("Earth terrain (colour) against %s (grey); %s", reference_label, comparison_note),
+        side = 3, outer = TRUE, line = 0.6, cex = 0.9)
   dev.off()
 } else {
   reference_zonal <- NULL
@@ -976,15 +1157,15 @@ summary_table <- data.frame(
     area_mean(cloud_cover_annual, land_weight),
     area_mean(cloud_cover_annual, ocean_weight),
     area_mean(temperature_annual_c, point_weight),
-    area_mean(temperature_annual_c, land_weight),
-    area_mean(temperature_annual_c, ocean_weight),
+    area_mean(land_temperature_annual_c, land_weight),
+    area_mean(ocean_temperature_annual_c, ocean_weight),
     area_mean(surface_water_annual, land_weight),
     area_mean(budget_annual_mm, land_weight),
     area_mean(budget_annual_mm, ocean_weight),
-    min(temperature_annual_c[land]), max(temperature_annual_c[land]),
-    area_mean(temperature_annual_c[land & grid_latitude < -65],
+    min(land_temperature_annual_c[land]), max(land_temperature_annual_c[land]),
+    area_mean(land_temperature_annual_c[land & grid_latitude < -65],
               point_weight[land & grid_latitude < -65]),
-    area_mean(temperature_annual_c[land & grid_latitude > 65],
+    area_mean(land_temperature_annual_c[land & grid_latitude > 65],
               point_weight[land & grid_latitude > 65]),
     max(abs(ocean_pressure_anomaly[ocean])),
     sqrt(area_mean((ocean_pressure_anomaly[ocean] -
@@ -1002,6 +1183,17 @@ summary_table <- data.frame(
     group_fraction
   )
 )
+if (has_sea_ice) {
+  ice_summary <- data.frame(
+    metric = c("final_year_mean_sea_ice_area_m2", "final_year_mean_sea_ice_volume_m3",
+               "final_year_mean_sea_ice_thickness_m", "final_year_max_sea_ice_area_m2"),
+    value = c(mean(ice_monthly$ice_area_m2[ice_monthly$region == "global"]),
+              mean(ice_monthly$ice_volume_m3[ice_monthly$region == "global"]),
+              sum(ocean_weight * ice_annual_volume) / sum(ocean_weight * ice_annual_fraction),
+              max(ice_monthly$ice_area_m2[ice_monthly$region == "global"]))
+  )
+  summary_table <- rbind(summary_table, ice_summary)
+}
 write.csv(summary_table, file.path(analysis_dir, "analysis_summary.csv"), row.names = FALSE)
 
 notes <- c(
@@ -1021,8 +1213,14 @@ notes <- c(
   "The ocean surface pressure map shows the departure of the annual mean from the ocean area mean, as the check for terrain-induced ripples.",
   "Mass streamfunction uses monthly zonal-mean v and monthly zonal-mean surface pressure; pressure shown is the reference full-level pressure.",
   "The spin-up figure uses all daily global means in daily_global.csv, not only the final year.",
+  "The analytic-continent comparison is not terrain-only when the reference run predates sea ice; the figure states this when detected.",
   "All annual means use the final 12 monthly means with equal weights."
 )
+if (has_sea_ice) notes <- c(notes,
+  "Sea-ice seasonal maps show March and September monthly mean concentration A per ocean area, with land masked.",
+  "Sea-ice area and volume are integrated over the native Gaussian cell areas multiplied by ocean fraction; the seasonal CSV separates hemispheres.",
+  "Mean ice thickness is mean V divided by mean A; ice skin temperature is weighted by monthly ice area and time. Both maps mask ice-free water.",
+  "The sea-ice spin-up figure uses daily global area, volume, and ice-area-weighted thickness.")
 writeLines(notes, file.path(analysis_dir, "README.txt"))
 
 cat("Analysis written to", analysis_dir, "\n")

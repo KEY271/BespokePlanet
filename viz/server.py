@@ -63,6 +63,16 @@ FIELD_DEFINITIONS: dict[str, dict[str, Any]] = {
 }
 
 
+FIELD_DEFINITIONS["surface_temperature"] = {"label": "surface temperature", "symbol": "Tₛ", "unit": "K", "signed": False}
+FIELD_DEFINITIONS["deep_temperature"] = {"label": "deep land temperature", "symbol": "T_d", "unit": "K", "signed": False}
+FIELD_DEFINITIONS["land_temperature"] = {"label": "land temperature", "symbol": "T_L", "unit": "K", "signed": False}
+FIELD_DEFINITIONS["ocean_temperature"] = {"label": "ocean temperature", "symbol": "T_o", "unit": "K", "signed": False}
+FIELD_DEFINITIONS["sea_ice_fraction"] = {"label": "sea ice concentration", "symbol": "A", "unit": "1", "signed": False, "zero_based": True}
+FIELD_DEFINITIONS["sea_ice_volume"] = {"label": "sea ice volume / ocean area", "symbol": "V", "unit": "m", "signed": False, "zero_based": True}
+FIELD_DEFINITIONS["sea_ice_thickness"] = {"label": "sea ice thickness", "symbol": "h", "unit": "m", "signed": False, "zero_based": True}
+FIELD_DEFINITIONS["sea_ice_temperature"] = {"label": "sea ice surface temperature", "symbol": "Tᵢ", "unit": "K", "signed": False}
+MASKED_TILE_FIELDS = {"land_temperature", "ocean_temperature", "deep_temperature", "sea_ice_temperature", "sea_ice_thickness"}
+
 class DataError(RuntimeError):
     """Raised when a run contains malformed or incomplete data."""
 
@@ -77,6 +87,7 @@ class Run:
     data_generation: int
     is_dry: bool = False
     level_count: int = 0
+    radiation_period: str = ""
 
 
 def _full_level_pressure(top: float, bottom: float) -> float:
@@ -100,6 +111,9 @@ def _normalized_metadata(raw: dict[str, Any]) -> dict[str, Any]:
     grid.setdefault("point_count", offsets[-1])
     metadata["grid"] = grid
 
+    if "monthly_surface_temperature" in metadata.get("output", {}):
+        metadata["supports_conservation_diagnostics"] = False
+        return metadata
     equation = metadata.get("equation", "barotropic_vorticity")
     if equation != "dry_hydrostatic_atmosphere":
         metadata.setdefault("supports_conservation_diagnostics", True)
@@ -222,6 +236,8 @@ class Repository:
         for metadata_path in sorted(self.output_root.glob("*/metadata.json")):
             try:
                 runs.append(self._load_run(metadata_path.parent.name))
+                if any(metadata_path.parent.glob("yearly_surface_temperature_y*.bin")):
+                    runs.append(self._load_run(metadata_path.parent.name + ".yearly"))
             except (DataError, OSError, ValueError, KeyError, json.JSONDecodeError):
                 continue
         return runs
@@ -233,7 +249,12 @@ class Repository:
         return run
 
     def _load_run(self, name: str) -> Run:
-        run_path = (self.output_root / name).resolve()
+        radiation_period = "monthly"
+        directory_name = name
+        if name.endswith(".yearly") and not (self.output_root / name).is_dir():
+            directory_name = name.removesuffix(".yearly")
+            radiation_period = "yearly"
+        run_path = (self.output_root / directory_name).resolve()
         if run_path.parent != self.output_root or not run_path.is_dir():
             raise KeyError(name)
         metadata_path = run_path / "metadata.json"
@@ -251,6 +272,8 @@ class Repository:
         if int(grid["point_count"]) != offsets[-1]:
             raise DataError(f"Invalid point count in {metadata_path}")
 
+        if "monthly_surface_temperature" in metadata.get("output", {}):
+            return self._load_radiation_run(name, run_path, metadata_path, metadata, radiation_period)
         is_dry = metadata.get("equation") == "dry_hydrostatic_atmosphere"
         level_count = int(metadata.get("vertical_coordinate", {}).get("number_of_levels", 0))
         if is_dry:
@@ -301,6 +324,40 @@ class Repository:
             fields=tuple(fields),
             data_generation=metadata_path.stat().st_mtime_ns,
         )
+
+    @staticmethod
+    def _load_radiation_run(name, run_path, metadata_path, metadata, period):
+        suffix = "m" if period == "monthly" else "y"
+        pattern = re.compile(rf"^{period}_([a-z_]+)_{suffix}(\d{{4}})\.bin$")
+        steps_by_field = {}
+        generation = metadata_path.stat().st_mtime_ns
+        for path in run_path.iterdir():
+            match = pattern.fullmatch(path.name)
+            if match and match[1] in FIELD_DEFINITIONS:
+                steps_by_field.setdefault(match[1], set()).add(int(match[2]))
+                generation = max(generation, path.stat().st_mtime_ns)
+        if not steps_by_field:
+            raise DataError(f"No {period} surface frames found in {run_path}")
+        steps = tuple(sorted(set.intersection(*steps_by_field.values())))
+        if not steps:
+            raise DataError(f"No complete {period} surface frames found in {run_path}")
+        calendar = metadata["calendar"]
+        duration = float(calendar["solar_day_seconds"]) * int(calendar["days_per_month"])
+        if period == "yearly":
+            duration *= int(calendar["months_per_year"])
+        metadata = dict(metadata)
+        metadata["surface_sampling"] = period
+        metadata["frame_times_seconds"] = {str(n): (n - 0.5) * duration if period == "monthly" else (n - 1) * duration for n in steps}
+        if period == "yearly":
+            for n in steps:
+                time_path = run_path / f"yearly_time_y{n:04d}.json"
+                if time_path.exists():
+                    timestamp = float(json.loads(time_path.read_text())["time_seconds"])
+                    if not math.isfinite(timestamp) or timestamp < 0:
+                        raise DataError("Invalid yearly snapshot time")
+                    metadata["frame_times_seconds"][str(n)] = timestamp
+        metadata.pop("vertical_coordinate", None)
+        return Run(name, run_path, metadata, steps, tuple(steps_by_field), generation, radiation_period=period)
 
     @staticmethod
     def _load_dry_run(
@@ -404,9 +461,12 @@ class Repository:
         values = self._field_values(run, field, step, level)
         count = int(run.metadata["grid"]["point_count"])
         finite = [value for value in values if math.isfinite(value)]
-        if len(finite) != count:
+        if len(finite) != count and not (run.radiation_period and field in MASKED_TILE_FIELDS):
             raise DataError(f"Frame {step} contains non-finite values in {field}")
-        ordered = sorted(finite)
+        # Missing tiles are encoded as NaN for rendering, excluded from color statistics.
+        ordered = sorted(finite) or [0.0]
+        count = len(ordered)
+        finite = ordered
         p005 = ordered[min(count - 1, max(0, math.floor(0.005 * count)))]
         p98 = ordered[min(count - 1, int(0.98 * (count - 1)))]
         p995 = ordered[min(count - 1, max(0, math.ceil(0.995 * count) - 1))]
@@ -435,6 +495,29 @@ class Repository:
         run: Run, field: str, step: int, level: int | None = None
     ) -> array:
         count = int(run.metadata["grid"]["point_count"])
+        if run.radiation_period:
+            suffix = "m" if run.radiation_period == "monthly" else "y"
+            source = _read_float64(run.path / f"{run.radiation_period}_{field}_{suffix}{step:04d}.bin", count)
+            if not all(math.isfinite(value) for value in source):
+                raise DataError(f"Non-finite source data in {field}")
+            if field in MASKED_TILE_FIELDS:
+                land_path = run.path / "land_fraction.bin"
+                land = _read_float64(land_path, count) if land_path.exists() else [0.0] * count
+                if not all(math.isfinite(f) and 0 <= f <= 1 for f in land):
+                    raise DataError("Invalid land-fraction mask")
+                if field.startswith("sea_ice_"):
+                    coverage = _read_float64(run.path / f"{run.radiation_period}_sea_ice_fraction_{suffix}{step:04d}.bin", count)
+                    if not all(math.isfinite(a) and 0 <= a <= 1 for a in coverage):
+                        raise DataError("Invalid sea-ice mask")
+                    present = [a > 0.0 and f < 1.0 for a, f in zip(coverage, land)]
+                elif field in {"land_temperature", "deep_temperature"}:
+                    # Legacy ground-only radiation has no land-fraction file.
+                    ground_only = "ground" in run.metadata and not run.metadata.get("surface_tiles")
+                    present = [ground_only or f > 0.0 for f in land]
+                else:
+                    present = [f < 1.0 for f in land]
+                source = [value if valid else math.nan for value, valid in zip(source, present)]
+            return array("f", source)
         if run.is_dry:
             if field == "surface_pressure":
                 return array(
@@ -515,9 +598,13 @@ class Repository:
         for step in run.steps:
             for value in self._field_values(run, field, step, level):
                 if not math.isfinite(value):
+                    if run.radiation_period and field in MASKED_TILE_FIELDS:
+                        continue
                     raise DataError(f"Frame {step} contains non-finite values in {field}")
                 minimum = min(minimum, value)
                 maximum = max(maximum, value)
+        if minimum == math.inf:
+            minimum = maximum = 0.0
         result = {
             "minimum": minimum,
             "maximum": maximum,
@@ -531,7 +618,7 @@ class Repository:
         return result
 
     def conservation(self, run: Run) -> dict[str, Any]:
-        if run.is_dry:
+        if run.is_dry or run.radiation_period:
             raise DataError(
                 "Conservation diagnostics are not yet defined for dry-atmosphere output"
             )

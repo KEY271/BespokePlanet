@@ -6,7 +6,7 @@
 !> The moist quantities are filled only when the atmosphere carries moisture.
 module dry_tendency_diagnostics
   use iso_fortran_env, only: real64
-  use planet_parameters, only: earth_gravity
+  use planet_parameters, only: earth_gravity, earth_radius
   use dry_radiation, only: radiation_diagnostics
   use dry_tendency_workspace, only: dry_workspace_type
   implicit none
@@ -27,6 +27,14 @@ contains
 
     levels = workspace%number_of_levels
     diagnostics%time_seconds = workspace%evaluation_time
+    if (workspace%surface_tiles_enabled) then
+      diagnostics%land_temperature = workspace%land_temperature
+      diagnostics%ocean_temperature = workspace%ocean_temperature
+      diagnostics%sea_ice_fraction = workspace%sea_ice_fraction
+      diagnostics%sea_ice_volume = workspace%sea_ice_volume
+      diagnostics%sea_ice_temperature = workspace%sea_ice_temperature
+      diagnostics%sea_ice_thickness = workspace%sea_ice_thickness
+    end if
     diagnostics%surface_temperature = workspace%surface_temperature_grid
     diagnostics%deep_temperature = workspace%deep_temperature_grid
     diagnostics%surface_pressure = workspace%ps
@@ -64,16 +72,33 @@ contains
       do i = 1, workspace%ring_nlon(j)
         diagnostics%mean_surface_temperature = diagnostics%mean_surface_temperature + &
           area_weight*workspace%surface_temperature_grid(i, j)
-        diagnostics%mean_deep_temperature = diagnostics%mean_deep_temperature + &
-          area_weight*workspace%deep_temperature_grid(i, j)
+        if (.not. workspace%surface_tiles_enabled) then
+          diagnostics%mean_deep_temperature = diagnostics%mean_deep_temperature + &
+            area_weight*workspace%deep_temperature_grid(i, j)
+        end if
         land_weight = area_weight*workspace%land_fraction(i, j)
         ocean_weight = area_weight*(1.0_real64 - workspace%land_fraction(i, j))
         land_area = land_area + land_weight
         ocean_area = ocean_area + ocean_weight
-        diagnostics%mean_land_surface_temperature = diagnostics%mean_land_surface_temperature + &
-          land_weight*workspace%surface_temperature_grid(i, j)
-        diagnostics%mean_ocean_surface_temperature = diagnostics%mean_ocean_surface_temperature + &
-          ocean_weight*workspace%surface_temperature_grid(i, j)
+        if (workspace%surface_tiles_enabled) then
+          diagnostics%mean_deep_temperature = diagnostics%mean_deep_temperature + &
+            land_weight*workspace%deep_temperature_grid(i, j)
+          diagnostics%ice_checks%energy_residual = max(diagnostics%ice_checks%energy_residual, &
+            abs(workspace%ice_energy_residual(i, j)))
+          diagnostics%ice_checks%surface_residual = max(diagnostics%ice_checks%surface_residual, &
+            abs(workspace%ice_surface_residual(i, j)))
+          diagnostics%mean_land_surface_temperature = diagnostics%mean_land_surface_temperature + &
+            land_weight*workspace%land_temperature(i, j)
+          diagnostics%mean_ocean_surface_temperature = diagnostics%mean_ocean_surface_temperature + &
+            ocean_weight*workspace%ocean_temperature(i, j)
+          diagnostics%sea_ice_area = diagnostics%sea_ice_area + ocean_weight*workspace%sea_ice_fraction(i, j)
+          diagnostics%sea_ice_total_volume = diagnostics%sea_ice_total_volume + ocean_weight*workspace%sea_ice_volume(i, j)
+        else
+          diagnostics%mean_land_surface_temperature = diagnostics%mean_land_surface_temperature + &
+            land_weight*workspace%surface_temperature_grid(i, j)
+          diagnostics%mean_ocean_surface_temperature = diagnostics%mean_ocean_surface_temperature + &
+            ocean_weight*workspace%surface_temperature_grid(i, j)
+        end if
         diagnostics%mean_surface_pressure = diagnostics%mean_surface_pressure + area_weight*workspace%ps(i, j)
         diagnostics%mean_incoming_shortwave = diagnostics%mean_incoming_shortwave + &
           area_weight*workspace%incoming_shortwave(i, j)
@@ -143,7 +168,7 @@ contains
           diagnostics%mean_land_evaporation = diagnostics%mean_land_evaporation + &
             land_weight*workspace%land_evaporation(i, j)
           diagnostics%mean_ocean_evaporation = diagnostics%mean_ocean_evaporation + &
-            ocean_weight*workspace%ocean_evaporation(i, j)
+            ocean_weight*(1.0_real64 - workspace%previous_sea_ice_fraction(i, j))*workspace%ocean_evaporation(i, j)
           diagnostics%mean_surface_water = diagnostics%mean_surface_water + &
             land_weight*workspace%surface_water(i, j)
           diagnostics%mean_surface_wetness = diagnostics%mean_surface_wetness + &
@@ -162,6 +187,7 @@ contains
     diagnostics%mean_atmospheric_temperature = temperature_mass_sum/atmospheric_mass
     diagnostics%mean_kinetic_energy = kinetic_energy_mass_sum/atmospheric_mass
     if (land_area > 0.0_real64) then
+      if (workspace%surface_tiles_enabled) diagnostics%mean_deep_temperature = diagnostics%mean_deep_temperature/land_area
       diagnostics%mean_land_surface_temperature = diagnostics%mean_land_surface_temperature/land_area
       diagnostics%mean_land_precipitation = diagnostics%mean_land_precipitation/land_area
       diagnostics%mean_land_evaporation = diagnostics%mean_land_evaporation/land_area
@@ -176,6 +202,11 @@ contains
       diagnostics%mean_ocean_precipitation = diagnostics%mean_ocean_precipitation/ocean_area
       diagnostics%mean_ocean_evaporation = diagnostics%mean_ocean_evaporation/ocean_area
     end if
+    if (diagnostics%sea_ice_area > 0.0_real64) then
+      diagnostics%mean_sea_ice_thickness = diagnostics%sea_ice_total_volume/diagnostics%sea_ice_area
+    end if
+    diagnostics%sea_ice_area = diagnostics%sea_ice_area*4.0_real64*acos(-1.0_real64)*earth_radius**2
+    diagnostics%sea_ice_total_volume = diagnostics%sea_ice_total_volume*4.0_real64*acos(-1.0_real64)*earth_radius**2
     diagnostics%maximum_wind_speed = sqrt(max(maximum_speed_squared, 0.0_real64))
   end subroutine collect_dry_diagnostics
 

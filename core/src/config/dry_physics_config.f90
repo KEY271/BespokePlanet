@@ -58,8 +58,8 @@ module dry_physics_config
     !> Reflectance of an overcast column; the downward shortwave reaching the
     !> troposphere is reflected once by C times this value.
     real(real64) :: cloud_shortwave_albedo = 0.43_real64
-    !> When enabled, the surface properties are mixed with the fixed land
-    !> fraction supplied by the solver.  The legacy ground/slab switch remains
+    !> When enabled, land and ocean temperatures are advanced separately and
+    !> their fluxes are weighted by the fixed land fraction. The legacy ground/slab switch remains
     !> the exact path used by existing cases.  The land and ocean albedos are
     !> surface values without clouds.
     logical :: land_sea_mixing_enabled = .false.
@@ -162,7 +162,23 @@ module dry_physics_config
     real(real64) :: convective_maximum_cover = 0.8_real64
   end type cloud_config
 
+  !> Snow-free, zero-heat-capacity sea ice; volume is per unit ocean area.
+  type, public :: sea_ice_config
+    logical :: enabled = .false.
+    real(real64) :: freezing_temperature = 271.35_real64
+    real(real64) :: melting_temperature = 273.15_real64
+    real(real64) :: new_ice_thickness = 0.5_real64
+    real(real64) :: conductivity = 2.0_real64
+    real(real64) :: density = 917.0_real64
+    real(real64) :: latent_heat = 3.34e5_real64
+    real(real64) :: albedo = 0.60_real64
+    real(real64) :: temperature_tolerance = 1.0e-7_real64
+    real(real64) :: flux_tolerance = 1.0e-5_real64
+    integer :: maximum_iterations = 100
+  end type sea_ice_config
+
   type, public :: dry_model_physics_config
+    type(sea_ice_config) :: sea_ice
     type(held_suarez_config) :: held_suarez
     type(surface_friction_config) :: surface_friction
     type(rayleigh_friction_config) :: rayleigh_friction

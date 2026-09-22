@@ -1,5 +1,6 @@
 module dry_radiation
   use iso_fortran_env, only: real64
+  use sea_ice, only: sea_ice_checks
   use dry_physics_config, only: radiation_config, radiation_orbital_period, radiation_planet_rotation_rate, &
                                 radiation_surface_heat_capacity
   use surface_exchange, only: surface_sensible_heat_flux
@@ -12,6 +13,16 @@ module dry_radiation
   !> radiation, slab-ocean, moist and land--sea cases aggregate.  The moist fields are zero
   !> and unallocated unless the moist processes are active.
   type, public :: radiation_diagnostics
+    type(sea_ice_checks) :: ice_checks
+    real(real64), allocatable :: land_temperature(:, :)
+    real(real64), allocatable :: ocean_temperature(:, :)
+    real(real64), allocatable :: sea_ice_fraction(:, :)
+    real(real64), allocatable :: sea_ice_volume(:, :)
+    real(real64), allocatable :: sea_ice_temperature(:, :)
+    real(real64), allocatable :: sea_ice_thickness(:, :)
+    real(real64) :: sea_ice_area = 0.0_real64
+    real(real64) :: sea_ice_total_volume = 0.0_real64
+    real(real64) :: mean_sea_ice_thickness = 0.0_real64
     real(real64) :: time_seconds = 0.0_real64
     real(real64) :: mean_atmospheric_temperature = 0.0_real64
     real(real64) :: mean_surface_temperature = 0.0_real64
@@ -67,6 +78,7 @@ module dry_radiation
     real(real64), allocatable :: surface_water(:, :), surface_wetness(:, :), runoff(:, :)
   end type radiation_diagnostics
 
+  public :: radiation_downward_column, radiation_upward_column
   public :: shortwave_downward_flux
   public :: ozone_layer_optical_depth
   public :: ozone_longwave_layer_optical_depth
@@ -84,6 +96,7 @@ contains
     type(radiation_diagnostics), intent(out) :: destination
 
     destination%time_seconds = source%time_seconds
+    destination%ice_checks = source%ice_checks
     destination%mean_atmospheric_temperature = source%mean_atmospheric_temperature
     destination%mean_surface_temperature = source%mean_surface_temperature
     destination%mean_deep_temperature = source%mean_deep_temperature
@@ -93,6 +106,15 @@ contains
     destination%mean_ocean_precipitation = source%mean_ocean_precipitation
     destination%mean_land_evaporation = source%mean_land_evaporation
     destination%mean_ocean_evaporation = source%mean_ocean_evaporation
+    destination%sea_ice_area = source%sea_ice_area
+    destination%sea_ice_total_volume = source%sea_ice_total_volume
+    destination%mean_sea_ice_thickness = source%mean_sea_ice_thickness
+    if (allocated(source%land_temperature)) call move_alloc(source%land_temperature, destination%land_temperature)
+    if (allocated(source%ocean_temperature)) call move_alloc(source%ocean_temperature, destination%ocean_temperature)
+    if (allocated(source%sea_ice_fraction)) call move_alloc(source%sea_ice_fraction, destination%sea_ice_fraction)
+    if (allocated(source%sea_ice_volume)) call move_alloc(source%sea_ice_volume, destination%sea_ice_volume)
+    if (allocated(source%sea_ice_temperature)) call move_alloc(source%sea_ice_temperature, destination%sea_ice_temperature)
+    if (allocated(source%sea_ice_thickness)) call move_alloc(source%sea_ice_thickness, destination%sea_ice_thickness)
     destination%mean_surface_water = source%mean_surface_water
     destination%mean_surface_wetness = source%mean_surface_wetness
     destination%mean_runoff = source%mean_runoff
@@ -273,6 +295,98 @@ contains
   !> below the ozone layer once (docs/tendency/shortwave-radiation.md); the rest reaches the
   !> surface.  Clouds absorb nothing and do not enter the longwave.  reflected_shortwave is
   !> the cloud plus surface reflection, which leaves at the top of the atmosphere unabsorbed.
+  !> Surface-independent optical properties, downward LW and SW absorption.
+  subroutine radiation_downward_column(config, pressure_half, temperature, sin_latitude, longitude, time_seconds, &
+                                       transmission, emission, downward_longwave, shortwave_downward, &
+                                       incoming_shortwave, shortwave_heating, specific_humidity)
+    type(radiation_config), intent(in) :: config
+    real(real64), intent(in) :: pressure_half(0:), temperature(:), sin_latitude, longitude, time_seconds
+    real(real64), intent(in), optional :: specific_humidity(:)
+    real(real64), intent(out) :: transmission(:), emission(:), downward_longwave(0:)
+    real(real64), intent(out) :: shortwave_downward, incoming_shortwave, shortwave_heating(:)
+    real(real64) :: ozone_fraction(size(temperature)), ozone_normalization
+    real(real64) :: pressure_thickness, layer_humidity, layer_longwave_optical_depth
+    real(real64) :: layer_shortwave_optical_depth, shortwave_transmission, shortwave_absorbed
+    real(real64) :: ultraviolet_downward, non_ultraviolet_downward
+    real(real64) :: stefan_boltzmann_constant, dry_gravity_acceleration, dry_air_specific_heat
+    integer :: number_of_levels, k
+    number_of_levels = size(temperature)
+    if (number_of_levels < 1 .or. size(pressure_half) /= number_of_levels + 1) &
+      error stop 'radiation column has inconsistent vertical dimensions'
+    if (any(temperature <= 0.0_real64)) error stop 'radiation temperature must be positive'
+    if (present(specific_humidity)) then
+      if (size(specific_humidity) /= number_of_levels) error stop 'radiation humidity shape mismatch'
+    end if
+    stefan_boltzmann_constant = config%stefan_boltzmann_constant
+    dry_gravity_acceleration = config%gravity_acceleration
+    dry_air_specific_heat = config%dry_air_specific_heat
+    shortwave_heating = 0.0_real64
+    ! The ozone fraction of a layer is shared by its longwave and shortwave optical depths.
+    ozone_normalization = ozone_profile_normalization(config)
+    do k = 1, number_of_levels
+      pressure_thickness = pressure_half(k) - pressure_half(k - 1)
+      if (pressure_thickness <= 0.0_real64) then
+        error stop 'radiation pressures must increase downward'
+      end if
+      ozone_fraction(k) = ozone_layer_fraction_normalized(config, pressure_half(k - 1), pressure_half(k), &
+                                                          ozone_normalization)
+      if (present(specific_humidity)) then
+        layer_humidity = specific_humidity(k)
+      else
+        layer_humidity = reference_layer_humidity(config, pressure_half(k - 1), pressure_half(k), &
+                                                  pressure_half(number_of_levels))
+      end if
+      layer_longwave_optical_depth = &
+        gas_longwave_layer_optical_depth(config, pressure_half(k - 1), pressure_half(k), layer_humidity) + &
+        config%ozone_longwave_optical_depth*ozone_fraction(k)
+      transmission(k) = exp(-layer_longwave_optical_depth)
+      emission(k) = (1.0_real64 - transmission(k))*stefan_boltzmann_constant*temperature(k)**4
+    end do
+
+    downward_longwave(0) = 0.0_real64
+    do k = 1, number_of_levels
+      downward_longwave(k) = transmission(k)*downward_longwave(k - 1) + emission(k)
+    end do
+    incoming_shortwave = shortwave_downward_flux(config, sin_latitude, longitude, time_seconds)
+    shortwave_downward = incoming_shortwave
+    if (incoming_shortwave > 0.0_real64) then
+      non_ultraviolet_downward = (1.0_real64 - config%ultraviolet_shortwave_fraction)*incoming_shortwave
+      ultraviolet_downward = config%ultraviolet_shortwave_fraction*incoming_shortwave
+      do k = 1, number_of_levels
+        layer_shortwave_optical_depth = config%ozone_shortwave_optical_depth*ozone_fraction(k)
+        shortwave_transmission = exp(-layer_shortwave_optical_depth)
+        shortwave_absorbed = ultraviolet_downward*(1.0_real64 - shortwave_transmission)
+        pressure_thickness = pressure_half(k) - pressure_half(k - 1)
+        shortwave_heating(k) = shortwave_heating(k) + &
+          dry_gravity_acceleration/(dry_air_specific_heat*pressure_thickness)*shortwave_absorbed
+        ultraviolet_downward = shortwave_transmission*ultraviolet_downward
+      end do
+      shortwave_downward = non_ultraviolet_downward + ultraviolet_downward
+    end if
+
+  end subroutine radiation_downward_column
+
+  !> The same area-averaged upward LW boundary is used by the air and surface budgets.
+  subroutine radiation_upward_column(config, pressure_half, transmission, emission, downward, surface_upward, &
+                                     heating, outgoing)
+    type(radiation_config), intent(in) :: config
+    real(real64), intent(in) :: pressure_half(0:), transmission(:), emission(:), downward(0:), surface_upward
+    real(real64), intent(out) :: heating(:), outgoing
+    real(real64) :: upward(0:size(emission)), net(0:size(emission))
+    integer :: k, levels
+    levels = size(emission)
+    upward(levels) = surface_upward
+    do k = levels, 1, -1
+      upward(k - 1) = transmission(k)*upward(k) + emission(k)
+    end do
+    net = upward - downward
+    do k = 1, levels
+      heating(k) = config%gravity_acceleration/(config%dry_air_specific_heat* &
+        (pressure_half(k) - pressure_half(k - 1)))*(net(k) - net(k - 1))
+    end do
+    outgoing = upward(0)
+  end subroutine radiation_upward_column
+
   subroutine radiation_tendency(config, pressure_half, temperature, surface_temperature, &
                                 deep_temperature, lowest_u, lowest_v, sin_latitude, &
                                 longitude, time_seconds, temperature_tendency, &
@@ -295,7 +409,7 @@ contains
     real(real64), intent(in), optional :: land_fraction
     real(real64) :: upward_longwave(0:size(temperature)), downward_longwave(0:size(temperature))
     real(real64) :: transmission(size(temperature)), emission(size(temperature))
-    real(real64) :: net_longwave(0:size(temperature))
+    real(real64) :: sw_heating(size(temperature))
     real(real64) :: pressure_thickness, layer_longwave_optical_depth, layer_humidity, sensible_heat, surface_deep_heat
     real(real64) :: layer_shortwave_optical_depth, shortwave_transmission
     real(real64) :: shortwave_downward, ultraviolet_downward, non_ultraviolet_downward, shortwave_absorbed
@@ -359,60 +473,13 @@ contains
       end if
     end if
 
-    ! The ozone fraction of a layer is shared by its longwave and shortwave optical depths.
-    ozone_normalization = ozone_profile_normalization(config)
-    do k = 1, number_of_levels
-      pressure_thickness = pressure_half(k) - pressure_half(k - 1)
-      if (pressure_thickness <= 0.0_real64) then
-        error stop 'radiation pressures must increase downward'
-      end if
-      ozone_fraction(k) = ozone_layer_fraction_normalized(config, pressure_half(k - 1), pressure_half(k), &
-                                                          ozone_normalization)
-      if (present(specific_humidity)) then
-        layer_humidity = specific_humidity(k)
-      else
-        layer_humidity = reference_layer_humidity(config, pressure_half(k - 1), pressure_half(k), &
-                                                  pressure_half(number_of_levels))
-      end if
-      layer_longwave_optical_depth = &
-        gas_longwave_layer_optical_depth(config, pressure_half(k - 1), pressure_half(k), layer_humidity) + &
-        config%ozone_longwave_optical_depth*ozone_fraction(k)
-      transmission(k) = exp(-layer_longwave_optical_depth)
-      emission(k) = (1.0_real64 - transmission(k))*stefan_boltzmann_constant*temperature(k)**4
-    end do
-
-    downward_longwave(0) = 0.0_real64
-    do k = 1, number_of_levels
-      downward_longwave(k) = transmission(k)*downward_longwave(k - 1) + emission(k)
-    end do
+    call radiation_downward_column(config, pressure_half, temperature, sin_latitude, longitude, time_seconds, &
+      transmission, emission, downward_longwave, shortwave_downward, incoming_shortwave, sw_heating, specific_humidity)
     upward_longwave(number_of_levels) = stefan_boltzmann_constant*surface_temperature**4
-    do k = number_of_levels, 1, -1
-      upward_longwave(k - 1) = transmission(k)*upward_longwave(k) + emission(k)
-    end do
-    net_longwave = upward_longwave - downward_longwave
-
-    do k = 1, number_of_levels
-      pressure_thickness = pressure_half(k) - pressure_half(k - 1)
-      temperature_tendency(k) = dry_gravity_acceleration/(dry_air_specific_heat*pressure_thickness)* &
-        (net_longwave(k) - net_longwave(k - 1))
-    end do
-
-    incoming_shortwave = shortwave_downward_flux(config, sin_latitude, longitude, time_seconds)
-    shortwave_downward = incoming_shortwave
-    if (incoming_shortwave > 0.0_real64) then
-      non_ultraviolet_downward = (1.0_real64 - config%ultraviolet_shortwave_fraction)*incoming_shortwave
-      ultraviolet_downward = config%ultraviolet_shortwave_fraction*incoming_shortwave
-      do k = 1, number_of_levels
-        layer_shortwave_optical_depth = config%ozone_shortwave_optical_depth*ozone_fraction(k)
-        shortwave_transmission = exp(-layer_shortwave_optical_depth)
-        shortwave_absorbed = ultraviolet_downward*(1.0_real64 - shortwave_transmission)
-        pressure_thickness = pressure_half(k) - pressure_half(k - 1)
-        temperature_tendency(k) = temperature_tendency(k) + &
-          dry_gravity_acceleration/(dry_air_specific_heat*pressure_thickness)*shortwave_absorbed
-        ultraviolet_downward = shortwave_transmission*ultraviolet_downward
-      end do
-      shortwave_downward = non_ultraviolet_downward + ultraviolet_downward
-    end if
+    call radiation_upward_column(config, pressure_half, transmission, emission, downward_longwave, &
+      upward_longwave(number_of_levels), temperature_tendency, outgoing_longwave)
+    upward_longwave(0) = outgoing_longwave
+    temperature_tendency = temperature_tendency + sw_heating
 
     sensible_heat = surface_sensible_heat_flux(config, pressure_half, temperature(number_of_levels), &
                                                surface_temperature, lowest_u, lowest_v)

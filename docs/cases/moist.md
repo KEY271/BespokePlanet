@@ -7,7 +7,8 @@
 次の点を slab ocean ケースから変更する。
 
 - 予報変数に比湿 $q$ を加え、[湿潤大気](../dynamics/moist.md)の方程式を解く。仮想温度、比湿の移流、比湿への超粘性と RAW フィルターを有効にする。
-- 海面からの[蒸発](../tendency/evaporation.md)を有効にする。海面は常に飽和しているとみなし $\beta=1$ とする。潜熱フラックス $LE$ は海洋の熱収支から差し引く。
+- 開水面からの[蒸発](../tendency/evaporation.md)を有効にする。開水面は常に飽和しているとみなし $\beta=1$ とする。潜熱フラックス $LE$ は海洋の熱収支から差し引く。
+- [海氷](../tendency/sea-ice.md)を有効にし、海水温と海氷面積率・体積を予報する。海水の凍結温度は 271.35 K、氷表面温度の上限は 273.15 K、氷のアルベドは 0.60。氷面の昇華・凝華は扱わない。
 - [湿潤対流調節](../tendency/moist-convective-adjustment.md)と[大規模凝結](../tendency/large-scale-condensation.md)を有効にする。[乾燥対流調節](../tendency/dry-convective-adjustment.md)は[湿潤対流調節](../tendency/moist-convective-adjustment.md#乾燥対流調節の変更)の節の変更を加えた上で引き続き用いる。
 - 地表摩擦は放射ケースから引き継ぐ [Held–Suarez 強制](../tendency/Held-Suarez.md#rayleigh-摩擦)の Rayleigh 摩擦（$\sigma_b=0.7$、時定数 $1\,\mathrm{day}$）をそのまま使い、拡散型の境界層スキームは持たない。
 - [上層の Rayleigh 摩擦](../tendency/upper-rayleigh-friction.md)は slab ocean ケースから引き継ぐ。上端 2 層（$1$--$3\,\mathrm{hPa}$ と $3$--$10\,\mathrm{hPa}$）の風を時定数 $1\,\mathrm{day}$ で減衰させ、放射と湿潤過程による上層風の加速を抑える。全層一様の発散への超粘性（$\tau_\delta=1\,\mathrm{hour}$）も併用する。
@@ -23,7 +24,7 @@
 
 ## 初期値
 
-$\zeta,\delta,T,\ln p_s$ と $\Phi_s=0$、海洋温度 $T_o$ の初期値は slab ocean ケースと同じとする。比湿の初期値は、相対湿度 $\mathrm{RH}_0=0.7$ の対流圏として
+$\zeta,\delta,T,\ln p_s$ と $\Phi_s=0$ の初期値は slab ocean ケースと同じとする。海洋温度は同じ初期値から始め、271.35 K を下回る分をエネルギー保存的に初期海氷へ変換する。比湿の初期値は、相対湿度 $\mathrm{RH}_0=0.7$ の対流圏として
 
 $$
 q^0_k=
@@ -92,8 +93,8 @@ $$
 毎年の 4/1 の瞬時値に以下を追加する。
 
 - 現時刻 $X^n$ のスペクトル比湿 $q$（格子の $q$ も合わせて出力する）
-- 現時刻 $X^n$ の海洋温度 $T_o$。$T_o$ は格子量なので格子の値だけを書く（放射ケースの $T_s$ と同じファイル名）。
-- 格子の雲量 $C(\lambda,\varphi)$。予報変数ではないので格子の値だけを書き、その時刻で終わるステップの傾向評価で診断した直近の値を使う。初期の瞬時値では 0 である。
+- 現時刻 $X^n$ の海洋温度 $T_o$ は `yearly_ocean_temperature_y*.bin`、面積平均の表面温度は `yearly_surface_temperature_y*.bin` に書く。海氷面積率・体積・氷厚・氷表面温度も格子量として出力し、月平均にも対応する場を追加する。日次には海氷面積・体積・平均氷厚と収支・補正の診断を加える。
+- 格子の雲量 $C(\lambda,\varphi)$ と氷表面温度は、初期出力を含めて保存する瞬時状態から診断し直す。
 - 時刻、すなわちモデル時刻（積分開始からの経過秒）とステップ数。日変化と軌道上の位置、月・年の境界はここから定まる。
 
 ファイル名の規則は slab ocean ケースと同じとする。出力先は `moist_slab_ocean` である。

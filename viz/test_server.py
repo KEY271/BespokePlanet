@@ -1,11 +1,127 @@
 import json
+import csv
 import math
+import os
 import tempfile
 import unittest
 from array import array
 from pathlib import Path
 
 from server import DataError, Repository, _gauss_legendre_weights
+
+
+@unittest.skipUnless(os.environ.get("BESPOKE_SEA_ICE_OUTPUT"), "requires the check_sea_ice Fortran output fixture")
+class FortranSeaIceOutputTest(unittest.TestCase):
+    def test_generated_output(self):
+        path = Path(os.environ["BESPOKE_SEA_ICE_OUTPUT"]).resolve()
+        repository = Repository(path.parent)
+        for name in (path.name, path.name + ".yearly"):
+            run = repository.get_run(name)
+            self.assertTrue(run.metadata["sea_ice"]["enabled"])
+            for field in run.fields:
+                payload, stats = repository.field_frame(run, field, 1)
+                self.assertEqual(len(payload), 4 * run.metadata["grid"]["point_count"])
+                self.assertTrue(math.isfinite(stats["mean"]))
+            payload, _ = repository.field_frame(run, "ocean_temperature", 1)
+            self.assertTrue(math.isnan(array("f", payload)[0]))
+            self.assertGreaterEqual(min(v for v in array("f", payload) if math.isfinite(v)), 271.35 - 1e-4)
+        with (path / "daily_global.csv").open() as source:
+            row = next(csv.DictReader(source))
+        self.assertNotIn(None, row)
+        self.assertTrue(all(v is not None and math.isfinite(float(v)) for v in row.values()))
+        self.assertLess(float(row["maximum_ice_energy_residual_j_m-2"]), 2e-5)
+        self.assertLess(float(row["maximum_ice_projection_energy_residual_j_m-2"]), 2e-5)
+        self.assertGreater(int(row["ice_checked_cells"]), 0)
+
+
+class RadiationRepositoryTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.run_path = self.root / "ice"
+        self.run_path.mkdir()
+        metadata = {
+            "equation": "moist_hydrostatic_atmosphere",
+            "simulation": {"time_step_seconds": 1200},
+            "calendar": {"solar_day_seconds": 86400, "days_per_month": 30, "months_per_year": 12},
+            "grid": {"mu": [-0.5, 0.5], "nlon": [2, 2]},
+            "output": {"monthly_surface_temperature": "monthly_surface_temperature_m{month:04d}.bin"},
+            "surface_tiles": {},
+        }
+        (self.run_path / "metadata.json").write_text(json.dumps(metadata))
+        self.write("land_fraction.bin", [1, 0.5, 0, 0])
+        for prefix, suffix in (("monthly", "m0001"), ("yearly", "y0001")):
+            for field, values in {
+                "surface_temperature": [280, 270, 270, 280],
+                "ocean_temperature": [0, 271.35, 271.35, 280],
+                "sea_ice_fraction": [0, 0.5, 1, 0],
+                "sea_ice_volume": [0, 0.25, 2, 0],
+                "sea_ice_thickness": [0, 0.5, 2, 0],
+                "sea_ice_temperature": [0, 260, 270, 0],
+            }.items():
+                self.write(f"{prefix}_{field}_{suffix}.bin", values)
+        self.repository = Repository(self.root)
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def write(self, filename, values):
+        (self.run_path / filename).write_bytes(array("d", values).tobytes())
+
+    def test_monthly_and_yearly_discovery(self):
+        self.assertEqual([run.name for run in self.repository.discover()], ["ice", "ice.yearly"])
+        monthly = self.repository.get_run("ice")
+        self.assertEqual(monthly.steps, (1,))
+        metadata = self.repository.public_metadata(monthly)
+        self.assertFalse(metadata["supports_streamlines"])
+        self.assertFalse(any(field["uses_level"] for field in metadata["available_fields"]))
+        self.assertEqual(metadata["frame_times_seconds"]["1"], 15 * 86400)
+        yearly = self.repository.get_run("ice.yearly")
+        self.assertEqual(yearly.steps, (1,))
+        self.assertEqual(yearly.metadata["frame_times_seconds"]["1"], 0)
+
+    def test_ice_mask_and_color_statistics(self):
+        run = self.repository.get_run("ice")
+        payload, stats = self.repository.field_frame(run, "sea_ice_temperature", 1)
+        values = array("f", payload)
+        self.assertTrue(math.isnan(values[0]))
+        self.assertTrue(math.isnan(values[3]))
+        self.assertEqual(list(values[1:3]), [260, 270])
+        self.assertEqual(stats["minimum"], 260)
+        self.assertEqual(stats["mean"], 265)
+        self.assertEqual(self.repository.field_statistics(run, "sea_ice_temperature")["minimum"], 260)
+
+    def test_all_ice_missing_is_renderable(self):
+        self.write("monthly_sea_ice_fraction_m0001.bin", [0, 0, 0, 0])
+        run = self.repository.get_run("ice")
+        payload, stats = self.repository.field_frame(run, "sea_ice_thickness", 1)
+        self.assertTrue(all(math.isnan(value) for value in array("f", payload)))
+        self.assertEqual(stats["maximum"], 0)
+        self.assertEqual(self.repository.field_statistics(run, "sea_ice_thickness")["maximum"], 0)
+
+    def test_corrupt_source_is_not_hidden_by_mask(self):
+        self.write("monthly_sea_ice_temperature_m0001.bin", [math.nan, 260, 270, 0])
+        with self.assertRaises(DataError):
+            self.repository.field_frame(self.repository.get_run("ice"), "sea_ice_temperature", 1)
+
+    def test_ocean_temperature_masks_only_land(self):
+        payload, stats = self.repository.field_frame(self.repository.get_run("ice.yearly"), "ocean_temperature", 1)
+        values = array("f", payload)
+        self.assertTrue(math.isnan(values[0]))
+        self.assertTrue(all(math.isfinite(value) for value in values[1:]))
+        self.assertAlmostEqual(stats["minimum"], 271.35, places=4)
+
+    def test_legacy_ground_temperature_without_land_mask(self):
+        metadata_path = self.run_path / "metadata.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata.pop("surface_tiles")
+        metadata["ground"] = {}
+        metadata_path.write_text(json.dumps(metadata))
+        (self.run_path / "land_fraction.bin").unlink()
+        self.write("monthly_deep_temperature_m0001.bin", [280, 275, 270, 265])
+        payload, stats = self.repository.field_frame(self.repository.get_run("ice"), "deep_temperature", 1)
+        self.assertEqual(list(array("f", payload)), [280, 275, 270, 265])
+        self.assertEqual(stats["minimum"], 265)
 
 
 class RepositoryTest(unittest.TestCase):

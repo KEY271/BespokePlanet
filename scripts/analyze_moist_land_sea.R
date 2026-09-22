@@ -104,6 +104,7 @@ calendar_month <- ((final_months + 2L) %% 12L) + 1L
 calendar_labels <- month.abb[calendar_month]
 
 temperature_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
+land_temperature_monthly <- ocean_temperature_monthly <- temperature_monthly
 precipitation_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
 cloud_cover_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
 surface_pressure_monthly <- matrix(NA_real_, nrow = npoints, ncol = months_per_year)
@@ -113,6 +114,10 @@ zonal_v_monthly <- array(NA_real_, dim = c(nlat, nlev, months_per_year))
 for (m in seq_along(final_months)) {
   suffix <- sprintf("m%04d.bin", final_months[[m]])
   temperature_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_surface_temperature_", suffix)))
+  land_path <- file.path(case_dir, paste0("monthly_land_temperature_", suffix))
+  ocean_path <- file.path(case_dir, paste0("monthly_ocean_temperature_", suffix))
+  land_temperature_monthly[, m] <- if (file.exists(land_path)) read_grid(land_path) else temperature_monthly[, m]
+  ocean_temperature_monthly[, m] <- if (file.exists(ocean_path)) read_grid(ocean_path) else temperature_monthly[, m]
   precipitation_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_precipitation_", suffix)))
   cloud_cover_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_cloud_cover_", suffix)))
   surface_pressure_monthly[, m] <- read_grid(file.path(case_dir, paste0("monthly_surface_pressure_", suffix)))
@@ -124,6 +129,8 @@ land_fraction <- read_grid(file.path(case_dir, "land_fraction.bin"))
 land <- land_fraction >= 0.5
 temperature_annual_k <- rowMeans(temperature_monthly)
 temperature_annual_c <- temperature_annual_k - 273.15
+land_temperature_annual_c <- rowMeans(land_temperature_monthly) - 273.15
+ocean_temperature_annual_c <- rowMeans(ocean_temperature_monthly) - 273.15
 precipitation_annual_mm <- rowSums(precipitation_monthly * days_per_month)
 precipitation_mean_mm_day <- rowMeans(precipitation_monthly)
 cloud_cover_annual <- rowMeans(cloud_cover_monthly)
@@ -169,7 +176,7 @@ classify_koppen_group <- function(temperatures_k, precipitation_mm_day, latitude
   group
 }
 
-koppen_group <- classify_koppen_group(temperature_monthly, precipitation_monthly, grid_latitude)
+koppen_group <- classify_koppen_group(land_temperature_monthly, precipitation_monthly, grid_latitude)
 koppen_group[!land] <- NA_character_
 
 climate_table <- data.frame(
@@ -177,6 +184,8 @@ climate_table <- data.frame(
   latitude_deg = grid_latitude,
   land_fraction = land_fraction,
   annual_mean_surface_temperature_c = temperature_annual_c,
+  annual_mean_land_temperature_c = ifelse(land_fraction > 0, land_temperature_annual_c, NA_real_),
+  annual_mean_ocean_temperature_c = ifelse(land_fraction < 1, ocean_temperature_annual_c, NA_real_),
   annual_precipitation_mm = precipitation_annual_mm,
   annual_mean_cloud_cover = cloud_cover_annual,
   annual_mean_surface_water_kg_m2 = surface_water_annual,
@@ -212,7 +221,7 @@ site_table <- data.frame(
   latitude_deg = grid_latitude[selected],
   land_fraction = land_fraction[selected],
   koppen_group = koppen_group[selected],
-  annual_mean_temperature_c = temperature_annual_c[selected],
+  annual_mean_temperature_c = land_temperature_annual_c[selected],
   annual_precipitation_mm = precipitation_annual_mm[selected],
   annual_mean_surface_water_kg_m2 = surface_water_annual[selected]
 )
@@ -348,7 +357,7 @@ temperature_breaks <- c(-Inf, -30, -20, -10, 0, 10, 20, 30, Inf)
 temperature_colors <- hcl.colors(length(temperature_breaks) - 1, palette = "Blue-Red 3")
 temperature_labels <- c("<-30 °C", "-30 to -20 °C", "-20 to -10 °C", "-10 to 0 °C",
                         "0 to 10 °C", "10 to 20 °C", "20 to 30 °C", ">=30 °C")
-temperature_class <- cut(temperature_annual_c, breaks = temperature_breaks, labels = FALSE,
+temperature_class <- cut(land_temperature_annual_c, breaks = temperature_breaks, labels = FALSE,
                          include.lowest = TRUE, right = FALSE)
 
 png(file.path(analysis_dir, "final_year_land_surface_temperature_map.png"),
@@ -649,7 +658,7 @@ dev.off()
 
 # Reorder April–March output into the conventional January–December display.
 calendar_order <- order(calendar_month)
-selected_temperature_c <- temperature_monthly[selected, calendar_order, drop = FALSE] - 273.15
+selected_temperature_c <- land_temperature_monthly[selected, calendar_order, drop = FALSE] - 273.15
 selected_precipitation_mm <- precipitation_monthly[selected, calendar_order, drop = FALSE] * days_per_month
 temperature_limits <- range(pretty(range(c(selected_temperature_c, 0)), n = 6))
 precipitation_limit <- max(pretty(c(0, selected_precipitation_mm), n = 6))
@@ -658,7 +667,7 @@ png(file.path(analysis_dir, "final_year_representative_land_climographs.png"),
 par(mfrow = c(3, 2), mar = c(4.1, 4.7, 3.7, 4.7), oma = c(1.0, 0.8, 3.0, 0.8), las = 1)
 for (s in seq_along(selected)) {
   index <- selected[[s]]
-  temperature_c <- temperature_monthly[index, calendar_order] - 273.15
+  temperature_c <- land_temperature_monthly[index, calendar_order] - 273.15
   precipitation_mm <- precipitation_monthly[index, calendar_order] * days_per_month
 
   plot(seq_len(12), temperature_c, type = "n", xlim = c(0.5, 12.5), ylim = temperature_limits,

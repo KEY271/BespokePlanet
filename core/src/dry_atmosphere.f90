@@ -6,9 +6,12 @@ module dry_atmosphere
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate
   use dry_gravity_wave, only: dry_gravity_wave_solver
   use dry_radiation, only: radiation_diagnostics, move_radiation_diagnostics
-  use dry_state, only: dry_state_type, allocate_dry_state, allocate_dry_surface_fields, copy_dry_state, &
+  use dry_tendency_evaluator, only: evaluate_dry_tendency
+  use dry_state, only: dry_tendency_type, allocate_dry_tendency, dry_state_type, allocate_dry_state, allocate_dry_surface_fields, copy_dry_state, &
                        enforce_dry_state_constraints, enforce_dry_spectral_field
   use dry_physics_config, only: dry_model_physics_config, dry_reference_temperature
+  use sea_ice, only: equilibrate_sea_ice, validate_sea_ice_config
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use dry_stepper, only: dry_stepper_type
   use numerics_config, only: model_numerics_config, dry_hyperdiffusion_config
   use dry_tendency_workspace, only: dry_workspace_type
@@ -188,6 +191,10 @@ contains
     this%current%surface_temperature = 0.0_real64
     this%current%deep_temperature = 0.0_real64
     this%current%surface_water = 0.0_real64
+    this%current%land_temperature = 0.0_real64
+    this%current%ocean_temperature = 0.0_real64
+    this%current%sea_ice_fraction = 0.0_real64
+    this%current%sea_ice_volume = 0.0_real64
     call enforce_dry_state_constraints(this%current, this%truncation)
     call copy_dry_state(this%current, this%previous)
     ! A plain initial state runs without forcing; the case enables the processes it needs.
@@ -200,10 +207,15 @@ contains
   !> set_initial_state leaves them at zero; cases that carry a ground energy
   !> budget supply the initial values here.  The fields have the padded grid
   !> shape of the transform (transform%allocate_field).
-  subroutine set_surface_state(this, surface_temperature, deep_temperature, surface_water)
+  subroutine set_surface_state(this, surface_temperature, deep_temperature, surface_water, &
+                               land_temperature, ocean_temperature, sea_ice_fraction, sea_ice_volume)
     class(dry_atmosphere_solver), intent(inout) :: this
     real(real64), intent(in) :: surface_temperature(:, :), deep_temperature(:, :)
     real(real64), intent(in), optional :: surface_water(:, :)
+    real(real64), intent(in), optional :: land_temperature(:, :)
+    real(real64), intent(in), optional :: ocean_temperature(:, :)
+    real(real64), intent(in), optional :: sea_ice_fraction(:, :)
+    real(real64), intent(in), optional :: sea_ice_volume(:, :)
 
     call check_initialized(this)
     if (any(shape(surface_temperature) /= shape(this%current%surface_temperature)) .or. &
@@ -212,6 +224,33 @@ contains
     end if
     this%current%surface_temperature = surface_temperature
     this%current%deep_temperature = deep_temperature
+    this%current%land_temperature = surface_temperature
+    this%current%ocean_temperature = surface_temperature
+    this%current%sea_ice_fraction = 0.0_real64
+    this%current%sea_ice_volume = 0.0_real64
+    if (present(land_temperature)) then
+      if (any(shape(land_temperature) /= shape(surface_temperature))) error stop 'land_temperature shape mismatch'
+      this%current%land_temperature = land_temperature
+    end if
+    if (present(ocean_temperature)) then
+      if (any(shape(ocean_temperature) /= shape(surface_temperature))) error stop 'ocean_temperature shape mismatch'
+      this%current%ocean_temperature = ocean_temperature
+    end if
+    if (present(sea_ice_fraction)) then
+      if (any(shape(sea_ice_fraction) /= shape(surface_temperature))) error stop 'sea_ice_fraction shape mismatch'
+      this%current%sea_ice_fraction = sea_ice_fraction
+    end if
+    if (present(sea_ice_volume)) then
+      if (any(shape(sea_ice_volume) /= shape(surface_temperature))) error stop 'sea_ice_volume shape mismatch'
+      this%current%sea_ice_volume = sea_ice_volume
+    end if
+    if (present(sea_ice_fraction) .neqv. present(sea_ice_volume)) error stop 'supply ice area and volume together'
+    if (present(sea_ice_fraction)) call validate_initial_ice(this)
+    if (this%physics%sea_ice%enabled) call normalize_initial_ice(this)
+    this%previous%land_temperature = this%current%land_temperature
+    this%previous%ocean_temperature = this%current%ocean_temperature
+    this%previous%sea_ice_fraction = this%current%sea_ice_fraction
+    this%previous%sea_ice_volume = this%current%sea_ice_volume
     this%previous%surface_temperature = this%current%surface_temperature
     this%previous%deep_temperature = this%current%deep_temperature
     if (present(surface_water)) then
@@ -231,7 +270,56 @@ contains
 
     call check_initialized(this)
     this%physics = physics
+    if (physics%sea_ice%enabled) then
+      call validate_sea_ice_config(physics%sea_ice)
+      if (.not. physics%radiation%enabled .or. &
+          .not. (physics%radiation%slab_ocean_enabled .or. physics%radiation%land_sea_mixing_enabled)) &
+        error stop 'sea ice requires a radiative ocean surface'
+      call normalize_initial_ice(this)
+    end if
   end subroutine set_physics
+
+  subroutine validate_initial_ice(this)
+    class(dry_atmosphere_solver), intent(in) :: this
+    integer :: i, j
+    real(real64) :: a, v, t
+    do j = 1, this%workspace%ny
+      do i = 1, this%workspace%ring_nlon(j)
+        a = this%current%sea_ice_fraction(i, j)
+        v = this%current%sea_ice_volume(i, j)
+        t = this%current%ocean_temperature(i, j)
+        if (.not. all(ieee_is_finite([a, v, t]))) error stop 'nonfinite initial sea ice'
+        if (a < 0.0_real64 .or. a > 1.0_real64 .or. v < 0.0_real64) error stop 'invalid initial sea ice'
+        if (.not. this%physics%sea_ice%enabled .and. a > 0.0_real64) error stop 'initial ice requires sea ice enabled'
+        if ((a == 0.0_real64) .neqv. (v == 0.0_real64)) error stop 'initial sea-ice area/volume mismatch'
+        if (a > 0.0_real64 .and. this%land_fraction(i, j) == 1.0_real64) error stop 'sea ice on land'
+        if (a > 0.0_real64 .and. t /= this%physics%sea_ice%freezing_temperature) &
+          error stop 'initial ice must be in equilibrium with the ocean'
+        if (this%physics%sea_ice%enabled .and. this%land_fraction(i, j) < 1.0_real64 .and. &
+            t < this%physics%sea_ice%freezing_temperature) error stop 'explicit initial ocean must not be supercooled'
+      end do
+    end do
+  end subroutine validate_initial_ice
+
+  subroutine normalize_initial_ice(this)
+    class(dry_atmosphere_solver), intent(inout) :: this
+    integer :: i, j
+    real(real64) :: capacity
+    capacity = this%physics%radiation%seawater_density*this%physics%radiation%seawater_specific_heat* &
+      this%physics%radiation%slab_ocean_depth
+    do j = 1, this%workspace%ny
+      do i = 1, this%workspace%ring_nlon(j)
+        if (this%land_fraction(i, j) == 1.0_real64) cycle
+        ! set_physics may be called before the surface initial condition.
+        if (this%current%ocean_temperature(i, j) <= 0.0_real64) cycle
+        call equilibrate_sea_ice(this%physics%sea_ice, capacity, this%current%ocean_temperature(i, j), &
+          this%current%sea_ice_fraction(i, j), this%current%sea_ice_volume(i, j))
+      end do
+    end do
+    this%previous%ocean_temperature = this%current%ocean_temperature
+    this%previous%sea_ice_fraction = this%current%sea_ice_fraction
+    this%previous%sea_ice_volume = this%current%sea_ice_volume
+  end subroutine normalize_initial_ice
 
   subroutine set_planet(this, planet)
     class(dry_atmosphere_solver), intent(inout) :: this
@@ -254,7 +342,9 @@ contains
   end subroutine advance
 
   subroutine get_fields(this, zeta, delta, temperature, surface_pressure, u, v, cfl, &
-                        surface_temperature, deep_temperature, specific_humidity, surface_water)
+                        surface_temperature, deep_temperature, specific_humidity, surface_water, &
+                        land_temperature, ocean_temperature, sea_ice_fraction, sea_ice_volume, &
+                        sea_ice_temperature, sea_ice_thickness)
     class(dry_atmosphere_solver), intent(inout) :: this
     real(real64), allocatable, intent(out) :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     real(real64), allocatable, intent(out) :: surface_pressure(:, :), u(:, :, :), v(:, :, :)
@@ -263,6 +353,14 @@ contains
     !> Signed grid specific humidity (it may be slightly negative where the spectral truncation overshoots).
     real(real64), allocatable, intent(out), optional :: specific_humidity(:, :, :)
     real(real64), allocatable, intent(out), optional :: surface_water(:, :)
+    real(real64), allocatable, intent(out), optional :: land_temperature(:, :)
+    real(real64), allocatable, intent(out), optional :: ocean_temperature(:, :)
+    real(real64), allocatable, intent(out), optional :: sea_ice_fraction(:, :)
+    real(real64), allocatable, intent(out), optional :: sea_ice_volume(:, :)
+    real(real64), allocatable, intent(out), optional :: sea_ice_temperature(:, :)
+    real(real64), allocatable, intent(out), optional :: sea_ice_thickness(:, :)
+    type(radiation_diagnostics) :: surface_sample
+    type(dry_tendency_type) :: snapshot_rhs
     real(real64), allocatable :: temporary(:, :), temporary_u(:, :), temporary_v(:, :), log_ps(:, :)
     integer, allocatable :: nlon(:)
     integer :: nx, ny, j, k
@@ -297,6 +395,53 @@ contains
     ! The ground temperatures are grid prognostic fields of every dry run; they stay
     ! at their initial values unless a process drives them.
     if (present(surface_temperature)) surface_temperature = this%current%surface_temperature
+    if (this%physics%radiation%land_sea_mixing_enabled .or. this%physics%sea_ice%enabled) then
+      if (present(surface_temperature) .or. present(land_temperature) .or. present(ocean_temperature) .or. &
+          present(sea_ice_fraction) .or. present(sea_ice_volume) .or. present(sea_ice_temperature) .or. &
+          present(sea_ice_thickness)) then
+        call allocate_dry_tendency(snapshot_rhs, this%truncation, this%number_of_levels, nx, ny)
+        call evaluate_dry_tendency(this%transform, this%truncation, this%coordinate, this%planet, &
+          this%current, this%current, this%surface_geopotential, this%physics, this%workspace, &
+          this%get_time(), this%numerics%time_step, snapshot_rhs, maximum_speed, surface_sample, this%land_fraction)
+        if (present(surface_temperature)) surface_temperature = surface_sample%surface_temperature
+        if (present(land_temperature)) land_temperature = surface_sample%land_temperature
+        if (present(ocean_temperature)) ocean_temperature = surface_sample%ocean_temperature
+        if (present(sea_ice_fraction)) sea_ice_fraction = surface_sample%sea_ice_fraction
+        if (present(sea_ice_volume)) sea_ice_volume = surface_sample%sea_ice_volume
+        if (present(sea_ice_temperature)) sea_ice_temperature = surface_sample%sea_ice_temperature
+        if (present(sea_ice_thickness)) sea_ice_thickness = surface_sample%sea_ice_thickness
+      end if
+    else
+      if (present(land_temperature)) then
+        allocate (land_temperature(nx, ny))
+        land_temperature = 0.0_real64
+      end if
+      if (present(ocean_temperature)) then
+        allocate (ocean_temperature(nx, ny))
+        ocean_temperature = 0.0_real64
+      end if
+      if (present(sea_ice_fraction)) then
+        allocate (sea_ice_fraction(nx, ny))
+        sea_ice_fraction = 0.0_real64
+      end if
+      if (present(sea_ice_volume)) then
+        allocate (sea_ice_volume(nx, ny))
+        sea_ice_volume = 0.0_real64
+      end if
+      if (present(sea_ice_temperature)) then
+        allocate (sea_ice_temperature(nx, ny))
+        sea_ice_temperature = 0.0_real64
+      end if
+      if (present(sea_ice_thickness)) then
+        allocate (sea_ice_thickness(nx, ny))
+        sea_ice_thickness = 0.0_real64
+      end if
+      if (this%physics%radiation%slab_ocean_enabled) then
+        if (present(ocean_temperature)) ocean_temperature = this%current%surface_temperature
+      else
+        if (present(land_temperature)) land_temperature = this%current%surface_temperature
+      end if
+    end if
     if (present(deep_temperature)) deep_temperature = this%current%deep_temperature
     if (present(surface_water)) surface_water = this%current%surface_water
     if (present(cfl)) then

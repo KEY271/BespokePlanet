@@ -7,12 +7,17 @@
 !> has been added.  This module accumulates nothing over time and writes no files.
 module dry_radiation_tendency
   use iso_fortran_env, only: real64
-  use dry_physics_config, only: radiation_config
-  use dry_radiation, only: radiation_tendency
+  use dry_physics_config, only: radiation_config, sea_ice_config
+  use surface_tiles, only: tiled_surface_tendency
+  use sea_ice, only: sea_ice_budget, solve_ice_surface
+  use dry_vertical_coordinate, only: dry_air_kappa
+  use surface_exchange, only: lowest_full_level_pressure, surface_transfer_mass_flux
+  use moist_thermodynamics, only: latent_heat_of_condensation
+  use dry_radiation, only: radiation_tendency, reference_layer_humidity, radiation_downward_column
   use dry_tendency_workspace, only: dry_workspace_type
   implicit none
   private
-  public :: add_dry_radiation_tendency
+  public :: add_dry_radiation_tendency, diagnose_surface_tiles
 
 contains
 
@@ -21,23 +26,55 @@ contains
   !> specific humidity and the shortwave reflection the cloud cover diagnosed by the
   !> convection tendency of this evaluation (zero unless the cloud diagnosis is
   !> enabled); otherwise the fixed reference humidity stands in for the water vapour.
-  subroutine add_dry_radiation_tendency(config, moisture_enabled, transform_mu, workspace)
+  subroutine add_dry_radiation_tendency(config, ice, interval, moisture_enabled, transform_mu, workspace)
     type(radiation_config), intent(in) :: config
+    type(sea_ice_config), intent(in) :: ice
+    real(real64), intent(in) :: interval
     logical, intent(in) :: moisture_enabled
     real(real64), intent(in) :: transform_mu(:)
     type(dry_workspace_type), intent(inout) :: workspace
-    integer :: i, j, levels
+    integer :: i, j, levels, k
     real(real64) :: longitude, incoming_shortwave, reflected_shortwave, outgoing_longwave
     real(real64) :: temperature_contribution(workspace%number_of_levels)
     real(real64) :: surface_contribution, deep_contribution
+    type(sea_ice_budget) :: budget
+    real(real64) :: humidity(workspace%number_of_levels)
 
     levels = workspace%number_of_levels
     !$omp parallel do default(shared) schedule(dynamic, 2) &
-    !$omp   private(i, j, longitude, incoming_shortwave, reflected_shortwave, outgoing_longwave) &
-    !$omp   private(temperature_contribution, surface_contribution, deep_contribution)
+    !$omp   private(i, j, k, longitude, incoming_shortwave, reflected_shortwave, outgoing_longwave) &
+    !$omp   private(temperature_contribution, surface_contribution, deep_contribution, budget, humidity)
     do j = 1, workspace%ny
       do i = 1, workspace%ring_nlon(j)
         longitude = 2.0_real64*acos(-1.0_real64)*real(i - 1, real64)/real(workspace%ring_nlon(j), real64)
+        if (workspace%surface_tiles_enabled) then
+          ! Dry columns use the same prescribed humidity profile as the legacy radiation path.
+          if (moisture_enabled) then
+            humidity = workspace%previous_humidity_grid(i, j, :)
+          else
+            do k = 1, levels
+              humidity(k) = reference_layer_humidity(config, workspace%previous_pressure_half(i, j, k - 1), &
+                workspace%previous_pressure_half(i, j, k), workspace%previous_pressure_half(i, j, levels))
+            end do
+          end if
+          call tiled_surface_tendency(config, ice, workspace%previous_pressure_half(i, j, :), &
+            workspace%previous_temperature_grid(i, j, :), workspace%previous_u(i, j, levels), &
+            workspace%previous_v(i, j, levels), transform_mu(j), longitude, workspace%evaluation_time, interval, &
+            workspace%land_fraction(i, j), workspace%previous_land_temperature(i, j), &
+            workspace%previous_deep_temperature_grid(i, j), workspace%previous_ocean_temperature(i, j), &
+            workspace%previous_sea_ice_fraction(i, j), workspace%previous_sea_ice_volume(i, j), &
+            latent_heat_of_condensation*workspace%land_evaporation(i, j), &
+            latent_heat_of_condensation*workspace%ocean_evaporation(i, j), workspace%cloud_cover(i, j), &
+            temperature_contribution, workspace%forcing_land_temperature(i, j), &
+            workspace%forcing_deep_temperature(i, j), workspace%forcing_ocean_temperature(i, j), &
+            workspace%forcing_sea_ice_fraction(i, j), workspace%forcing_sea_ice_volume(i, j), &
+            workspace%sea_ice_temperature(i, j), workspace%incoming_shortwave(i, j), &
+            workspace%reflected_shortwave(i, j), workspace%outgoing_longwave(i, j), budget, humidity, &
+            workspace%ice_surface_residual(i, j))
+          workspace%ice_energy_residual(i, j) = budget%energy_residual
+          workspace%forcing_temperature(i, j, :) = workspace%forcing_temperature(i, j, :) + temperature_contribution
+          cycle
+        end if
         if (moisture_enabled) then
           if (config%land_sea_mixing_enabled) then
             call radiation_tendency(config, workspace%previous_pressure_half(i, j, :), &
@@ -95,4 +132,57 @@ contains
     !$omp end parallel do
   end subroutine add_dry_radiation_tendency
 
+  !> Current-state temperatures for state output; the actual coupling fluxes stay untouched.
+  subroutine diagnose_surface_tiles(config, ice, moist, mu, workspace)
+    type(radiation_config), intent(in) :: config
+    type(sea_ice_config), intent(in) :: ice
+    logical, intent(in) :: moist
+    real(real64), intent(in) :: mu(:)
+    type(dry_workspace_type), intent(inout) :: workspace
+    real(real64) :: transmission(workspace%number_of_levels), emission(workspace%number_of_levels)
+    real(real64) :: downward(0:workspace%number_of_levels), sw_rhs(workspace%number_of_levels)
+    real(real64) :: humidity(workspace%number_of_levels), sw, incoming, longitude, p, exchange, ta, qc, melt
+    real(real64) :: land, area
+    integer :: i, j, k, levels
+    if (.not. workspace%surface_tiles_enabled) return
+    levels = workspace%number_of_levels
+    workspace%sea_ice_temperature = 0.0_real64
+    workspace%sea_ice_thickness = 0.0_real64
+    workspace%surface_temperature_grid = 0.0_real64
+    !$omp parallel do default(shared) schedule(dynamic, 2) &
+    !$omp private(i, j, k, transmission, emission, downward, sw_rhs, humidity, sw, incoming, longitude, &
+    !$omp         p, exchange, ta, qc, melt, land, area)
+    do j = 1, workspace%ny
+      do i = 1, workspace%ring_nlon(j)
+        land = workspace%land_fraction(i, j)
+        area = workspace%sea_ice_fraction(i, j)
+        if (ice%enabled .and. area > 0.0_real64 .and. land < 1.0_real64) then
+          longitude = 2.0_real64*acos(-1.0_real64)*real(i - 1, real64)/real(workspace%ring_nlon(j), real64)
+          if (moist) then
+            humidity = workspace%humidity_grid(i, j, :)
+          else
+            do k = 1, levels
+              humidity(k) = reference_layer_humidity(config, workspace%pressure_half(i, j, k - 1), &
+                workspace%pressure_half(i, j, k), workspace%pressure_half(i, j, levels))
+            end do
+          end if
+          call radiation_downward_column(config, workspace%pressure_half(i, j, :), &
+            workspace%temperature_grid(i, j, :), mu(j), longitude, workspace%evaluation_time, &
+            transmission, emission, downward, sw, incoming, sw_rhs, humidity)
+          sw = sw*(1.0_real64 - workspace%cloud_cover(i, j)*config%cloud_shortwave_albedo)
+          p = lowest_full_level_pressure(workspace%pressure_half(i, j, :))
+          exchange = surface_transfer_mass_flux(config, p, workspace%temperature_grid(i, j, levels), &
+            workspace%u(i, j, levels), workspace%v(i, j, levels))*config%dry_air_specific_heat
+          ta = workspace%temperature_grid(i, j, levels)*(workspace%pressure_half(i, j, levels)/p)**dry_air_kappa
+          workspace%sea_ice_thickness(i, j) = workspace%sea_ice_volume(i, j)/area
+          call solve_ice_surface(ice, workspace%sea_ice_thickness(i, j), (1.0_real64 - ice%albedo)*sw + &
+            downward(levels), config%stefan_boltzmann_constant, exchange, ta, workspace%sea_ice_temperature(i, j), qc, melt)
+        end if
+        workspace%surface_temperature_grid(i, j) = land*workspace%land_temperature(i, j) + &
+          (1.0_real64 - land)*((1.0_real64 - area)*workspace%ocean_temperature(i, j) + &
+                               area*workspace%sea_ice_temperature(i, j))
+      end do
+    end do
+    !$omp end parallel do
+  end subroutine diagnose_surface_tiles
 end module dry_radiation_tendency

@@ -21,6 +21,10 @@ module dry_state
     real(real64), allocatable :: surface_temperature(:, :)
     real(real64), allocatable :: deep_temperature(:, :)
     real(real64), allocatable :: surface_water(:, :)
+    real(real64), allocatable :: land_temperature(:, :)
+    real(real64), allocatable :: ocean_temperature(:, :)
+    real(real64), allocatable :: sea_ice_fraction(:, :)
+    real(real64), allocatable :: sea_ice_volume(:, :)
   end type dry_state_type
 
   type, public :: dry_tendency_type
@@ -51,6 +55,10 @@ contains
     if (allocated(state%surface_temperature)) deallocate (state%surface_temperature)
     if (allocated(state%deep_temperature)) deallocate (state%deep_temperature)
     if (allocated(state%surface_water)) deallocate (state%surface_water)
+    if (allocated(state%land_temperature)) deallocate (state%land_temperature)
+    if (allocated(state%ocean_temperature)) deallocate (state%ocean_temperature)
+    if (allocated(state%sea_ice_fraction)) deallocate (state%sea_ice_fraction)
+    if (allocated(state%sea_ice_volume)) deallocate (state%sea_ice_volume)
     allocate (state%zeta(0:truncation + 1, 0:truncation, number_of_levels))
     allocate (state%delta(0:truncation + 1, 0:truncation, number_of_levels))
     allocate (state%temperature(0:truncation + 1, 0:truncation, number_of_levels))
@@ -72,10 +80,22 @@ contains
     if (allocated(state%surface_temperature)) deallocate (state%surface_temperature)
     if (allocated(state%deep_temperature)) deallocate (state%deep_temperature)
     if (allocated(state%surface_water)) deallocate (state%surface_water)
+    if (allocated(state%land_temperature)) deallocate (state%land_temperature)
+    if (allocated(state%ocean_temperature)) deallocate (state%ocean_temperature)
+    if (allocated(state%sea_ice_fraction)) deallocate (state%sea_ice_fraction)
+    if (allocated(state%sea_ice_volume)) deallocate (state%sea_ice_volume)
     allocate (state%surface_temperature(nx, ny), state%deep_temperature(nx, ny), state%surface_water(nx, ny))
     state%surface_temperature = 0.0_real64
     state%deep_temperature = 0.0_real64
     state%surface_water = 0.0_real64
+    allocate (state%land_temperature(nx, ny))
+    state%land_temperature = 0.0_real64
+    allocate (state%ocean_temperature(nx, ny))
+    state%ocean_temperature = 0.0_real64
+    allocate (state%sea_ice_fraction(nx, ny))
+    state%sea_ice_fraction = 0.0_real64
+    allocate (state%sea_ice_volume(nx, ny))
+    state%sea_ice_volume = 0.0_real64
   end subroutine allocate_dry_surface_fields
 
   subroutine allocate_dry_tendency(tendency, truncation, number_of_levels, nx, ny)
@@ -122,6 +142,10 @@ contains
     call copy_grid_field(source%surface_temperature, destination%surface_temperature, 'surface temperature')
     call copy_grid_field(source%deep_temperature, destination%deep_temperature, 'deep temperature')
     call copy_grid_field(source%surface_water, destination%surface_water, 'surface water')
+    call copy_grid_field(source%land_temperature, destination%land_temperature, 'land_temperature')
+    call copy_grid_field(source%ocean_temperature, destination%ocean_temperature, 'ocean_temperature')
+    call copy_grid_field(source%sea_ice_fraction, destination%sea_ice_fraction, 'sea_ice_fraction')
+    call copy_grid_field(source%sea_ice_volume, destination%sea_ice_volume, 'sea_ice_volume')
   end subroutine copy_dry_state
 
   subroutine copy_grid_field(source, destination, name)
@@ -148,6 +172,10 @@ contains
     call swap_grid_field(first%surface_temperature, second%surface_temperature)
     call swap_grid_field(first%deep_temperature, second%deep_temperature)
     call swap_grid_field(first%surface_water, second%surface_water)
+    call swap_grid_field(first%land_temperature, second%land_temperature)
+    call swap_grid_field(first%ocean_temperature, second%ocean_temperature)
+    call swap_grid_field(first%sea_ice_fraction, second%sea_ice_fraction)
+    call swap_grid_field(first%sea_ice_volume, second%sea_ice_volume)
   end subroutine swap_dry_states
 
   subroutine swap_level_field(first, second)

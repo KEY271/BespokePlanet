@@ -5,7 +5,7 @@
 ## 陸海ケースとの差分
 
 - 地表ジオポテンシャル $\Phi_s$ と陸面率 $f_L$ を `generate_topography` の代わりに `generate_earth_topography` で作る。`scripts/prepare_earth_topography.py` が ETOPO 2022 から作った中間ファイル `core/data/earth_topography_0p5deg.bin`（[前処理](../dynamics/earth-topography.md#前処理)）を読み、$f_L$ は各格子点の担当領域でのセル平均（平滑化なし）、$z_s$ は切断波数に応じた幅 $s=c\cdot180^\circ/T$（$c=1.0$）の Gauss 核で平滑化してから $\Phi_s$ を切断する。
-- 地表のパラメータ（$C_s,C_d,C_o,K_{sd},\alpha_L,\alpha_o$ と[バケツモデル](../tendency/bucket.md)の $W_{\max},W_0$）、雲、放射、対流調節、大規模凝結、摩擦、暦（地軸の傾き $23.4^\circ$）、自転角速度、$N=12$、$\Delta t=1200\,\mathrm{s}$、超粘性は陸海ケースと同じとする。地球の地形でもバケツのパラメータを変えない。陸海ケースの結果と比べるとき地形以外の差を持ち込まないためである。雪氷は扱わないので、南極やグリーンランドの上でもアルベドは $\alpha_L=0.2$ のままである。
+- 地表のパラメータ（$C_s,C_d,C_o,K_{sd},\alpha_L,\alpha_o$ と[バケツモデル](../tendency/bucket.md)の $W_{\max},W_0$）、雲、放射、対流調節、大規模凝結、摩擦、暦（地軸の傾き $23.4^\circ$）、自転角速度、$N=12$、$\Delta t=1200\,\mathrm{s}$、超粘性は陸海ケースと同じとする。地球の地形でもバケツのパラメータを変えない。陸海ケースの結果と比べるとき地形以外の差を持ち込まないためである。陸上の積雪・氷床は扱わないので、南極やグリーンランドの上でもアルベドは $\alpha_L=0.2$ のままである。
 - 出力先は `moist_land_sea_earth_t31` と `moist_land_sea_earth_t63`、コマンドライン引数は `land-earth` と `land-earth-t63` である。`all` にも含まれる。
 - メタデータの `topography` には、形状の一覧の代わりに[地球の地形](../dynamics/earth-topography.md#出力)のとおり中間ファイルの由来と診断量を書き、`initial_condition` には地球地形である旨を書く。
 
@@ -16,6 +16,8 @@
 地表面気圧の反復はすべての格子点で収束し、チベットと南極の上では $p_s$ が $T=31$ で $611\,\mathrm{hPa}$、$T=63$ で $553\,\mathrm{hPa}$ まで下がる。重力波の陰的演算子の参照状態との差は陸海ケースより大きいが、$\Delta t=1200\,\mathrm{s}$ のまま積分する（[地球の地形](../dynamics/earth-topography.md#力学への影響)）。
 
 ## 初期値
+
+海水・海氷の初期相平衡は[陸海ケース](./land-sea.md)と同じで、海水の凍結温度未満の顕熱を初期海氷へ変換する。
 
 [地形上の初期状態](../dynamics/topography.md#地形上の初期状態)のとおり、格子の $\Phi_s$ から各格子点の $p_s$ を決め、full level の気圧で JW の温度と釣り合った東西風を評価する。比湿の初期値、$T_s=T_d=T_N$ とバケツの $W=W_0$ は陸海ケースと同じである。
 

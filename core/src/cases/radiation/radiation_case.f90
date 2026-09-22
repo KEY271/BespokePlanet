@@ -163,6 +163,8 @@ contains
     case default
       error stop 'unknown radiative surface case variant'
     end select
+    options%include_surface_tiles = physics%radiation%land_sea_mixing_enabled .or. physics%sea_ice%enabled
+    options%include_sea_ice = physics%sea_ice%enabled
     planet = radiation_case_planet(physics)
     solar_day = physics%radiation%solar_day
     days_per_month = physics%radiation%days_per_month
@@ -278,30 +280,37 @@ contains
     real(real64), allocatable :: u(:, :, :), v(:, :, :), humidity(:, :, :)
     real(real64), allocatable :: surface_temperature(:, :), deep_temperature(:, :), cloud_cover(:, :)
     real(real64), allocatable :: surface_water(:, :)
+    type(radiation_monthly_means) :: tiles
 
     if (options%include_moisture) then
       call solver%get_spectral_state(zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
                                      specific_humidity=humidity_spectral)
       call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
                              surface_temperature=surface_temperature, deep_temperature=deep_temperature, &
-                             specific_humidity=humidity, surface_water=surface_water)
+                             specific_humidity=humidity, surface_water=surface_water, &
+                             land_temperature=tiles%land_temperature, ocean_temperature=tiles%ocean_temperature, &
+                             sea_ice_fraction=tiles%sea_ice_fraction, sea_ice_volume=tiles%sea_ice_volume, &
+                             sea_ice_temperature=tiles%sea_ice_temperature, sea_ice_thickness=tiles%sea_ice_thickness)
       call solver%get_cloud_cover(cloud_cover)
       log_surface_pressure = log(surface_pressure)
       call write_radiation_yearly_snapshot(case_directory, year, ring_nlon, &
         zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
         zeta, delta, temperature, u, v, log_surface_pressure, surface_temperature, deep_temperature, &
         options, humidity_spectral=humidity_spectral, humidity=humidity, time_seconds=solver%get_time(), &
-        step=solver%get_step(), cloud_cover=cloud_cover, surface_water=surface_water)
+        step=solver%get_step(), cloud_cover=cloud_cover, surface_water=surface_water, tiles=tiles)
     else
       call solver%get_spectral_state(zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral)
       call solver%get_fields(zeta, delta, temperature, surface_pressure, u, v, &
                              surface_temperature=surface_temperature, deep_temperature=deep_temperature, &
-                             surface_water=surface_water)
+                             surface_water=surface_water, &
+                             land_temperature=tiles%land_temperature, ocean_temperature=tiles%ocean_temperature, &
+                             sea_ice_fraction=tiles%sea_ice_fraction, sea_ice_volume=tiles%sea_ice_volume, &
+                             sea_ice_temperature=tiles%sea_ice_temperature, sea_ice_thickness=tiles%sea_ice_thickness)
       log_surface_pressure = log(surface_pressure)
       call write_radiation_yearly_snapshot(case_directory, year, ring_nlon, &
         zeta_spectral, delta_spectral, temperature_spectral, log_ps_spectral, &
         zeta, delta, temperature, u, v, log_surface_pressure, surface_temperature, deep_temperature, options, &
-        surface_water=surface_water)
+        surface_water=surface_water, tiles=tiles)
     end if
   end subroutine write_current_radiation_snapshot
 

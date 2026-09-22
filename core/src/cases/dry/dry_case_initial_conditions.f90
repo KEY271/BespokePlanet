@@ -117,6 +117,7 @@ contains
     physics%moist_convection%enabled = .true.
     physics%condensation%enabled = .true.
     physics%cloud%enabled = .true.
+    physics%sea_ice%enabled = .true.
   end function moist_case_physics
 
   !> Moist physics with one land--ocean surface budget mixed at every grid point.

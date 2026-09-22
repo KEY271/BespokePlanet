@@ -11,6 +11,7 @@ module dry_stepper
   use dry_tendency_evaluator, only: evaluate_dry_tendency
   use dry_radiation, only: radiation_diagnostics
   use spectral_hyperdiffusion, only: apply_spectral_hyperdiffusion
+  use sea_ice, only: equilibrate_sea_ice, sea_ice_checks
   use raw_filter, only: apply_raw_filter
   use numerics_config, only: model_numerics_config, dry_hyperdiffusion_config
   use dry_tendency_workspace, only: dry_workspace_type
@@ -72,6 +73,7 @@ contains
     type(dry_state_type), intent(inout) :: previous, current
     real(real64), intent(out) :: maximum_speed
     type(radiation_diagnostics), intent(out) :: diagnostics
+    type(radiation_diagnostics) :: startup_diagnostics
     real(real64) :: half_step_maximum_speed, time_step
     logical :: collect_diagnostics
 
@@ -89,7 +91,8 @@ contains
       call integration_step(transform, coordinate, gravity_wave, numerics, hyperdiffusion, planet, &
         0.5_real64*time_step, current, this%half, 0.5_real64*time_step, physics, workspace, &
         surface_geopotential, land_fraction, .false., .true., this%rhs, this%candidate, this%next, this%filtered, &
-        half_step_maximum_speed)
+        half_step_maximum_speed, startup_diagnostics)
+      call diagnostics%ice_checks%merge(startup_diagnostics%ice_checks)
       call copy_dry_state(current, previous)
     else
       call integration_step(transform, coordinate, gravity_wave, numerics, hyperdiffusion, planet, &
@@ -124,9 +127,12 @@ contains
     real(real64), intent(out) :: maximum_speed
     type(radiation_diagnostics), intent(out), optional :: diagnostics
     real(real64) :: centered_interval, order
-    integer :: k, truncation
+    integer :: k, truncation, i, j
+    real(real64) :: ocean_heat_capacity
+    type(sea_ice_checks) :: projection_checks
 
     truncation = numerics%truncation
+    projection_checks = sea_ice_checks()
     centered_interval = 2.0_real64*interval
     order = real(hyperdiffusion%order, real64)
     if (collect_diagnostics) then
@@ -147,10 +153,17 @@ contains
     candidate%specific_humidity(:, :, :) = previous%specific_humidity + centered_interval*rhs%specific_humidity
     candidate%surface_temperature(:, :) = previous%surface_temperature + centered_interval*rhs%surface_temperature
     candidate%deep_temperature(:, :) = previous%deep_temperature + centered_interval*rhs%deep_temperature
+    candidate%land_temperature = previous%land_temperature + centered_interval*workspace%forcing_land_temperature
+    candidate%ocean_temperature = previous%ocean_temperature + centered_interval*workspace%forcing_ocean_temperature
+    candidate%sea_ice_fraction = previous%sea_ice_fraction + centered_interval*workspace%forcing_sea_ice_fraction
+    candidate%sea_ice_volume = previous%sea_ice_volume + centered_interval*workspace%forcing_sea_ice_volume
     candidate%surface_water = previous%surface_water + centered_interval*workspace%forcing_surface_water
     if (physics%bucket%enabled) then
       candidate%surface_water = min(physics%bucket%capacity, max(0.0_real64, candidate%surface_water))
     end if
+    ocean_heat_capacity = physics%radiation%seawater_density*physics%radiation%seawater_specific_heat* &
+      physics%radiation%slab_ocean_depth
+    if (physics%sea_ice%enabled) call constrain_ice(candidate)
     call solve_dry_gravity_wave(gravity_wave, centered_interval, previous, current, rhs, candidate)
     do k = 1, coordinate%number_of_levels
       call apply_spectral_hyperdiffusion(truncation, centered_interval, candidate%zeta(:, :, k), &
@@ -185,6 +198,14 @@ contains
       call apply_raw_filter(previous%deep_temperature, current%deep_temperature, &
         candidate%deep_temperature, filtered%deep_temperature, next%deep_temperature, &
         numerics%raw_filter)
+      call apply_raw_filter(previous%land_temperature, current%land_temperature, candidate%land_temperature, &
+        filtered%land_temperature, next%land_temperature, numerics%raw_filter)
+      call apply_raw_filter(previous%ocean_temperature, current%ocean_temperature, candidate%ocean_temperature, &
+        filtered%ocean_temperature, next%ocean_temperature, numerics%raw_filter)
+      call apply_raw_filter(previous%sea_ice_fraction, current%sea_ice_fraction, candidate%sea_ice_fraction, &
+        filtered%sea_ice_fraction, next%sea_ice_fraction, numerics%raw_filter)
+      call apply_raw_filter(previous%sea_ice_volume, current%sea_ice_volume, candidate%sea_ice_volume, &
+        filtered%sea_ice_volume, next%sea_ice_volume, numerics%raw_filter)
       call apply_raw_filter(previous%surface_water, current%surface_water, candidate%surface_water, &
                             filtered%surface_water, next%surface_water, numerics%raw_filter)
       if (physics%bucket%enabled) then
@@ -195,8 +216,41 @@ contains
       call copy_dry_state(current, filtered)
       call copy_dry_state(candidate, next)
     end if
+    if (physics%sea_ice%enabled) then
+      call constrain_ice(filtered, apply_raw)
+      call constrain_ice(next, apply_raw)
+      if (present(diagnostics)) then
+        call diagnostics%ice_checks%merge(projection_checks)
+        diagnostics%ice_checks%energy_residual = maxval(abs(workspace%ice_energy_residual))
+        diagnostics%ice_checks%surface_residual = maxval(abs(workspace%ice_surface_residual))
+      end if
+    end if
     call enforce_dry_state_constraints(filtered, truncation)
     call enforce_dry_state_constraints(next, truncation)
+  contains
+    subroutine constrain_ice(state, record_projection)
+      type(dry_state_type), intent(inout) :: state
+      logical, intent(in), optional :: record_projection
+      logical :: record
+      record = .false.
+      if (present(record_projection)) record = record_projection
+      do j = 1, workspace%ny
+        do i = 1, workspace%ring_nlon(j)
+          if (land_fraction(i, j) < 1.0_real64) then
+            if (record) then
+              call equilibrate_sea_ice(physics%sea_ice, ocean_heat_capacity, state%ocean_temperature(i, j), &
+                state%sea_ice_fraction(i, j), state%sea_ice_volume(i, j), projection_checks)
+            else
+              call equilibrate_sea_ice(physics%sea_ice, ocean_heat_capacity, state%ocean_temperature(i, j), &
+                state%sea_ice_fraction(i, j), state%sea_ice_volume(i, j))
+            end if
+          else
+            state%sea_ice_fraction(i, j) = 0.0_real64
+            state%sea_ice_volume(i, j) = 0.0_real64
+          end if
+        end do
+      end do
+    end subroutine constrain_ice
   end subroutine integration_step
 
 end module dry_stepper

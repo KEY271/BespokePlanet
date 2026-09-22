@@ -31,6 +31,8 @@ module radiation_case_output
     logical :: include_deep_temperature = .true.
     logical :: include_moisture = .false.
     logical :: include_land_sea = .false.
+    logical :: include_surface_tiles = .false.
+    logical :: include_sea_ice = .false.
   end type radiation_output_options
 
   !> Precipitation and evaporation are aggregated in kg m^-2 s^-1 and written in mm day^-1.
@@ -65,6 +67,11 @@ contains
         'land_surface_water_kg_m-2,land_surface_wetness,land_runoff_mm_day-1,dry_land_fraction,'// &
         'land_water_budget_residual_mm_day-1,maximum_land_water_budget_residual_mm_day-1'
     end if
+    if (options%include_sea_ice) header = header//',sea_ice_area_m2,sea_ice_volume_m3,mean_sea_ice_thickness_m'
+    if (options%include_sea_ice) header = header// &
+      ',maximum_ice_energy_residual_j_m-2,maximum_ice_scaled_surface_residual_w_m-1,'// &
+      'maximum_ice_projection_area,maximum_ice_projection_volume_m,maximum_ice_projection_temperature_k,'// &
+      'maximum_ice_projection_energy_residual_j_m-2,ice_projected_cells,ice_checked_cells'
     call write_csv_header(trim(case_directory)//'/daily_global.csv', header)
   end subroutine initialize_radiation_daily_output
 
@@ -80,7 +87,12 @@ contains
 
     row = csv_real(means%time_seconds)//','//csv_real(simulation_day)//','// &
           csv_integer(calendar_year)//','//csv_integer(calendar_month)//','//csv_integer(calendar_day)//','// &
-          csv_real(means%mean_atmospheric_temperature)//','//csv_real(means%mean_surface_temperature)//','
+          csv_real(means%mean_atmospheric_temperature)//','
+    if (options%include_surface_tiles .and. .not. options%include_deep_temperature) then
+      row = row//csv_real(means%mean_ocean_surface_temperature)//','
+    else
+      row = row//csv_real(means%mean_surface_temperature)//','
+    end if
     if (options%include_deep_temperature) row = row//csv_real(means%mean_deep_temperature)//','
     row = row//csv_real(means%mean_kinetic_energy)//','//csv_real(means%mean_surface_pressure)//','// &
           csv_real(means%mean_incoming_shortwave)//','//csv_real(means%mean_reflected_shortwave)//','// &
@@ -109,6 +121,13 @@ contains
         csv_real(mm_per_day*means%mean_water_budget_residual)//','// &
         csv_real(mm_per_day*means%maximum_water_budget_residual)
     end if
+    if (options%include_sea_ice) row = row//','//csv_real(means%sea_ice_area)//','// &
+      csv_real(means%sea_ice_total_volume)//','//csv_real(means%mean_sea_ice_thickness)
+    if (options%include_sea_ice) row = row//','//csv_real(means%ice_checks%energy_residual)//','// &
+      csv_real(means%ice_checks%surface_residual)//','//csv_real(means%ice_checks%projection_area)//','// &
+      csv_real(means%ice_checks%projection_volume)//','//csv_real(means%ice_checks%projection_temperature)//','// &
+      csv_real(means%ice_checks%projection_energy_residual)//','//csv_integer(means%ice_checks%projected_cells)//','// &
+      csv_integer(means%ice_checks%checked_cells)
     call append_csv_row(trim(case_directory)//'/daily_global.csv', row)
   end subroutine append_radiation_daily_output
 
@@ -136,6 +155,8 @@ contains
     call check_rectangular_finite('monthly_eddy_uv', means%eddy_uv)
     call check_rectangular_finite('monthly_eddy_vt', means%eddy_vt)
     write (month_text, '(i4.4)') month
+    if (options%include_surface_tiles) &
+      call write_tile_fields(case_directory, 'monthly_', '_m'//month_text, nlon, means)
     call write_field(trim(case_directory)//'/monthly_surface_temperature_m'//month_text//'.bin', &
                      nlon, means%surface_temperature)
     call write_field(trim(case_directory)//'/monthly_surface_pressure_m'//month_text//'.bin', &
@@ -192,7 +213,7 @@ contains
                                               log_surface_pressure_spectral, zeta, delta, temperature, &
                                               u, v, log_surface_pressure, surface_temperature, deep_temperature, &
                                               options, humidity_spectral, humidity, time_seconds, step, &
-                                              cloud_cover, surface_water)
+                                              cloud_cover, surface_water, tiles)
     character(*), intent(in) :: case_directory
     integer, intent(in) :: year
     integer, intent(in) :: nlon(:)
@@ -212,6 +233,7 @@ contains
     !> Diagnosed cloud cover of the most recent tendency evaluation (moist cases).
     real(real64), intent(in), optional :: cloud_cover(:, :)
     real(real64), intent(in), optional :: surface_water(:, :)
+    type(radiation_monthly_means), intent(in), optional :: tiles
     character(len=4) :: year_text
     character(len=2) :: level_text
     integer :: k, unit
@@ -237,6 +259,10 @@ contains
       error stop 'land-sea yearly snapshot requires surface water'
     end if
     write (year_text, '(i4.4)') year
+    if (options%include_surface_tiles) then
+      if (.not. present(tiles)) error stop 'missing yearly surface tiles'
+      call write_tile_fields(case_directory, 'yearly_', '_y'//year_text, nlon, tiles)
+    end if
     call check_finite('yearly_log_surface_pressure', nlon, log_surface_pressure)
     call check_finite('yearly_surface_temperature', nlon, surface_temperature)
     if (options%include_deep_temperature) call check_finite('yearly_deep_temperature', nlon, deep_temperature)
@@ -303,6 +329,30 @@ contains
 
   !> Metadata of one run.  The physics and planet configuration are the values
   !> the case runner integrated with; this module imports no case constants.
+  subroutine write_tile_fields(directory, prefix, suffix, nlon, fields)
+    character(*), intent(in) :: directory, prefix, suffix
+    integer, intent(in) :: nlon(:)
+    type(radiation_monthly_means), intent(in) :: fields
+    if (.not. allocated(fields%land_temperature)) error stop 'missing land_temperature'
+    call check_finite('land_temperature', nlon, fields%land_temperature)
+    call write_field(trim(directory)//'/'//prefix//'land_temperature'//suffix//'.bin', nlon, fields%land_temperature)
+    if (.not. allocated(fields%ocean_temperature)) error stop 'missing ocean_temperature'
+    call check_finite('ocean_temperature', nlon, fields%ocean_temperature)
+    call write_field(trim(directory)//'/'//prefix//'ocean_temperature'//suffix//'.bin', nlon, fields%ocean_temperature)
+    if (.not. allocated(fields%sea_ice_fraction)) error stop 'missing sea_ice_fraction'
+    call check_finite('sea_ice_fraction', nlon, fields%sea_ice_fraction)
+    call write_field(trim(directory)//'/'//prefix//'sea_ice_fraction'//suffix//'.bin', nlon, fields%sea_ice_fraction)
+    if (.not. allocated(fields%sea_ice_volume)) error stop 'missing sea_ice_volume'
+    call check_finite('sea_ice_volume', nlon, fields%sea_ice_volume)
+    call write_field(trim(directory)//'/'//prefix//'sea_ice_volume'//suffix//'.bin', nlon, fields%sea_ice_volume)
+    if (.not. allocated(fields%sea_ice_temperature)) error stop 'missing sea_ice_temperature'
+    call check_finite('sea_ice_temperature', nlon, fields%sea_ice_temperature)
+    call write_field(trim(directory)//'/'//prefix//'sea_ice_temperature'//suffix//'.bin', nlon, fields%sea_ice_temperature)
+    if (.not. allocated(fields%sea_ice_thickness)) error stop 'missing sea_ice_thickness'
+    call check_finite('sea_ice_thickness', nlon, fields%sea_ice_thickness)
+    call write_field(trim(directory)//'/'//prefix//'sea_ice_thickness'//suffix//'.bin', nlon, fields%sea_ice_thickness)
+  end subroutine write_tile_fields
+
   subroutine write_radiation_metadata(case_directory, case_name, physics, planet, truncation, time_step, &
                                       duration, number_of_steps, maximum_cfl, elapsed_wall_seconds, nlon, mu, &
                                       pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
@@ -507,12 +557,46 @@ contains
       end if
       write (unit, '(a)') '  },'
     end if
+    if (options%include_surface_tiles) then
+      write (unit, '(a)') '  "surface_tiles": {'
+      write (unit, '(a)') '    "surface_temperature": "area mean of land, open water and ice skin temperatures",'
+      write (unit, '(a)') '    "ocean_temperature": "mixed layer including water below ice",'
+      write (unit, '(a)') '    "deep_heat_capacity_basis": "per land area",'
+      write (unit, '(a)') '    "daily_deep_temperature": "land-area mean; zero when land is absent",'
+      write (unit, '(a)') '    "missing_tiles": "finite dummy storage; mask land by f_L>0, ocean by f_L<1, ice by A>0",'
+      write (unit, '(a)') '    "monthly_ice_weighting": "ice area times sample duration",'
+      write (unit, '(a)') '    "snapshot_ice_temperature": "diagnosed from snapshot atmosphere and surface state"'
+      write (unit, '(a)') '  },'
+    end if
+    write (unit, '(a)') '  "sea_ice": {'
+    if (physics%sea_ice%enabled) then
+      write (unit, '(a)') '    "enabled": true,'
+    else
+      write (unit, '(a)') '    "enabled": false,'
+    end if
+    write (unit, '(a,es24.16e3,a)') '    "freezing_temperature_k": ', physics%sea_ice%freezing_temperature, ','
+    write (unit, '(a,es24.16e3,a)') '    "melting_temperature_k": ', physics%sea_ice%melting_temperature, ','
+    write (unit, '(a,es24.16e3,a)') '    "new_ice_thickness_m": ', physics%sea_ice%new_ice_thickness, ','
+    write (unit, '(a,es24.16e3,a)') '    "conductivity_w_m-1_k-1": ', physics%sea_ice%conductivity, ','
+    write (unit, '(a,es24.16e3,a)') '    "density_kg_m-3": ', physics%sea_ice%density, ','
+    write (unit, '(a,es24.16e3,a)') '    "latent_heat_j_kg-1": ', physics%sea_ice%latent_heat, ','
+    write (unit, '(a,es24.16e3,a)') '    "albedo": ', physics%sea_ice%albedo, ','
+    write (unit, '(a)') '    "area_basis": "ice area / ocean area",'
+    write (unit, '(a)') '    "volume_basis": "ice volume / ocean area, metres",'
+    write (unit, '(a)') '    "melting_area": "(A + new_ice_area) * sqrt(V_new / V_old) for net melting",'
+    write (unit, '(a)') '    "sublimation_and_deposition": "none",'
+    write (unit, '(a)') '    "snow": "none",'
+    write (unit, '(a)') '    "daily_residuals": "maximum absolute local residuals; energy per ocean area",'
+    write (unit, '(a)') '    "projection_counts": "both filtered states; changes above 32 relative machine epsilons",'
+    write (unit, '(a)') '    "scaled_surface_residual": "h*F + k*(Tf-T) - h*M, W m-1",'
+    write (unit, '(a)') '    "time_integration": "previous-time physics; leapfrog and RAW; energy-preserving phase projection"'
+    write (unit, '(a)') '  },'
     if (radiation%land_sea_mixing_enabled) then
       if (.not. earth .and. (.not. present(terrain) .or. .not. present(terrain_diagnostics))) then
         error stop 'land-sea metadata requires terrain configuration and diagnostics'
       end if
       write (unit, '(a)') '  "land_sea_surface": {'
-      write (unit, '(a)') '    "mixing": "linear in land_fraction",'
+      write (unit, '(a)') '    "mixing": "separate land/ocean temperatures; area-weighted tile fluxes",'
       write (unit, '(a,es24.16e3,a)') &
         '    "land_surface_heat_capacity_j_m-2_k-1": ', radiation%surface_heat_capacity, ','
       write (unit, '(a,es24.16e3,a)') '    "ocean_depth_m": ', radiation%slab_ocean_depth, ','
@@ -647,6 +731,20 @@ contains
       '"monthly zonal mean of product minus product of monthly zonal means",'
     write (unit, '(a)') '    "monthly_surface_temperature": "monthly_surface_temperature_m{month:04d}.bin",'
     write (unit, '(a)') '    "monthly_surface_pressure": "monthly_surface_pressure_m{month:04d}.bin",'
+    if (options%include_surface_tiles) then
+      write (unit, '(a)') '    "monthly_land_temperature": "monthly_land_temperature_m{month:04d}.bin",'
+      write (unit, '(a)') '    "yearly_land_temperature": "yearly_land_temperature_y{year:04d}.bin",'
+      write (unit, '(a)') '    "monthly_ocean_temperature": "monthly_ocean_temperature_m{month:04d}.bin",'
+      write (unit, '(a)') '    "yearly_ocean_temperature": "yearly_ocean_temperature_y{year:04d}.bin",'
+      write (unit, '(a)') '    "monthly_sea_ice_fraction": "monthly_sea_ice_fraction_m{month:04d}.bin",'
+      write (unit, '(a)') '    "yearly_sea_ice_fraction": "yearly_sea_ice_fraction_y{year:04d}.bin",'
+      write (unit, '(a)') '    "monthly_sea_ice_volume": "monthly_sea_ice_volume_m{month:04d}.bin",'
+      write (unit, '(a)') '    "yearly_sea_ice_volume": "yearly_sea_ice_volume_y{year:04d}.bin",'
+      write (unit, '(a)') '    "monthly_sea_ice_temperature": "monthly_sea_ice_temperature_m{month:04d}.bin",'
+      write (unit, '(a)') '    "yearly_sea_ice_temperature": "yearly_sea_ice_temperature_y{year:04d}.bin",'
+      write (unit, '(a)') '    "monthly_sea_ice_thickness": "monthly_sea_ice_thickness_m{month:04d}.bin",'
+      write (unit, '(a)') '    "yearly_sea_ice_thickness": "yearly_sea_ice_thickness_y{year:04d}.bin",'
+    end if
     if (options%include_deep_temperature) then
       write (unit, '(a)') '    "monthly_deep_temperature": "monthly_deep_temperature_m{month:04d}.bin",'
     end if
@@ -656,8 +754,11 @@ contains
       write (unit, '(a)') '    "monthly_precipitable_water": "monthly_precipitable_water_m{month:04d}.bin",'
       write (unit, '(a)') '    "monthly_cloud_cover": "monthly_cloud_cover_m{month:04d}.bin",'
       write (unit, '(a)') '    "yearly_cloud_cover": "yearly_cloud_cover_y{year:04d}.bin",'
-      write (unit, '(a)') '    "yearly_cloud_cover_sampling": "cloud cover diagnosed in the tendency evaluation '// &
-        'of the step ending at the snapshot time; zero in the initial snapshot",'
+      if (options%include_surface_tiles) then
+        write (unit, '(a)') '    "yearly_cloud_cover_sampling": "diagnosed from the snapshot state",'
+      else
+        write (unit, '(a)') '    "yearly_cloud_cover_sampling": "last physical evaluation; zero initially",'
+      end if
     end if
     if (options%include_land_sea) then
       write (unit, '(a)') '    "static_land_fraction": "land_fraction.bin",'
@@ -682,6 +783,10 @@ contains
     write (unit, '(a)') '    "spectral_dtype": "complex128 as interleaved float64 real,imag",'
     write (unit, '(a)') '    "spectral_layout": "rectangular (n,m); n=0:T varies fastest, then m=0:T",'
     write (unit, '(a)') '    "units": {'
+    if (options%include_surface_tiles) then
+      write (unit, '(a)') '      "land_temperature": "K", "ocean_temperature": "K", "sea_ice_temperature": "K",'
+      write (unit, '(a)') '      "sea_ice_fraction": "1", "sea_ice_volume": "m", "sea_ice_thickness": "m",'
+    end if
     write (unit, '(a)') '      "temperature": "K", "surface_pressure": "Pa",'
     write (unit, '(a)') '      "zeta": "s^-1", "delta": "s^-1", "u": "m s^-1", "v": "m s^-1",'
     if (options%include_moisture) then

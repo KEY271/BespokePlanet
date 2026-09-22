@@ -37,7 +37,33 @@ contains
     do j = 1, workspace%ny
       do i = 1, workspace%ring_nlon(j)
         land_fraction = workspace%land_fraction(i, j)
-        if (surface%land_sea_mixing_enabled .and. bucket%enabled) then
+        if (workspace%surface_tiles_enabled) then
+          land_evaporation = 0.0_real64
+          ocean_evaporation = 0.0_real64
+          surface_wetness = 0.0_real64
+          if (land_fraction > 0.0_real64) then
+            potential_evaporation = surface_evaporation_flux(surface, 1.0_real64, &
+              workspace%previous_pressure_half(i, j, :), workspace%previous_temperature_grid(i, j, levels), &
+              workspace%previous_humidity_grid(i, j, levels), workspace%previous_land_temperature(i, j), &
+              workspace%previous_u(i, j, levels), workspace%previous_v(i, j, levels))
+            if (bucket%enabled) then
+              land_evaporation = limit_bucket_evaporation(potential_evaporation, &
+                workspace%previous_surface_water(i, j), bucket%capacity, interval)
+              surface_wetness = bucket_wetness(workspace%previous_surface_water(i, j), bucket%capacity)
+            else
+              surface_wetness = config%land_surface_wetness
+              land_evaporation = surface_wetness*potential_evaporation
+            end if
+          end if
+          if (land_fraction < 1.0_real64) then
+            ocean_evaporation = surface_evaporation_flux(surface, config%ocean_surface_wetness, &
+              workspace%previous_pressure_half(i, j, :), workspace%previous_temperature_grid(i, j, levels), &
+              workspace%previous_humidity_grid(i, j, levels), workspace%previous_ocean_temperature(i, j), &
+              workspace%previous_u(i, j, levels), workspace%previous_v(i, j, levels))
+          end if
+          evaporation = land_fraction*land_evaporation + (1.0_real64 - land_fraction)* &
+            (1.0_real64 - workspace%previous_sea_ice_fraction(i, j))*ocean_evaporation
+        else if (surface%land_sea_mixing_enabled .and. bucket%enabled) then
           potential_evaporation = surface_evaporation_flux(surface, 1.0_real64, &
             workspace%previous_pressure_half(i, j, :), workspace%previous_temperature_grid(i, j, levels), &
             workspace%previous_humidity_grid(i, j, levels), workspace%previous_surface_temperature_grid(i, j), &

@@ -36,20 +36,20 @@ $$
 [蒸発](./evaporation.md)のバルク式から、湿り具合を掛ける前のフラックス
 
 $$
-E_\ast=\rho_NC_E\sqrt{u_N^2+v_N^2+U_g^2}
-\left[q_s(T_s,p_s)-q_N^+\right]
+E_\ast(T)=\rho_NC_E\sqrt{u_N^2+v_N^2+U_g^2}
+\left[q_s(T,p_s)-q_N^+\right]
 $$
 
 を作る。陸面と海面のフラックスは
 
 $$
-E_L=\beta_L(W)E_\ast,\qquad E_O=E_\ast
+E_L=\beta_L(W)E_\ast(T_L),\qquad E_O=E_\ast(T_o)
 $$
 
 で、格子平均として大気と地表の熱収支に渡すフラックスは
 
 $$
-E=f_LE_L+(1-f_L)E_O
+E=f_LE_L+(1-f_L)(1-A)E_O
 $$
 
 である。$E>0$ は地表から大気への蒸発、$E<0$ は大気から地表への結露を表す。結露にも同じ $\beta_L$ を使い、$E_L<0$ はバケツへの水の流入として扱う。

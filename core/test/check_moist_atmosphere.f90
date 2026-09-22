@@ -559,6 +559,8 @@ contains
     call transform%spectral_to_grid(temperature(:, :, levels), lowest_grid)
     call allocate_dry_surface_fields(state, size(lowest_grid, 1), size(lowest_grid, 2))
     state%surface_temperature = lowest_grid
+    state%land_temperature = lowest_grid
+    state%ocean_temperature = lowest_grid
     state%deep_temperature = lowest_grid
     call workspace%initialize(transform, truncation, levels)
     call allocate_dry_tendency(dry, truncation, levels, workspace%nx, workspace%ny)
@@ -615,6 +617,8 @@ contains
     call transform%allocate_field(humidity_grid)
     call allocate_dry_surface_fields(state, size(humidity_grid, 1), size(humidity_grid, 2))
     state%surface_temperature = 300.0_real64
+    state%land_temperature = 300.0_real64
+    state%ocean_temperature = 300.0_real64
     state%deep_temperature = 300.0_real64
     allocate (full_level_pressure(levels), delta_pressure(levels))
     pressure_half_column = coordinate%reference_p_half

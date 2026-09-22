@@ -512,6 +512,10 @@ function updateColors(values, scaleMin, scaleMax) {
   const scaleWidth = Math.max(scaleMax - scaleMin, Number.EPSILON);
   const pointColors = new Float32Array(values.length * 3);
   for (let i = 0; i < values.length; i += 1) {
+    if (!Number.isFinite(values[i])) {
+      pointColors.set([0.12, 0.14, 0.17], i * 3);
+      continue;
+    }
     const normalized = (values[i] - scaleMin) / scaleWidth;
     colorFor(THREE.MathUtils.clamp(normalized, 0, 1), pointColors, i * 3);
   }
@@ -769,8 +773,10 @@ async function loadFrame(frameIndex) {
   renderFieldRecord(record);
   ui.timeline.value = String(frameIndex);
   ui.frame.textContent = String(step).padStart(5, "0");
-  const seconds = step * state.metadata.simulation.time_step_seconds;
-  ui.time.textContent = `T + ${formatDuration(seconds)}`;
+  const seconds = state.metadata.frame_times_seconds?.[String(step)]
+    ?? step * state.metadata.simulation.time_step_seconds;
+  const sampling = state.metadata.surface_sampling;
+  ui.time.textContent = `${sampling === "monthly" ? "MONTH MEAN · " : sampling === "yearly" ? "SNAPSHOT · " : ""}T + ${formatDuration(seconds)}`;
   ui.elapsed.textContent = formatDuration(seconds);
   updateChartReadout();
   drawChart();

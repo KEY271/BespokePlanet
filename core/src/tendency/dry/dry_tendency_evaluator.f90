@@ -29,7 +29,8 @@ module dry_tendency_evaluator
   use dry_held_suarez_tendency, only: add_dry_held_suarez_tendency
   use dry_evaporation_tendency, only: add_dry_evaporation_tendency
   use dry_bucket_tendency, only: add_dry_bucket_tendency
-  use dry_radiation_tendency, only: add_dry_radiation_tendency
+  use sea_ice, only: validate_sea_ice_config
+  use dry_radiation_tendency, only: add_dry_radiation_tendency, diagnose_surface_tiles
   use dry_convection_tendency, only: add_dry_convection_tendency
   use dry_tendency_diagnostics, only: collect_dry_diagnostics
   use dry_tendency_projection, only: project_dry_tendency
@@ -90,6 +91,12 @@ contains
       error stop 'the cloud diagnosis requires the moisture (specific humidity) prognostic variable'
     end if
 
+    if (physics%sea_ice%enabled) then
+      call validate_sea_ice_config(physics%sea_ice)
+      if (.not. physics%radiation%enabled .or. &
+          .not. (physics%radiation%slab_ocean_enabled .or. physics%radiation%land_sea_mixing_enabled)) &
+        error stop 'sea ice requires a radiative ocean surface'
+    end if
     call zero_dry_tendency(rhs)
     call workspace%zero_forcing()
     if (present(land_fraction)) then
@@ -120,10 +127,14 @@ contains
     end if
     if (physics%bucket%enabled) call add_dry_bucket_tendency(physics%bucket, interval, workspace)
     if (physics%radiation%enabled) then
-      call add_dry_radiation_tendency(physics%radiation, physics%moisture%enabled, transform%mu, workspace)
+      call add_dry_radiation_tendency(physics%radiation, physics%sea_ice, interval, &
+        physics%moisture%enabled, transform%mu, workspace)
     end if
 
-    if (present(diagnostics)) call collect_dry_diagnostics(transform%mu, workspace, diagnostics)
+    if (present(diagnostics)) then
+      call diagnose_surface_tiles(physics%radiation, physics%sea_ice, physics%moisture%enabled, transform%mu, workspace)
+      call collect_dry_diagnostics(transform%mu, workspace, diagnostics)
+    end if
     call project_dry_tendency(transform, truncation, workspace, physics%radiation%enabled, &
                               physics%moisture%enabled, rhs)
   end subroutine evaluate_dry_tendency
