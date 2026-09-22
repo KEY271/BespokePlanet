@@ -1,6 +1,6 @@
 # 物理過程を評価する時刻
 
-力学以外の物理過程は、現在の時刻 $X^n$ ではなく、RAW フィルター適用済みの 1 つ前の時刻 $\overline X^{n-1}$ の場で統一して評価する。対象は長波・短波放射、乾燥対流調節、顕熱交換、浅い地面層と深い地面層の熱交換、Rayleigh 摩擦、および湿潤ケースの蒸発・湿潤対流調節・大規模凝結・[陸面のバケツ](./bucket.md)である。たとえば[長波放射](./longwave-radiation.md)では、$T_k$ と $T_s$ を $\overline T_k^{n-1}$ と $\overline T_s^{n-1}$ に読み替え、
+力学以外の物理過程は、現在の時刻 $X^n$ ではなく、RAW フィルター適用済みの 1 つ前の時刻 $\overline X^{n-1}$ の場で統一して評価する。対象は長波・短波放射、乾燥対流調節、顕熱交換、浅い地面層と深い地面層の熱交換、境界層と[上層](./upper-rayleigh-friction.md)の Rayleigh 摩擦、[Held–Suarez 強制](./Held-Suarez.md)の Newton 緩和、および湿潤ケースの蒸発・湿潤対流調節・大規模凝結・[陸面のバケツ](./bucket.md)である。たとえば[長波放射](./longwave-radiation.md)では、$T_k$ と $T_s$ を $\overline T_k^{n-1}$ と $\overline T_s^{n-1}$ に読み替え、
 
 $$
 F^\uparrow_{k-1/2}

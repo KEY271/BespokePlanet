@@ -9,7 +9,7 @@
 | ソルバー（`core/`） | Fortran コンパイラ（gfortran など、OpenMP 対応）、[fpm](https://fpm.fortran-lang.org/)、FFTW3、LAPACK、BLAS、pkg-config |
 | ビジュアライザ（`viz/`） | Python 3（外部パッケージ不要）、Node.js / npm（Three.js の取得に使用） |
 | タスクランナー | [just](https://github.com/casey/just) |
-| `scripts/check_hybrid_sigma.py` | matplotlib |
+| `scripts/*.py`（座標・地形の確認図、地球地形の前処理） | numpy、scipy、matplotlib（スクリプトにより一部） |
 | `scripts/analyze_*.R` | R（標準パッケージのみ） |
 
 macOS（Homebrew）の場合のインストール例:
@@ -54,9 +54,12 @@ just run land-earth-t63
 just viz
 ```
 
-計算結果の解析は `scripts/` の R スクリプトで行う。最終年の月平均から雨温図・ケッペンの気候区分・帯状平均・質量流線関数などを作り、`output/<ケース>/analysis/` に図と CSV を書く。
+計算結果の解析は `scripts/` の R スクリプトで行う。いずれも第1引数にケースの出力ディレクトリ、第2引数に解析結果の出力先を取り（省略時は `output/<ケース>/analysis/`）、日平均の時系列と最終年の月平均から図と CSV を書く。陸海ケースでは雨温図・ケッペンの気候区分・帯状平均・質量流線関数などを作る。
 
 ```sh
+# 湿潤 aquaplanet ケース（5 年の全球平均の時系列、最終年の帯状平均と質量流線関数）
+Rscript scripts/analyze_moist_slab_ocean.R
+
 # 陸海ケース（解析的な大陸）
 Rscript scripts/analyze_moist_land_sea.R
 

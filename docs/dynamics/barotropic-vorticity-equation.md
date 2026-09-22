@@ -47,11 +47,11 @@ $$
 \psi_n^m=-\frac{a^2}{n(n+1)}\zeta_n^m,\qquad n\geq1
 $$
 
-とすればよい。
+とする。
 
 $n=0$ は空間的に一定な流線関数であり、速度に寄与しない。そこでゲージとして $\psi_0^0=0$ と置く。また、閉じた球面上では相対渦度の面積積分はゼロであるため、$\zeta_0^0$ もゼロでなければならない。丸め誤差で生じた $\zeta_0^0$ は各ステップでゼロに戻す。
 
-$u,v$ は [Octahedral Gaussian Grid のスペクトル微分](./octahedral-gaussian-grid.md#スペクトル微分)で求まる。2次の非線形項  $\bm{\nabla}_s\cdot(q\bm{u})$ については $uq,vq\cos\varphi$ を格子で求めてからスペクトルに戻して微分すればよい。
+$u,v$ は [Octahedral Gaussian Grid のスペクトル微分](./octahedral-gaussian-grid.md#スペクトル微分)で求まる。2次の非線形項 $\bm{\nabla}_s\cdot(q\bm{u})$ については $uq,vq\cos\varphi$ を格子で求めてからスペクトルに戻して微分する。
 
 ## Leapfrog 法
 

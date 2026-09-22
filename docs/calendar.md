@@ -20,7 +20,7 @@ $$
 L(t)=2\pi\frac{t}{P_{\mathrm{orb}}}\pmod{2\pi}
 $$
 
-と置く。地軸の傾きは $\varepsilon=23.4^\circ$ とする。赤道座標における太陽の赤経 $\alpha_\odot$ と赤緯 $\delta_\odot$ は
+と置く。地軸の傾きは $\varepsilon=23.4^\circ$ とする（[slab ocean ケース](./cases/slab-ocean.md)だけは $\varepsilon=0$ とする）。赤道座標における太陽の赤経 $\alpha_\odot$ と赤緯 $\delta_\odot$ は
 
 $$
 \alpha_\odot(t)=\operatorname{atan2}
