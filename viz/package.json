@@ -5,7 +5,7 @@
   "description": "Three.js visualizer for the BespokePlanet land-sea output",
   "type": "module",
   "scripts": {
-    "test": "node --test test_climate.mjs test_streamlines.mjs"
+    "test": "node --test test_climate.mjs test_streamlines.mjs test_export.mjs"
   },
   "dependencies": {
     "three": "0.179.1"

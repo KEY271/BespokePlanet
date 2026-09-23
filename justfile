@@ -23,4 +23,4 @@ alias viz := visualizer
 # Run the visualizer tests (server and climate analysis).
 test-viz:
     cd "{{ root }}/viz" && python3 -m unittest -q test_server
-    cd "{{ root }}/viz" && node --test test_climate.mjs test_streamlines.mjs
+    cd "{{ root }}/viz" && node --test test_climate.mjs test_streamlines.mjs test_export.mjs

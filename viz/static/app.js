@@ -2,7 +2,8 @@ import * as THREE from "/vendor/three.module.js";
 import { buildStreamlines, wrapLongitude } from "/streamlines.js";
 import * as C from "/climate.js";
 import * as F from "/fields.js";
-import { ClimographChart, ContourChart, LATITUDE_TICKS, LineChart, SERIES, formatNumber, niceRange } from "/charts.js";
+import { ClimographChart, ContourChart, LATITUDE_TICKS, LineChart, SERIES, formatNumber, niceRange, niceTicks } from "/charts.js";
+import * as X from "/export.js";
 
 // Colours are handled as plain sRGB values end to end.
 THREE.ColorManagement.enabled = false;
@@ -14,7 +15,7 @@ const ui = {
   metaCase: $("#meta-case"), metaMonths: $("#meta-months"), metaLand: $("#meta-land"), metaPoints: $("#meta-points"),
   field: $("#field-select"), levelPicker: $("#level-picker"), level: $("#level-select"),
   coastline: $("#coastline"), sites: $("#sites"), gridPoints: $("#grid-points"),
-  streamlines: $("#streamlines"), density: $("#streamline-density"), savePng: $("#save-map"),
+  streamlines: $("#streamlines"), density: $("#streamline-density"), savePng: $("#save-map"), saveZip: $("#save-zip"),
   globe: $("#globe"), map: $("#map"), siteLabels: $("#site-labels"), readout: $("#readout"),
   fieldTitle: $("#field-title"), fieldSubtitle: $("#field-subtitle"), legend: $("#legend"),
   transport: $("#transport"), play: $("#play"), timeline: $("#timeline"), frameLabel: $("#frame-label"),
@@ -42,7 +43,7 @@ const state = {
   display: null, scaleMode: "auto", scale: null, lockedScale: null, globalScales: new Map(),
   playing: false, rate: 1, lastTick: 0, accumulator: 0, loading: false,
   streamlinesEnabled: true, density: "medium", viewMode: "globe",
-  customSite: null, hoverCell: -1, analysisTab: "climographs", referenceRun: null, charts: [],
+  customSite: null, hoverCell: -1, cellColors: null, exporting: false, analysisTab: "climographs", referenceRun: null, charts: [],
   token: 0, runToken: 0, climateToken: 0,
 };
 const cache = new Map();
@@ -510,7 +511,12 @@ function populateFieldSelect() {
   if (yearly.children.length) groups.push(yearly);
   const fixed = document.createElement("optgroup");
   fixed.label = "時間変化しない場";
-  for (const id of F.STATIC_ORDER) if (info.static_fields.includes(id)) fixed.append(option("static", id, F.RAW_FIELDS[id].label));
+  for (const id of F.STATIC_ORDER) {
+    if (!info.static_fields.includes(id)) continue;
+    fixed.append(option("static", id, F.RAW_FIELDS[id].label));
+    // The land-only elevation map follows the land fraction it is masked with.
+    if (id === "land_fraction") for (const key of F.STATIC_CLASSIFIED_ORDER) fixed.append(option("climatology", key, state.climateFields[key].label));
+  }
   groups.push(fixed);
   ui.field.replaceChildren(...groups);
 }
@@ -662,15 +668,14 @@ async function renderField() {
   if (field.group === "climatology") {
     if (!state.climate) return;
     const spec = state.climateFields[field.id];
-    const colors = spec.legend.map((entry) => F.hexToRgb(entry.color));
-    const missing = F.hexToRgb(F.MISSING_COLOR);
-    for (let i = 0; i < grid.pointCount; i += 1) cellColors.set(colors[spec.classify(state.climate, i)] ?? missing, i * 3);
+    climatologyCellColors(spec, cellColors);
     state.display = null;
     state.scale = null;
+    state.cellColors = cellColors;
     ui.fieldTitle.textContent = spec.label;
-    ui.fieldSubtitle.textContent = `${state.analysisYear.year} 年目・出力月 ${state.analysisYear.months[0]}–${state.analysisYear.months.at(-1)}・陸 f_L ≥ ${state.threshold.toFixed(2)}`;
-    ui.frameLabel.textContent = `${state.analysisYear.year} 年目`;
-    ui.frameDetail.textContent = "年平均の気候値";
+    ui.fieldSubtitle.textContent = climatologySubtitle(spec);
+    ui.frameLabel.textContent = spec.timeInvariant ? "時間変化しない場" : `${state.analysisYear.year} 年目`;
+    ui.frameDetail.textContent = spec.timeInvariant ? "" : "年平均の気候値";
   } else {
     const spec = F.RAW_FIELDS[field.id];
     state.loading = true;
@@ -688,13 +693,8 @@ async function renderField() {
     if (token !== state.token) return;
     state.display = display;
     state.scale = scale;
-    const stops = F.COLORMAPS[spec.kind];
-    const missing = F.hexToRgb(F.MISSING_COLOR);
-    const width = scale.max - scale.min;
-    for (let i = 0; i < grid.pointCount; i += 1) {
-      const value = display.values[i];
-      cellColors.set(Number.isFinite(value) ? F.sampleColormap(stops, (value - scale.min) / width) : missing, i * 3);
-    }
+    rawCellColors(spec, display.values, scale, cellColors);
+    state.cellColors = cellColors;
     const levelText = isLevelField(field) ? ` · L${String(state.level).padStart(2, "0")} ≈ ${formatPressure(state.levelPressures[state.level - 1])} hPa` : "";
     ui.fieldTitle.textContent = spec.label;
     if (state.frames.length) {
@@ -713,6 +713,30 @@ async function renderField() {
   renderLegend();
   updateReadout(state.hoverCell >= 0 ? {} : null);
   await loadStreamlines(token);
+}
+
+function climatologySubtitle(spec) {
+  const land = `陸 f_L ≥ ${state.threshold.toFixed(2)}`;
+  if (spec.timeInvariant) return `時間変化しない場・${land}`;
+  return `${state.analysisYear.year} 年目・出力月 ${state.analysisYear.months[0]}–${state.analysisYear.months.at(-1)}・${land}`;
+}
+
+function climatologyCellColors(spec, out = new Float32Array(state.grid.pointCount * 3)) {
+  const colors = spec.legend.map((entry) => F.hexToRgb(entry.color));
+  const missing = F.hexToRgb(F.MISSING_COLOR);
+  for (let i = 0; i < state.grid.pointCount; i += 1) out.set(colors[spec.classify(state.climate, i)] ?? missing, i * 3);
+  return out;
+}
+
+function rawCellColors(spec, values, scale, out = new Float32Array(values.length * 3)) {
+  const stops = F.COLORMAPS[spec.kind];
+  const missing = F.hexToRgb(F.MISSING_COLOR);
+  const width = scale.max - scale.min;
+  for (let i = 0; i < values.length; i += 1) {
+    const value = values[i];
+    out.set(Number.isFinite(value) ? F.sampleColormap(stops, (value - scale.min) / width) : missing, i * 3);
+  }
+  return out;
 }
 
 function formatPressure(pressureHpa) {
@@ -941,9 +965,13 @@ function csvCell(value) {
   return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
-function downloadCsv(name, header, rows) {
-  const text = [header.join(","), ...rows.map((row) => row.map(csvCell).join(","))].join("\n");
-  downloadBlob(new Blob([`${text}\n`], { type: "text/csv" }), `${state.info.name}_${name}`);
+/** A CSV file {name, text}; name without the run prefix. */
+function csvFile(name, header, rows) {
+  return { name, text: `${[header.join(","), ...rows.map((row) => row.map(csvCell).join(","))].join("\n")}\n` };
+}
+
+function saveCsv(file) {
+  downloadBlob(new Blob([file.text], { type: "text/csv" }), `${state.info.name}_${file.name}`);
 }
 
 function button(label, onClick) {
@@ -997,6 +1025,12 @@ function card(title, subtitle = "", legend = []) {
   } };
 }
 
+function descriptorCard(descriptor) {
+  const c = card(descriptor.title, descriptor.subtitle, descriptor.legend ?? []);
+  c.addChart(descriptor.make(c.body), descriptor.name);
+  return c;
+}
+
 function setAnalysisTab(tab) {
   state.analysisTab = tab;
   for (const element of ui.tabs.children) element.classList.toggle("active", element.dataset.tab === tab);
@@ -1029,14 +1063,17 @@ function note(text) {
   return element;
 }
 
-function renderClimographs() {
+// Each analysis chart is described once ({title, subtitle, legend, name, make})
+// and drawn either in a card of the panel or off screen for the ZIP export.
+
+const CLIMOGRAPH_LEGEND = [
+  { color: "#e66767", label: "気温（折れ線、左軸、°C）", line: true },
+  { color: "rgba(57, 135, 229, 0.78)", label: "降水量（棒、右軸、mm/月）", line: false },
+];
+
+function climographDescriptors() {
   const climate = state.climate;
-  const sites = currentSites();
-  if (!sites.length) {
-    ui.analysisBody.append(note("閾値以上の陸面率を持つセルがありません。"));
-    return;
-  }
-  const records = sites.map((site) => ({ site, record: C.climographOf(climate, site.index) }));
+  const records = currentSites().map((site) => ({ site, record: C.climographOf(climate, site.index) }));
   const presets = records.filter((entry) => !entry.site.custom);
   const pool = presets.length ? presets : records;
   const finite = (values) => values.filter(Number.isFinite);
@@ -1045,60 +1082,78 @@ function renderClimographs() {
   // Ranges enclose the data of every preset site; the selected cell has its own.
   const sharedRange = niceRange(Math.min(...temperatures), Math.max(...temperatures), 6);
   const sharedMax = niceRange(0, Math.max(...precipitation), 6)[1];
-  const cards = records.map(({ site, record }) => {
-    const grid = state.grid;
+  return records.map(({ site, record }) => {
+    const g = state.grid;
     const height = state.staticFields.surface_height[site.index];
     const label = site.custom ? "✚ 選択したセル" : `${site.label}. ${site.name ?? site.site}`;
     const details = [
-      `${formatLonLat(grid.lon[site.index], grid.lat[site.index])}・${Math.round(height)} m・f_L ${state.staticFields.land_fraction[site.index].toFixed(2)}`,
+      `${formatLonLat(g.lon[site.index], g.lat[site.index])}・${Math.round(height)} m・f_L ${state.staticFields.land_fraction[site.index].toFixed(2)}`,
       `${formatNumber(record.annualTemperature, 3)} °C・${Math.round(record.annualPrecipitation)} mm/年`,
     ];
     if (site.earth) details.push(`地球での観測 ${site.earth}`);
     if (Number.isFinite(site.snapDistance)) details.push(`吸着距離 ${site.snapDistance.toFixed(1)}°`);
-    const isLand = climate.land[site.index];
-    const c = card(`${label} — ${isLand ? record.koppenType : "陸ではない"}`, details.join("・"));
-    const custom = site.custom;
     const own = finite(record.temperature);
-    const temperatureRange = custom ? niceRange(Math.min(0, ...own), Math.max(0, ...own), 6) : sharedRange;
-    const precipitationMax = custom ? niceRange(0, Math.max(1, ...finite(record.precipitation)), 6)[1] : sharedMax;
-    c.addChart(new ClimographChart(c.body, {
-      temperature: record.temperature, precipitation: record.precipitation, temperatureRange, precipitationMax,
-    }), site.custom ? "climograph_selected" : `climograph_${site.label}`);
-    if (custom) c.actions.prepend(button("削除", () => { state.customSite = null; renderSiteLabels(); renderAnalysis(); }));
+    const temperatureRange = site.custom ? niceRange(Math.min(0, ...own), Math.max(0, ...own), 6) : sharedRange;
+    const precipitationMax = site.custom ? niceRange(0, Math.max(1, ...finite(record.precipitation)), 6)[1] : sharedMax;
+    return {
+      site, record,
+      title: `${label} — ${climate.land[site.index] ? record.koppenType : "陸ではない"}`,
+      subtitle: details.join("・"),
+      legend: [], figureLegend: CLIMOGRAPH_LEGEND,
+      name: site.custom ? "climograph_selected" : `climograph_${site.label.padStart(2, "0")}`,
+      make: (body) => new ClimographChart(body, { temperature: record.temperature, precipitation: record.precipitation, temperatureRange, precipitationMax }),
+    };
+  });
+}
+
+const CLIMOGRAPH_NOTE = "1〜12月の月平均の気温（折れ線、左軸、°C）と降水量（棒、右軸、mm/月）。気温はケッペン区分と同じ地上気温（最下層の気温を地表気圧まで乾燥断熱で外挿した値）。代表地点は両軸を共有し、陸面率が閾値以上のセルのうち最も近いセルに吸着する。";
+
+function renderClimographs() {
+  const descriptors = climographDescriptors();
+  if (!descriptors.length) {
+    ui.analysisBody.append(note("閾値以上の陸面率を持つセルがありません。"));
+    return;
+  }
+  const cards = descriptors.map((descriptor) => {
+    const c = descriptorCard(descriptor);
+    if (descriptor.site.custom) c.actions.prepend(button("削除", () => { state.customSite = null; renderSiteLabels(); renderAnalysis(); }));
     return c.element;
   });
-  ui.analysisBody.append(
-    note("1〜12月の月平均の気温（折れ線、左軸、°C）と降水量（棒、右軸、mm/月）。気温はケッペン区分と同じ地上気温（最下層の気温を地表気圧まで乾燥断熱で外挿した値）。代表地点は両軸を共有し、陸面率が閾値以上のセルのうち最も近いセルに吸着する。地図をクリックすると任意のセルを加えられる。"),
-    grid(...cards),
-  );
+  ui.analysisBody.append(note(`${CLIMOGRAPH_NOTE}地図をクリックすると任意のセルを加えられる。`), grid(...cards));
+}
+
+const ZONAL_X = { xTicks: LATITUDE_TICKS, xDomain: [-90, 90], xTooltip: (x) => formatLat(x) };
+
+function zonalDescriptors() {
+  const zonal = state.climate.zonal;
+  const latitude = Array.from(zonal.latitude);
+  const water = [{ color: SERIES[0], label: "降水量" }, { color: SERIES[1], label: "蒸発量" }];
+  return [
+    { title: "年平均の地表温度", subtitle: "陸と海の両方を含む帯状平均（°C）", name: "zonal_temperature",
+      make: (body) => new LineChart(body, { ...ZONAL_X, yUnit: "°C", zeroLine: true, series: [
+        { label: "地表温度", color: SERIES[0], x: latitude, y: Array.from(zonal.surfaceTemperatureK, (v) => v - 273.15) },
+      ] }) },
+    { title: "年平均の降水量と蒸発量", subtitle: "mm/日", legend: water, name: "zonal_water",
+      make: (body) => new LineChart(body, { ...ZONAL_X, yUnit: "mm/日", yInclude: [0], series: [
+        { label: "降水量", color: SERIES[0], x: latitude, y: Array.from(zonal.precipitation) },
+        { label: "蒸発量", color: SERIES[1], x: latitude, y: Array.from(zonal.evaporation) },
+      ] }) },
+    { title: "年平均の実効雲量", subtitle: "診断した鉛直積算の雲量", name: "zonal_cloud",
+      make: (body) => new LineChart(body, { ...ZONAL_X, yInclude: [0], series: [
+        { label: "雲量", color: SERIES[0], x: latitude, y: Array.from(zonal.cloudCover) },
+      ] }) },
+  ];
 }
 
 function renderZonal() {
-  const zonal = state.climate.zonal;
-  const latitude = Array.from(zonal.latitude);
-  const xSpec = { xTicks: LATITUDE_TICKS, xDomain: [-90, 90], xTooltip: (x) => formatLat(x) };
-  const t = card("年平均の地表温度", "陸と海の両方を含む帯状平均（°C）");
-  t.addChart(new LineChart(t.body, { ...xSpec, yUnit: "°C", zeroLine: true, series: [
-    { label: "地表温度", color: SERIES[0], x: latitude, y: Array.from(zonal.surfaceTemperatureK, (v) => v - 273.15) },
-  ] }), "zonal_temperature");
-  const p = card("年平均の降水量と蒸発量", "mm/日", [
-    { color: SERIES[0], label: "降水量" }, { color: SERIES[1], label: "蒸発量" }]);
-  p.addChart(new LineChart(p.body, { ...xSpec, yUnit: "mm/日", yInclude: [0], series: [
-    { label: "降水量", color: SERIES[0], x: latitude, y: Array.from(zonal.precipitation) },
-    { label: "蒸発量", color: SERIES[1], x: latitude, y: Array.from(zonal.evaporation) },
-  ] }), "zonal_water");
-  const c = card("年平均の実効雲量", "診断した鉛直積算の雲量");
-  c.addChart(new LineChart(c.body, { ...xSpec, yInclude: [0], series: [
-    { label: "雲量", color: SERIES[0], x: latitude, y: Array.from(zonal.cloudCover) },
-  ] }), "zonal_cloud");
-  ui.analysisBody.append(grid(t.element, p.element, c.element));
+  ui.analysisBody.append(grid(...zonalDescriptors().map((descriptor) => descriptorCard(descriptor).element)));
 }
 
 const STREAM_COLORS = ["#002F70", "#014287", "#2056A2", "#3369BF", "#567DCA", "#7390D4", "#8DA4DD", "#A5B6E6",
   "#BBC8ED", "#CFD8F3", "#E1E7F7", "#F1F3F8", "#F9F1F1", "#F9E1E1", "#F6CFCF", "#F0BBBB", "#E7A6A6", "#DD9090",
   "#D07979", "#C26161", "#B14949", "#953838", "#792727", "#5F1415"];
 
-function renderStreamfunction() {
+function streamfunctionDescriptor() {
   const climate = state.climate;
   const pressures = climate.referencePressureHpa;
   const nlev = pressures.length;
@@ -1111,19 +1166,26 @@ function renderStreamfunction() {
   const ticks = [1000, 850, 700, 500, 300, 200, 100, 50, 10, 2]
     .filter((p) => p >= Math.min(...pressures) && p <= Math.max(...pressures))
     .map((p) => ({ value: -Math.log10(p), label: String(p) }));
-  const c = card("年平均の子午面質量流線関数",
-    `10⁹ kg/s・月平均の帯状平均 v と p_s から計算・縦軸は層の基準気圧・最大 ${formatNumber(Math.max(...z.flat()), 3)}、最小 ${formatNumber(Math.min(...z.flat()), 3)}`);
-  c.addChart(new ContourChart(c.body, {
-    x: Array.from(climate.zonal.latitude), y, z, levels, colors: STREAM_COLORS, height: 340,
-    xDomain: [-90, 90], xTicks: LATITUDE_TICKS, yTicks: ticks, xLabel: "緯度", yLabel: "気圧（hPa）",
-    keyLabel: "10⁹ kg/s", format: (v) => formatNumber(v, 3),
-    tooltip: (lat, yValue, value) => [formatLat(lat), `${formatPressure(10 ** -yValue)} hPa`, `ψ ${formatNumber(value, 3)} × 10⁹ kg/s`],
-  }), "mass_streamfunction");
-  c.actions.prepend(button("CSV 保存", downloadStreamfunctionCsv));
+  return {
+    title: "年平均の子午面質量流線関数",
+    subtitle: `10⁹ kg/s・月平均の帯状平均 v と p_s から計算・縦軸は層の基準気圧・最大 ${formatNumber(Math.max(...z.flat()), 3)}、最小 ${formatNumber(Math.min(...z.flat()), 3)}`,
+    name: "mass_streamfunction",
+    make: (body) => new ContourChart(body, {
+      x: Array.from(climate.zonal.latitude), y, z, levels, colors: STREAM_COLORS, height: 340,
+      xDomain: [-90, 90], xTicks: LATITUDE_TICKS, yTicks: ticks, xLabel: "緯度", yLabel: "気圧（hPa）",
+      keyLabel: "10⁹ kg/s", format: (v) => formatNumber(v, 3),
+      tooltip: (lat, yValue, value) => [formatLat(lat), `${formatPressure(10 ** -yValue)} hPa`, `ψ ${formatNumber(value, 3)} × 10⁹ kg/s`],
+    }),
+  };
+}
+
+function renderStreamfunction() {
+  const c = descriptorCard(streamfunctionDescriptor());
+  c.actions.prepend(button("CSV 保存", () => saveCsv(streamfunctionCsv())));
   ui.analysisBody.append(c.element);
 }
 
-function renderSeaIce() {
+function seaIceDescriptors() {
   const rows = state.climate.seaIceMonthly;
   const months = Array.from({ length: 12 }, (_, i) => i + 1);
   const series = (region, key, scale) => months.map((month) => {
@@ -1135,18 +1197,23 @@ function renderSeaIce() {
     xTooltip: (m) => `${Math.round(m)}月`,
   };
   const legend = [{ color: SERIES[0], label: "北半球" }, { color: SERIES[1], label: "南半球" }];
-  const make = (title, key, scale, unit, name) => {
-    const c = card(title, unit, legend);
-    c.addChart(new LineChart(c.body, { ...xSpec, yInclude: [0], yUnit: unit, series: [
+  const make = (title, key, scale, unit, name) => ({
+    title, subtitle: unit, legend, name,
+    make: (body) => new LineChart(body, { ...xSpec, yInclude: [0], yUnit: unit, series: [
       { label: "北半球", color: SERIES[0], x: months, y: series("north", key, scale), markers: true },
       { label: "南半球", color: SERIES[1], x: months, y: series("south", key, scale), markers: true },
-    ] }), name);
-    return c;
-  };
-  const area = make("海氷面積", "ice_area_m2", 1e12, "10¹² m²", "sea_ice_area");
-  const volume = make("海氷体積", "ice_volume_m3", 1e13, "10¹³ m³", "sea_ice_volume");
-  area.actions.prepend(button("CSV 保存", downloadSeaIceCsv));
-  const noIce = rows.every((row) => !(row.areaM2 > 0));
+    ] }),
+  });
+  return [
+    make("海氷面積", "areaM2", 1e12, "10¹² m²", "sea_ice_area"),
+    make("海氷体積", "volumeM3", 1e13, "10¹³ m³", "sea_ice_volume"),
+  ];
+}
+
+function renderSeaIce() {
+  const [area, volume] = seaIceDescriptors().map(descriptorCard);
+  area.actions.prepend(button("CSV 保存", () => saveCsv(seaIceCsv())));
+  const noIce = state.climate.seaIceMonthly.every((row) => !(row.areaM2 > 0));
   ui.analysisBody.append(
     ...(noIce ? [note(`${state.analysisYear.year} 年目には海氷がありません。`)] : []),
     note("月平均の海氷面積率 A と体積 V を、元の格子セルの面積に海の割合を掛けた重みで積分したもの。地図は「表示する場」の「解析年の気候値」から海氷・積雪の項目を選ぶ。"),
@@ -1159,35 +1226,40 @@ function dailySeries(daily, column) {
   return values ? values.map((value) => (value === null ? Number.NaN : value)) : null;
 }
 
-function renderTimeSeries() {
+function timeSeriesDescriptors() {
   const daily = state.daily;
   const perYear = Number(state.info.metadata.calendar.days_per_year);
   const years = daily.data.simulation_day.map((day) => day / perYear);
   const xSpec = { xLabel: "経過年数", xTooltip: (x) => `経過 ${x.toFixed(2)} 年` };
   const col = (name) => dailySeries(daily, name);
   const toa = years.map((_, i) => col("incoming_shortwave_w_m-2")[i] - col("reflected_shortwave_w_m-2")[i] - col("outgoing_longwave_w_m-2")[i]);
-  const cards = [];
-  const make = (title, unit, series, extra, name) => {
-    const c = card(title, unit, series.length > 1 ? series.map((s) => ({ color: s.color, label: s.label })) : []);
-    c.addChart(new LineChart(c.body, { ...xSpec, yUnit: unit, ...extra, series: series.map((s) => ({ ...s, x: years, width: 1.5 })) }), name);
-    cards.push(c.element);
-  };
-  make("全球平均の地表温度", "K", [
-    { label: "全体", color: SERIES[0], y: col("mean_surface_temperature_k") },
-    { label: "陸", color: SERIES[1], y: col("mean_land_surface_temperature_k") },
-    { label: "海", color: SERIES[2], y: col("mean_ocean_surface_temperature_k") },
-  ], {}, "global_surface_temperature");
-  make("全球平均の降水量と蒸発量", "mm/日", [
-    { label: "降水量", color: SERIES[0], y: col("precipitation_mm_day-1") },
-    { label: "蒸発量", color: SERIES[1], y: col("evaporation_mm_day-1") },
-  ], {}, "global_precipitation_evaporation");
-  make("可降水量", "kg/m²", [{ label: "可降水量", color: SERIES[0], y: col("precipitable_water_kg_m-2") }], {}, "precipitable_water");
-  make("大気上端の正味放射", "W/m²", [{ label: "正味放射", color: SERIES[0], y: toa }], { zeroLine: true }, "toa_net_radiation");
-  make("全球の海氷面積", "10¹² m²", [{ label: "面積", color: SERIES[0], y: col("sea_ice_area_m2").map((v) => v / 1e12) }], { yInclude: [0] }, "sea_ice_area_daily");
-  make("全球の海氷体積", "10¹³ m³", [{ label: "体積", color: SERIES[0], y: col("sea_ice_volume_m3").map((v) => v / 1e13) }], { yInclude: [0] }, "sea_ice_volume_daily");
-  make("海氷の厚さ（氷面積で重み付け）", "m", [{ label: "厚さ", color: SERIES[0], y: col("mean_sea_ice_thickness_m") }], { yInclude: [0] }, "sea_ice_thickness_daily");
-  make("陸の積雪（水当量）", "kg/m²", [{ label: "積雪", color: SERIES[0], y: col("land_snow_water_kg_m-2") }], { yInclude: [0] }, "land_snow_daily");
-  ui.analysisBody.append(note("daily_global.csv の全期間の日平均の全球平均（スピンアップの確認）。"), grid(...cards));
+  const make = (title, unit, series, extra, name) => ({
+    title, subtitle: unit, name,
+    legend: series.length > 1 ? series.map((s) => ({ color: s.color, label: s.label })) : [],
+    make: (body) => new LineChart(body, { ...xSpec, yUnit: unit, ...extra, series: series.map((s) => ({ ...s, x: years, width: 1.5 })) }),
+  });
+  return [
+    make("全球平均の地表温度", "K", [
+      { label: "全体", color: SERIES[0], y: col("mean_surface_temperature_k") },
+      { label: "陸", color: SERIES[1], y: col("mean_land_surface_temperature_k") },
+      { label: "海", color: SERIES[2], y: col("mean_ocean_surface_temperature_k") },
+    ], {}, "global_surface_temperature"),
+    make("全球平均の降水量と蒸発量", "mm/日", [
+      { label: "降水量", color: SERIES[0], y: col("precipitation_mm_day-1") },
+      { label: "蒸発量", color: SERIES[1], y: col("evaporation_mm_day-1") },
+    ], {}, "global_precipitation_evaporation"),
+    make("可降水量", "kg/m²", [{ label: "可降水量", color: SERIES[0], y: col("precipitable_water_kg_m-2") }], {}, "precipitable_water"),
+    make("大気上端の正味放射", "W/m²", [{ label: "正味放射", color: SERIES[0], y: toa }], { zeroLine: true }, "toa_net_radiation"),
+    make("全球の海氷面積", "10¹² m²", [{ label: "面積", color: SERIES[0], y: col("sea_ice_area_m2").map((v) => v / 1e12) }], { yInclude: [0] }, "sea_ice_area_daily"),
+    make("全球の海氷体積", "10¹³ m³", [{ label: "体積", color: SERIES[0], y: col("sea_ice_volume_m3").map((v) => v / 1e13) }], { yInclude: [0] }, "sea_ice_volume_daily"),
+    make("海氷の厚さ（氷面積で重み付け）", "m", [{ label: "厚さ", color: SERIES[0], y: col("mean_sea_ice_thickness_m") }], { yInclude: [0] }, "sea_ice_thickness_daily"),
+    make("陸の積雪（水当量）", "kg/m²", [{ label: "積雪", color: SERIES[0], y: col("land_snow_water_kg_m-2") }], { yInclude: [0] }, "land_snow_daily"),
+  ];
+}
+
+function renderTimeSeries() {
+  ui.analysisBody.append(note("daily_global.csv の全期間の日平均の全球平均（スピンアップの確認）。"),
+    grid(...timeSeriesDescriptors().map((descriptor) => descriptorCard(descriptor).element)));
 }
 
 async function renderComparison() {
@@ -1293,12 +1365,14 @@ function renderSummary() {
   const downloads = document.createElement("div");
   downloads.className = "download-row";
   downloads.append(
-    button("要約 CSV", () => downloadCsv("analysis_summary.csv", ["metric", "value"], climate.summary.map((row) => [row.metric, row.value]))),
-    button("全セルの年平均と気候区分 CSV", downloadCellsCsv),
-    button("代表地点 CSV", downloadSitesCsv),
-    button("帯状平均 CSV", downloadZonalCsv),
-    button("質量流線関数 CSV", downloadStreamfunctionCsv),
-    button("海氷の月別集計 CSV", downloadSeaIceCsv),
+    button("要約 CSV", () => saveCsv(summaryCsv())),
+    button("全セルの年平均と気候区分 CSV", () => saveCsv(cellsCsv())),
+    button("代表地点 CSV", () => saveCsv(sitesCsv())),
+    button("雨温図の月別値 CSV", () => saveCsv(climographCsv())),
+    button("帯状平均 CSV", () => saveCsv(zonalCsv())),
+    button("質量流線関数 CSV", () => saveCsv(streamfunctionCsv())),
+    button("海氷の月別集計 CSV", () => saveCsv(seaIceCsv())),
+    zipButton(),
   );
   const sites = document.createElement("table");
   sites.className = "summary-table";
@@ -1330,7 +1404,11 @@ function wrapTable(title, table) {
   return c.element;
 }
 
-function downloadCellsCsv() {
+function summaryCsv() {
+  return csvFile("analysis_summary.csv", ["metric", "value"], state.climate.summary.map((row) => [row.metric, row.value]));
+}
+
+function cellsCsv() {
   const c = state.climate;
   const g = state.grid;
   const f = state.staticFields.land_fraction;
@@ -1344,7 +1422,7 @@ function downloadCellsCsv() {
       c.land[i] ? C.KOPPEN_GROUPS[c.koppenGroup[i]] : null, c.land[i] ? C.KOPPEN_TYPES[c.koppenType[i]] : null,
     ]);
   }
-  downloadCsv("final_year_koppen_groups.csv", [
+  return csvFile("final_year_koppen_groups.csv", [
     "longitude_deg", "latitude_deg", "land_fraction", "surface_height_m", "is_land",
     "annual_mean_surface_temperature_c", "annual_mean_land_temperature_c", "annual_mean_surface_air_temperature_c",
     "annual_mean_ocean_temperature_c",
@@ -1353,10 +1431,10 @@ function downloadCellsCsv() {
   ], rows);
 }
 
-function downloadSitesCsv() {
+function sitesCsv() {
   const c = state.climate;
   const g = state.grid;
-  downloadCsv("representative_land_sites.csv", [
+  return csvFile("representative_land_sites.csv", [
     "site", "target_longitude_deg", "target_latitude_deg", "longitude_deg", "latitude_deg", "snap_distance_deg",
     "land_fraction", "surface_height_m", "koppen_group", "koppen_type", "earth_reference_koppen",
     "annual_mean_surface_air_temperature_c", "annual_precipitation_mm", "annual_mean_surface_water_kg_m2",
@@ -1369,28 +1447,218 @@ function downloadSitesCsv() {
   }));
 }
 
-function downloadZonalCsv() {
+/** Monthly values of every climograph (preset sites and the selected cell). */
+function climographCsv() {
+  const g = state.grid;
+  const rows = [];
+  for (const site of currentSites()) {
+    const record = C.climographOf(state.climate, site.index);
+    for (let m = 0; m < 12; m += 1) {
+      rows.push([site.custom ? "selected" : site.label, site.custom ? "Selected cell" : site.site, g.lon[site.index], g.lat[site.index],
+        state.climate.land[site.index] ? record.koppenType : null, m + 1, record.temperature[m], record.precipitation[m]]);
+    }
+  }
+  return csvFile("final_year_climographs_monthly.csv", [
+    "site_number", "site", "longitude_deg", "latitude_deg", "koppen_type", "calendar_month",
+    "mean_surface_air_temperature_c", "precipitation_mm_month",
+  ], rows);
+}
+
+function zonalCsv() {
   const z = state.climate.zonal;
-  downloadCsv("final_year_zonal_means.csv", [
+  return csvFile("final_year_zonal_means.csv", [
     "latitude_deg", "annual_mean_surface_temperature_k", "annual_mean_precipitation_mm_day",
     "annual_mean_evaporation_mm_day", "annual_mean_cloud_cover",
   ], Array.from(z.latitude, (lat, j) => [lat, z.surfaceTemperatureK[j], z.precipitation[j], z.evaporation[j], z.cloudCover[j]]));
 }
 
-function downloadStreamfunctionCsv() {
+function streamfunctionCsv() {
   const c = state.climate;
   const rows = [];
   c.referencePressureHpa.forEach((pressure, k) => {
     c.zonal.latitude.forEach((lat, j) => rows.push([lat, k + 1, pressure, c.streamfunction.psi[j][k]]));
   });
-  downloadCsv("final_year_mass_streamfunction.csv", ["latitude_deg", "level", "reference_pressure_hpa", "mass_streamfunction_kg_s"], rows);
+  return csvFile("final_year_mass_streamfunction.csv", ["latitude_deg", "level", "reference_pressure_hpa", "mass_streamfunction_kg_s"], rows);
 }
 
-function downloadSeaIceCsv() {
-  downloadCsv("final_year_sea_ice_monthly.csv",
+function seaIceCsv() {
+  return csvFile("final_year_sea_ice_monthly.csv",
     ["region", "output_month", "calendar_month", "month", "ice_area_m2", "ice_volume_m3", "mean_thickness_m"],
     state.climate.seaIceMonthly.map((row) => [row.region, row.outputMonth, row.calendarMonth,
       C.MONTH_ABBREVIATIONS[row.calendarMonth - 1], row.areaM2, row.volumeM3, row.thicknessM]));
+}
+
+// ---------------------------------------------------------------------------
+// Saved figures and the ZIP of every time-independent result
+// ---------------------------------------------------------------------------
+
+function climatologyLegend(spec) {
+  const allowed = spec.legendFilter ? spec.legendFilter(state.climate) : null;
+  return { kind: "categorical", entries: spec.legend.filter((entry) => !allowed || allowed.has(entry.label)) };
+}
+
+function rawLegend(spec, scale) {
+  return {
+    kind: "continuous", stops: F.COLORMAPS[spec.kind], min: scale.min, max: scale.max, unit: spec.unit,
+    ticks: niceTicks(scale.min, scale.max, 6).map((value) => ({ value, label: formatNumber(value, 4) })),
+    missing: spec.mask ? "タイルなし" : null, missingColor: F.MISSING_COLOR,
+  };
+}
+
+/** Case, analysis year and land threshold, printed under every saved figure. */
+function figureFooter(timeInvariant = false) {
+  const parts = [`${state.info.case_name}（${state.info.name}）`];
+  if (!timeInvariant) parts.push(`解析年 ${state.analysisYear.year} 年目（出力月 ${state.analysisYear.months[0]}–${state.analysisYear.months.at(-1)}）`);
+  parts.push(`陸 f_L ≥ ${state.threshold.toFixed(2)}`);
+  return parts.join("・");
+}
+
+function mapOverlays() {
+  return {
+    coastline: ui.coastline.checked ? C.coastlineSegments(state.grid, state.climate.land) : [],
+    sites: ui.sites.checked ? currentSites() : [],
+  };
+}
+
+/** Figure of a climatology map (legend below). */
+function climatologyMapFigure(id) {
+  const spec = state.climateFields[id];
+  return X.mapFigure({
+    grid: state.grid, colors: climatologyCellColors(spec), ...mapOverlays(),
+    title: spec.label, subtitle: climatologySubtitle(spec), legend: climatologyLegend(spec),
+    footer: figureFooter(spec.timeInvariant),
+  });
+}
+
+/** Figure of a raw time-independent field, coloured over its 0.5–99.5% range. */
+function staticMapFigure(id) {
+  const spec = F.RAW_FIELDS[id];
+  const values = maskAndConvert(spec, state.staticFields[id], null);
+  const scale = autoScale(spec, values);
+  return X.mapFigure({
+    grid: state.grid, colors: rawCellColors(spec, values, scale), ...mapOverlays(),
+    title: spec.label, subtitle: "時間変化しない場・色の範囲は 0.5–99.5 パーセンタイル", legend: rawLegend(spec, scale),
+    footer: figureFooter(true),
+  });
+}
+
+/** A chart descriptor drawn off screen at a fixed width, with its title and legend. */
+function chartFigure(descriptor, width = 640) {
+  const host = document.createElement("div");
+  host.style.cssText = `position: fixed; left: -10000px; top: 0; width: ${width}px;`;
+  const body = document.createElement("div");
+  body.className = "chart-body";
+  host.append(body);
+  document.body.append(host);
+  try {
+    const chart = descriptor.make(body);
+    chart.destroy();
+    const rect = chart.canvas.getBoundingClientRect();
+    const legend = descriptor.figureLegend ?? descriptor.legend ?? [];
+    return X.canvasFigure({
+      source: chart.canvas, width: rect.width, height: rect.height,
+      title: descriptor.title, subtitle: descriptor.subtitle,
+      legend: legend.length ? { kind: "categorical", entries: legend.map((entry) => ({ line: true, ...entry })) } : null,
+      footer: figureFooter(descriptor.timeInvariant),
+    });
+  } finally {
+    host.remove();
+  }
+}
+
+/** PNG of the current view (3D or 2D) with its title and legend below. */
+async function saveCurrentView() {
+  const view = views[state.viewMode];
+  view.renderer.render(view.scene, view.camera);
+  const field = state.field;
+  const canvas = view.renderer.domElement;
+  let legend = null;
+  let timeInvariant = field.group === "static";
+  if (field.group === "climatology") {
+    const spec = state.climateFields[field.id];
+    legend = climatologyLegend(spec);
+    timeInvariant = Boolean(spec.timeInvariant);
+  } else if (state.scale) {
+    legend = rawLegend(F.RAW_FIELDS[field.id], state.scale);
+  }
+  const figure = X.canvasFigure({
+    source: canvas, width: canvas.clientWidth, height: canvas.clientHeight,
+    title: ui.fieldTitle.textContent, subtitle: ui.fieldSubtitle.textContent, legend, footer: figureFooter(timeInvariant),
+  });
+  downloadBlob(await X.canvasToBlob(figure), `${state.info.name}_${field.id}_${state.viewMode}.png`);
+}
+
+function exportReadme(folder, files) {
+  const lines = [
+    `BespokePlanet 陸海ケースビューアの一括保存`,
+    ``,
+    `ケース: ${state.info.case_name}（${state.info.name}、${state.info.terrain === "earth" ? "地球の地形" : "解析的な地形"}・T${state.info.truncation}）`,
+    `解析する年: ${state.analysisYear.year} 年目（出力月 ${state.analysisYear.months[0]}–${state.analysisYear.months.at(-1)}）`,
+    `陸とみなす陸面率: f_L ≥ ${state.threshold.toFixed(2)}`,
+    `地図の重ね描き: 海岸線 ${ui.coastline.checked ? "あり" : "なし"}・代表地点 ${ui.sites.checked ? "あり" : "なし"}`,
+    `作成: ${new Date().toISOString()}`,
+    ``,
+    `maps/climatology/  解析年の気候値の地図（凡例つき）`,
+    `maps/static/       時間変化しない場の地図（凡例つき、連続量の色の範囲は 0.5–99.5 パーセンタイル）`,
+    `charts/            雨温図・帯状平均・質量流線関数・海氷・全期間の時系列`,
+    `csv/               解析パネルの CSV と雨温図の月別値`,
+    ``,
+    `月平均と年次の瞬時値の地図は含みません。`,
+    ``,
+    ...files.map((file) => file.name.slice(folder.length + 1)),
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+async function saveZip() {
+  if (state.exporting || !state.climate) return;
+  state.exporting = true;
+  const buttons = [ui.saveZip, ...document.querySelectorAll("[data-zip-button]")];
+  const labels = buttons.map((element) => element.textContent);
+  const progress = (text) => { for (const element of buttons) { element.disabled = true; element.textContent = text; } };
+  try {
+    const folder = `${state.info.name}_year${String(state.analysisYear.year).padStart(3, "0")}_fL${state.threshold.toFixed(2)}`;
+    const files = [];
+    const tasks = [];
+    F.CLIMATOLOGY_ORDER.forEach((id, n) => tasks.push([`maps/climatology/${String(n + 1).padStart(2, "0")}_${id}.png`, () => climatologyMapFigure(id)]));
+    const staticMaps = [];
+    for (const id of F.STATIC_ORDER) {
+      if (!state.info.static_fields.includes(id)) continue;
+      staticMaps.push([id, () => staticMapFigure(id)]);
+      if (id === "land_fraction") for (const key of F.STATIC_CLASSIFIED_ORDER) staticMaps.push([key, () => climatologyMapFigure(key)]);
+    }
+    staticMaps.forEach(([id, make], n) => tasks.push([`maps/static/${String(n + 1).padStart(2, "0")}_${id}.png`, make]));
+    const charts = [
+      ...climographDescriptors().map((d) => ["climographs", d]),
+      ...zonalDescriptors().map((d) => ["zonal", d]),
+      ["streamfunction", streamfunctionDescriptor()],
+      ...seaIceDescriptors().map((d) => ["sea_ice", d]),
+      ...timeSeriesDescriptors().map((d) => ["timeseries", { ...d, timeInvariant: true }]),
+    ];
+    for (const [directory, descriptor] of charts) tasks.push([`charts/${directory}/${descriptor.name}.png`, () => chartFigure(descriptor)]);
+    for (let t = 0; t < tasks.length; t += 1) {
+      progress(`作成中 ${t + 1}/${tasks.length}`);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const [name, make] = tasks[t];
+      files.push({ name: `${folder}/${name}`, data: await X.canvasToBlob(make()) });
+    }
+    for (const csv of [summaryCsv(), cellsCsv(), sitesCsv(), climographCsv(), zonalCsv(), streamfunctionCsv(), seaIceCsv()]) {
+      files.push({ name: `${folder}/csv/${csv.name}`, data: csv.text });
+    }
+    files.unshift({ name: `${folder}/README.txt`, data: exportReadme(folder, files) });
+    progress("圧縮中…");
+    downloadBlob(await X.createZip(files), `${folder}.zip`);
+  } finally {
+    state.exporting = false;
+    buttons.forEach((element, i) => { element.disabled = false; element.textContent = labels[i]; });
+  }
+}
+
+function zipButton() {
+  const element = button("一括 ZIP 保存", () => saveZip().catch(showFatal));
+  element.dataset.zipButton = "";
+  element.title = "解析年の気候値と時間変化しない場の地図（凡例つき）、解析のグラフ、CSV をまとめて保存";
+  return element;
 }
 
 // ---------------------------------------------------------------------------
@@ -1492,11 +1760,8 @@ async function init() {
     loadStreamlines(state.token).catch(showFatal);
   });
   ui.density.addEventListener("change", () => { state.density = ui.density.value; loadStreamlines(state.token).catch(showFatal); });
-  ui.savePng.addEventListener("click", () => {
-    const view = views[state.viewMode];
-    view.renderer.render(view.scene, view.camera);
-    view.renderer.domElement.toBlob((blob) => downloadBlob(blob, `${state.info.name}_${state.field.id}_${state.viewMode}.png`));
-  });
+  ui.savePng.addEventListener("click", () => saveCurrentView().catch(showFatal));
+  ui.saveZip.addEventListener("click", () => saveZip().catch(showFatal));
   ui.play.addEventListener("click", () => {
     if (state.playing) { stopPlayback(); return; }
     state.playing = true;

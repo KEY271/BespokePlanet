@@ -116,7 +116,8 @@ const monthColumn = (climate, month) => climate.calendarMonths.indexOf(month);
 /**
  * Climatology maps. legend: entries {color,label}; classify(climate, i) returns
  * the legend entry of cell i. value(climate, i) is shown in the hover readout.
- * The land threshold enters through climate.land.
+ * The land threshold enters through climate.land. timeInvariant marks maps that
+ * do not depend on the analysis year.
  */
 export function climatologyFields(context) {
   const iceFraction = [-0.001, 0.001, 0.15, 0.3, 0.5, 0.7, 0.85, 1.001];
@@ -174,6 +175,7 @@ export function climatologyFields(context) {
     terrain: landOnly({
       label: "陸の標高",
       unit: "m",
+      timeInvariant: true,
       legend: entries(["#027C1E", "#649334", "#97A753", "#C0B878", "#DEC79D", "#F1D5BF", "#E2E2E2"],
         ["250 m 未満", "250–500 m", "500–1000 m", "1000–1500 m", "1500–2000 m", "2000–2500 m", "2500 m 以上"]),
       classify: (c, i) => binned(c.surfaceHeight[i], [-Infinity, 250, 500, 1000, 1500, 2000, 2500, Infinity], false),
@@ -287,11 +289,15 @@ export function climatologyFields(context) {
 }
 
 export const CLIMATOLOGY_ORDER = [
-  "koppen_type", "koppen_group", "terrain", "air_temperature_annual", "land_temperature_annual", "precipitation_annual",
+  "koppen_type", "koppen_group", "air_temperature_annual", "land_temperature_annual", "precipitation_annual",
   "surface_water_annual", "p_minus_e_annual", "cloud_cover_annual", "precipitation_season", "pressure_season",
   "ocean_pressure_anomaly", "snow_ice_march", "snow_ice_september", "sea_ice_march", "sea_ice_september",
   "sea_ice_thickness_annual", "sea_ice_temperature_annual",
 ];
+
+// Maps built from the land mask but no time-dependent field; listed with the
+// fields that do not change in time.
+export const STATIC_CLASSIFIED_ORDER = ["terrain"];
 
 export function hexToRgb(hex) {
   const value = Number.parseInt(hex.slice(1), 16);
