@@ -33,7 +33,7 @@ module dry_tendency_evaluator
   use dry_bucket_tendency, only: add_dry_bucket_tendency
   use sea_ice, only: validate_sea_ice_config
   use land_snow, only: validate_snow_config
-  use band_radiation, only: validate_band_radiation_config
+  use band_radiation, only: validate_band_radiation_config, prepare_band_planck_table
   use dry_physics_config, only: radiation_scheme_gray, radiation_scheme_band
   use dry_radiation_tendency, only: add_dry_radiation_tendency, diagnose_surface_tiles
   use dry_convection_tendency, only: add_dry_convection_tendency
@@ -106,6 +106,8 @@ contains
     if (physics%radiation%enabled) then
       if (physics%radiation%scheme == radiation_scheme_band) then
         call validate_band_radiation_config(physics%radiation%band)
+        ! Built on the first evaluation and kept while the edges stay the same.
+        call prepare_band_planck_table(physics%radiation%band)
       else if (physics%radiation%scheme /= radiation_scheme_gray) then
         error stop 'unknown radiation scheme'
       end if

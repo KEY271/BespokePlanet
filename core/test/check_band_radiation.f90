@@ -10,9 +10,10 @@ program check_band_radiation
   use dry_physics_config, only: radiation_config, band_radiation_config, radiation_scheme_band, cloud_config
   use cloud_diagnostics, only: cloud_layers, diagnose_cloud_layers, diagnose_cloud_cover
   use band_radiation, only: band_column_fluxes, band_longwave_subbands, band_planck_fractions, &
+                            band_planck_fractions_series, prepare_band_planck_table, &
                             band_surface_emission, band_longwave_optics, band_longwave_downward, &
                             band_longwave_upward, band_shortwave, validate_band_radiation_config
-  use dry_radiation, only: ozone_layer_fraction, radiation_band_downward_column, radiation_band_upward_column, &
+  use dry_radiation, only: ozone_layer_fraction, ozone_layer_fractions, radiation_band_downward_column, radiation_band_upward_column, &
                            radiation_tendency, solar_zenith_cosine
   use moist_thermodynamics, only: saturation_specific_humidity
   implicit none
@@ -41,6 +42,8 @@ program check_band_radiation
 
   config%scheme = radiation_scheme_band
   call validate_band_radiation_config(config%band)
+  call check_planck_table()
+  call check_ozone_layer_fractions()
   pressure_half = 100.0_real64*half_hpa
   do k = 1, levels
     ozone(k) = ozone_layer_fraction(config, pressure_half(k - 1), pressure_half(k))
@@ -96,6 +99,61 @@ contains
     energy = sum(heating*(pressure_half(1:) - pressure_half(:levels - 1)))*config%dry_air_specific_heat/ &
       config%gravity_acceleration
   end function column_energy
+
+  !> The table of the Planck fractions against the series (docs/tendency/band-radiation.md,
+  !> 4.3).  Before the table is built and outside its range or for other edges
+  !> the series itself is used.  Builds the table, so every later check goes
+  !> through it.
+  subroutine check_planck_table()
+    type(band_radiation_config) :: shifted
+    real(real64), parameter :: outside(4) = [99.9_real64, 60.0_real64, 400.1_real64, 450.0_real64]
+    real(real64) :: table(band_longwave_subbands), series(band_longwave_subbands), temperature, error
+    integer :: n
+
+    if (any(band_planck_fractions(config%band, 250.3_real64) /= band_planck_fractions_series(config%band, 250.3_real64))) &
+      error stop 'the Planck fractions before the table is built must be the series'
+    call prepare_band_planck_table(config%band)
+    call prepare_band_planck_table(config%band)
+    error = 0.0_real64
+    do n = 0, 300000
+      temperature = 100.0_real64 + 300.0_real64*real(n, real64)/300000.0_real64 + 1.0e-7_real64*real(mod(n, 3), real64)
+      temperature = min(temperature, 400.0_real64)
+      table = band_planck_fractions(config%band, temperature)
+      series = band_planck_fractions_series(config%band, temperature)
+      error = max(error, maxval(abs(table - series)))
+      if (abs(sum(table) - 1.0_real64) > 4.0e-16_real64 .or. any(table < 0.0_real64)) &
+        error stop 'tabulated Planck fractions must be nonnegative and add up to one'
+    end do
+    call near(error, 0.0_real64, 1.0e-14_real64, 'Planck table against the series')
+    do n = 1, 4
+      temperature = outside(n)
+      if (any(band_planck_fractions(config%band, temperature) /= band_planck_fractions_series(config%band, temperature))) &
+        error stop 'the Planck fractions outside the table must be the series'
+    end do
+    shifted = config%band
+    shifted%longwave_edges(1) = 360.0_real64
+    if (any(band_planck_fractions(shifted, 250.3_real64) /= band_planck_fractions_series(shifted, 250.3_real64))) &
+      error stop 'the Planck fractions for other edges must be the series'
+  end subroutine check_planck_table
+
+  !> The column ozone fractions equal the layer-by-layer ones bit for bit, for
+  !> interfaces above, inside, on and below the ozone layer.
+  subroutine check_ozone_layer_fractions()
+    real(real64), parameter :: columns(0:6, 3) = reshape([ &
+      0.5_real64, 1.0_real64, 3.0_real64, 10.0_real64, 50.0_real64, 100.0_real64, 1000.0_real64, &
+      50.0_real64, 80.0_real64, 100.0_real64, 3000.0_real64, 9000.0_real64, 1.0e4_real64, 1.0e5_real64, &
+      100.0_real64, 1.0e3_real64, 5.0e3_real64, 2.0e4_real64, 5.0e4_real64, 8.0e4_real64, 1.0e5_real64], [7, 3])
+    real(real64) :: fraction(6)
+    integer :: c, k
+
+    do c = 1, 3
+      call ozone_layer_fractions(config, columns(:, c), fraction)
+      do k = 1, 6
+        if (fraction(k) /= ozone_layer_fraction(config, columns(k - 1, c), columns(k, c))) &
+          error stop 'column ozone fractions must equal the layer ones'
+      end do
+    end do
+  end subroutine check_ozone_layer_fractions
 
   subroutine check_planck_fractions()
     real(real64) :: fraction(band_longwave_subbands)

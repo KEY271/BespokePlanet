@@ -22,6 +22,14 @@
 !> properties, the downward longwave and the whole shortwave (which needs only
 !> the surface albedo), the upward stage takes the sub-band surface emission and
 !> returns the upward longwave and the longwave heating.
+!>
+!> The Planck fractions f_b(T) come from a table of quintic Hermite pieces in T
+!> on [100, 400] K (section 4.3), built once from the series by
+!> prepare_band_planck_table.  The table belongs to the band edges and c_2 it
+!> was built for; for other edges, outside its range or before it is built the
+!> series is summed directly.  The table is written only by
+!> prepare_band_planck_table, outside the parallel regions, and read by the
+!> pure procedures.
 module band_radiation
   use iso_fortran_env, only: real64
   use dry_physics_config, only: band_radiation_config
@@ -39,6 +47,20 @@ module band_radiation
   integer :: series_index
   real(real64), parameter :: inverse_integers(planck_series_terms) = &
     [(1.0_real64/real(series_index, real64), series_index=1, planck_series_terms)]
+  integer, parameter :: planck_edges = 8
+
+  !> Planck-fraction table: on the interval j of [T_min + (j-1) h, T_min + j h]
+  !> f_b = sum_n c(b, n, j) s^n with s = (T - T_min)/h - (j - 1), for the
+  !> sub-bands 1-4; f_5 is the remainder as in the series.
+  real(real64), parameter :: planck_table_minimum_temperature = 100.0_real64
+  real(real64), parameter :: planck_table_maximum_temperature = 400.0_real64
+  real(real64), parameter :: planck_table_spacing = 1.0_real64
+  integer, parameter :: planck_table_intervals = 300
+  integer, parameter :: planck_table_degree = 5
+  logical :: planck_table_ready = .false.
+  real(real64) :: planck_table_edges(planck_edges) = 0.0_real64
+  real(real64) :: planck_table_constant = 0.0_real64
+  real(real64) :: planck_table(band_longwave_subbands - 1, 0:planck_table_degree, planck_table_intervals) = 0.0_real64
 
   !> Column fluxes of one evaluation (W m^-2), area means over the sub-columns
   !> unless named clear.  The surface incident shortwave is what reaches the
@@ -58,7 +80,8 @@ module band_radiation
     real(real64) :: window_outgoing_longwave = 0.0_real64
   end type band_column_fluxes
 
-  public :: band_planck_fractions, band_surface_emission
+  public :: band_planck_fractions, band_planck_fractions_series, band_surface_emission
+  public :: prepare_band_planck_table
   public :: band_longwave_optics, band_longwave_downward, band_longwave_upward, band_shortwave
   public :: validate_band_radiation_config, validate_cloud_layers
 
@@ -87,25 +110,142 @@ contains
     fraction = 15.0_real64/pi**4*series
   end function planck_fraction_above
 
-  !> Fractions f_b(T) of sigma T^4 in the five longwave sub-bands.  The fifth,
-  !> strong water vapour, is the remainder, so the fractions add up to one.
-  pure function band_planck_fractions(band, temperature) result(fraction)
-    type(band_radiation_config), intent(in) :: band
-    real(real64), intent(in) :: temperature
-    real(real64) :: fraction(band_longwave_subbands)
-    real(real64) :: above(8)
-    integer :: e
+  !> Sub-band sums of the fractions G(x_e) above the eight edges, or of their
+  !> temperature derivatives, for the sub-bands 1-4.  Edges: 350, 500, 630, 700,
+  !> 820, 1180, 1390, 1800 cm^-1.
+  pure function subband_sums(above) result(fraction)
+    real(real64), intent(in) :: above(planck_edges)
+    real(real64) :: fraction(band_longwave_subbands - 1)
 
-    do e = 1, 8
-      above(e) = planck_fraction_above(band%second_radiation_constant*band%longwave_edges(e)/temperature)
-    end do
-    ! Edges: 350, 500, 630, 700, 820, 1180, 1390, 1800 cm^-1.
     fraction(1) = above(5) - above(6)
     fraction(2) = above(3) - above(4)
     fraction(3) = (above(2) - above(3)) + (above(4) - above(5))
     fraction(4) = (above(1) - above(2)) + (above(6) - above(7)) + above(8)
+  end function subband_sums
+
+  !> Fractions f_b(T) of sigma T^4 in the five longwave sub-bands, summed from
+  !> the series.  The fifth, strong water vapour, is the remainder, so the
+  !> fractions add up to one.
+  pure function band_planck_fractions_series(band, temperature) result(fraction)
+    type(band_radiation_config), intent(in) :: band
+    real(real64), intent(in) :: temperature
+    real(real64) :: fraction(band_longwave_subbands)
+    real(real64) :: above(planck_edges)
+    integer :: e
+
+    do e = 1, planck_edges
+      above(e) = planck_fraction_above(band%second_radiation_constant*band%longwave_edges(e)/temperature)
+    end do
+    fraction(1:4) = subband_sums(above)
     fraction(5) = 1.0_real64 - (fraction(1) + fraction(2) + fraction(3) + fraction(4))
+  end function band_planck_fractions_series
+
+  !> The table was built for the edges and c_2 of `band`.
+  pure logical function planck_table_matches(band) result(matches)
+    type(band_radiation_config), intent(in) :: band
+
+    matches = planck_table_ready
+    if (.not. matches) return
+    matches = band%second_radiation_constant == planck_table_constant .and. &
+              all(band%longwave_edges == planck_table_edges)
+  end function planck_table_matches
+
+  !> f_b(T) from the table; T must lie in its range.
+  pure function planck_fractions_from_table(temperature) result(fraction)
+    real(real64), intent(in) :: temperature
+    real(real64) :: fraction(band_longwave_subbands)
+    real(real64) :: position, piece(band_longwave_subbands - 1)
+    integer :: j, n
+
+    position = (temperature - planck_table_minimum_temperature)/planck_table_spacing
+    j = min(int(position), planck_table_intervals - 1)
+    position = position - real(j, real64)
+    j = j + 1
+    piece = planck_table(:, planck_table_degree, j)
+    do n = planck_table_degree - 1, 0, -1
+      piece = piece*position + planck_table(:, n, j)
+    end do
+    fraction(1:4) = piece
+    fraction(5) = 1.0_real64 - (fraction(1) + fraction(2) + fraction(3) + fraction(4))
+  end function planck_fractions_from_table
+
+  !> f_b(T) from the table when `use_table` and T lies in its range, otherwise
+  !> from the series.
+  pure function planck_fractions(band, use_table, temperature) result(fraction)
+    type(band_radiation_config), intent(in) :: band
+    logical, intent(in) :: use_table
+    real(real64), intent(in) :: temperature
+    real(real64) :: fraction(band_longwave_subbands)
+
+    if (use_table .and. temperature >= planck_table_minimum_temperature .and. &
+        temperature <= planck_table_maximum_temperature) then
+      fraction = planck_fractions_from_table(temperature)
+    else
+      fraction = band_planck_fractions_series(band, temperature)
+    end if
+  end function planck_fractions
+
+  !> Fractions f_b(T) of sigma T^4 in the five longwave sub-bands, from the table
+  !> where it applies (see the module header).
+  pure function band_planck_fractions(band, temperature) result(fraction)
+    type(band_radiation_config), intent(in) :: band
+    real(real64), intent(in) :: temperature
+    real(real64) :: fraction(band_longwave_subbands)
+
+    fraction = planck_fractions(band, planck_table_matches(band), temperature)
   end function band_planck_fractions
+
+  !> Builds the Planck-fraction table for the edges and c_2 of `band`; nothing
+  !> to do when it is already built for them.  Each piece is the quintic that
+  !> matches f_b, df_b/dT and d^2f_b/dT^2 at both ends, with
+  !> dG/dT = (15/pi^4) x^4/((e^x - 1) T) and
+  !> d^2G/dT^2 = -(15/pi^4) [5 x^4/(e^x - 1) - x^5 e^x/(e^x - 1)^2]/T^2.
+  !> Must not be called inside a parallel region.
+  subroutine prepare_band_planck_table(band)
+    type(band_radiation_config), intent(in) :: band
+    real(real64), dimension(band_longwave_subbands - 1, 0:planck_table_intervals) :: value, first, second
+    real(real64), dimension(band_longwave_subbands - 1) :: f0, d0, e0, f1, d1, e1
+    real(real64) :: first_above(planck_edges), second_above(planck_edges), fraction(band_longwave_subbands)
+    real(real64) :: temperature, x, expm, h
+    integer :: i, e
+
+    if (planck_table_matches(band)) return
+    planck_table_ready = .false.
+    h = planck_table_spacing
+    do i = 0, planck_table_intervals
+      temperature = planck_table_minimum_temperature + h*real(i, real64)
+      fraction = band_planck_fractions_series(band, temperature)
+      value(:, i) = fraction(1:4)
+      do e = 1, planck_edges
+        x = band%second_radiation_constant*band%longwave_edges(e)/temperature
+        expm = exp(x) - 1.0_real64
+        first_above(e) = 15.0_real64/pi**4*x**4/(expm*temperature)
+        second_above(e) = -15.0_real64/pi**4*(5.0_real64*x**4/expm - x**5*(expm + 1.0_real64)/expm**2)/ &
+                          temperature**2
+      end do
+      first(:, i) = subband_sums(first_above)
+      second(:, i) = subband_sums(second_above)
+    end do
+    do i = 1, planck_table_intervals
+      f0 = value(:, i - 1)
+      d0 = h*first(:, i - 1)
+      e0 = h*h*second(:, i - 1)
+      f1 = value(:, i)
+      d1 = h*first(:, i)
+      e1 = h*h*second(:, i)
+      planck_table(:, 0, i) = f0
+      planck_table(:, 1, i) = d0
+      planck_table(:, 2, i) = 0.5_real64*e0
+      planck_table(:, 3, i) = -10.0_real64*f0 - 6.0_real64*d0 - 1.5_real64*e0 + 10.0_real64*f1 - 4.0_real64*d1 + &
+                              0.5_real64*e1
+      planck_table(:, 4, i) = 15.0_real64*f0 + 8.0_real64*d0 + 1.5_real64*e0 - 15.0_real64*f1 + 7.0_real64*d1 - e1
+      planck_table(:, 5, i) = -6.0_real64*f0 - 3.0_real64*d0 - 0.5_real64*e0 + 6.0_real64*f1 - 3.0_real64*d1 + &
+                              0.5_real64*e1
+    end do
+    planck_table_edges = band%longwave_edges
+    planck_table_constant = band%second_radiation_constant
+    planck_table_ready = .true.
+  end subroutine prepare_band_planck_table
 
   !> Black-body emission f_b(T) sigma T^4 of a surface in each sub-band.
   pure function band_surface_emission(band, sigma, temperature) result(emission)
@@ -116,18 +256,32 @@ contains
     emission = band_planck_fractions(band, temperature)*sigma*temperature**4
   end function band_surface_emission
 
-  !> (p/p_0)^n without the power function for the common exponents 0 and 1.
-  pure real(real64) function pressure_scaling(relative_pressure, exponent) result(scaling)
-    real(real64), intent(in) :: relative_pressure, exponent
+  !> (p/p_0)^n without the power function for the common exponents 0 and 1;
+  !> other exponents use exp(n log(p/p_0)) with `log_relative_pressure`, taken
+  !> once per layer for all of them.
+  pure real(real64) function pressure_scaling(relative_pressure, log_relative_pressure, exponent) result(scaling)
+    real(real64), intent(in) :: relative_pressure, log_relative_pressure, exponent
 
     if (exponent == 0.0_real64) then
       scaling = 1.0_real64
     else if (exponent == 1.0_real64) then
       scaling = relative_pressure
     else
-      scaling = relative_pressure**exponent
+      scaling = exp(exponent*log_relative_pressure)
     end if
   end function pressure_scaling
+
+  !> exp(-min(x, x_max)) of a nonnegative optical path x; exactly one for a
+  !> transparent layer without calling the exponential.
+  pure real(real64) function path_transmission(path, maximum_path) result(transmission)
+    real(real64), intent(in) :: path, maximum_path
+
+    if (path > 0.0_real64) then
+      transmission = exp(-min(path, maximum_path))
+    else
+      transmission = 1.0_real64
+    end if
+  end function path_transmission
 
   !> Layer transmittances exp(-D dtau_b) and layer sources f_b(T) sigma T^4 of the
   !> clear sub-column.  `humidity` is the specific humidity of every layer
@@ -142,6 +296,8 @@ contains
     real(real64) :: fraction(band_longwave_subbands), co2_factor(band_longwave_subbands)
     real(real64) :: pressure_thickness, mean_pressure, relative_pressure, water, water_path, co2_path, ozone_path
     real(real64) :: vapour, continuum_factor, emission, optical_depth, co2_ratio, co2_reference_mass
+    real(real64) :: log_relative_pressure
+    logical :: use_table, needs_log
     integer :: k, b
 
     co2_reference_mass = band%co2_reference_volume_mixing_ratio*band%co2_molar_mass_ratio
@@ -153,10 +309,20 @@ contains
         co2_factor(b) = 0.0_real64
       end if
     end do
+    use_table = planck_table_matches(band)
+    needs_log = .false.
+    do b = 1, band_longwave_subbands
+      if (band%longwave_line(b) > 0.0_real64 .and. band%longwave_line_pressure_exponent(b) /= 0.0_real64 .and. &
+          band%longwave_line_pressure_exponent(b) /= 1.0_real64) needs_log = .true.
+      if (band%longwave_co2(b) > 0.0_real64 .and. band%longwave_co2_pressure_exponent(b) /= 0.0_real64 .and. &
+          band%longwave_co2_pressure_exponent(b) /= 1.0_real64) needs_log = .true.
+    end do
+    log_relative_pressure = 0.0_real64
     do k = 1, size(temperature)
       pressure_thickness = pressure_half(k) - pressure_half(k - 1)
       mean_pressure = 0.5_real64*(pressure_half(k - 1) + pressure_half(k))
       relative_pressure = mean_pressure/band%reference_pressure
+      if (needs_log) log_relative_pressure = log(relative_pressure)
       water = max(humidity(k), 0.0_real64)
       water_path = water*pressure_thickness/gravity
       co2_path = co2_reference_mass*pressure_thickness/gravity
@@ -164,18 +330,19 @@ contains
       vapour = mean_pressure*water/(band%water_vapor_molar_mass_ratio*band%reference_pressure)
       continuum_factor = exp(band%self_continuum_temperature* &
         (1.0_real64/temperature(k) - 1.0_real64/band%self_continuum_reference_temperature))
-      fraction = band_planck_fractions(band, temperature(k))
+      fraction = planck_fractions(band, use_table, temperature(k))
       emission = sigma*temperature(k)**4
       do b = 1, band_longwave_subbands
         optical_depth = band%longwave_ozone(b)*ozone_path
         if (band%longwave_line(b) > 0.0_real64) optical_depth = optical_depth + &
-          band%longwave_line(b)*water_path*pressure_scaling(relative_pressure, band%longwave_line_pressure_exponent(b))
+          band%longwave_line(b)*water_path* &
+          pressure_scaling(relative_pressure, log_relative_pressure, band%longwave_line_pressure_exponent(b))
         if (band%longwave_self_continuum(b) > 0.0_real64) optical_depth = optical_depth + &
           band%longwave_self_continuum(b)*water_path*vapour*continuum_factor
         if (band%longwave_co2(b) > 0.0_real64) optical_depth = optical_depth + &
           band%longwave_co2(b)*co2_path*co2_factor(b)* &
-          pressure_scaling(relative_pressure, band%longwave_co2_pressure_exponent(b))
-        transmission(b, k) = exp(-min(band%diffusivity*optical_depth, band%maximum_optical_path))
+          pressure_scaling(relative_pressure, log_relative_pressure, band%longwave_co2_pressure_exponent(b))
+        transmission(b, k) = path_transmission(band%diffusivity*optical_depth, band%maximum_optical_path)
         source(b, k) = fraction(b)*emission
       end do
     end do
@@ -309,6 +476,8 @@ contains
     real(real64) :: weight(3), emissivity(3), albedo(3)
     real(real64) :: magnification, normalization, top_flux, reflectance, diffuse_reflectance
     real(real64) :: flux, next_flux, cloud_reflected, incident, pressure_thickness, mean_pressure
+    real(real64) :: relative_pressure, log_relative_pressure
+    logical :: needs_log
     integer :: count, kind(3), level(3), m, j, b, k, levels
 
     levels = size(humidity)
@@ -327,11 +496,16 @@ contains
       normalization = normalization + &
         band%shortwave_band_fraction(band%shortwave_gpoint_band(j))*band%shortwave_gpoint_weight(j)
     end do
+    needs_log = band%shortwave_water_vapor_pressure_exponent /= 0.0_real64 .and. &
+                band%shortwave_water_vapor_pressure_exponent /= 1.0_real64
     do k = 1, levels
       pressure_thickness = pressure_half(k) - pressure_half(k - 1)
       mean_pressure = 0.5_real64*(pressure_half(k - 1) + pressure_half(k))
+      relative_pressure = mean_pressure/band%reference_pressure
+      log_relative_pressure = 0.0_real64
+      if (needs_log) log_relative_pressure = log(relative_pressure)
       water_path(k) = max(humidity(k), 0.0_real64)*pressure_thickness/gravity* &
-        (mean_pressure/band%reference_pressure)**band%shortwave_water_vapor_pressure_exponent
+        pressure_scaling(relative_pressure, log_relative_pressure, band%shortwave_water_vapor_pressure_exponent)
       ozone_path(k) = band%ozone_column*ozone_fraction(k)
     end do
     absorbed = 0.0_real64
@@ -340,8 +514,11 @@ contains
       top_flux = incoming*band%shortwave_band_fraction(b)*band%shortwave_gpoint_weight(j)/normalization
       if (band%shortwave_gpoint_water_vapor(j) > 0.0_real64 .or. band%shortwave_gpoint_ozone(j) > 0.0_real64) then
         optical_depth = band%shortwave_gpoint_water_vapor(j)*water_path + band%shortwave_gpoint_ozone(j)*ozone_path
-        direct = exp(-min(magnification*optical_depth, band%maximum_optical_path))
-        diffuse = exp(-min(band%diffusivity*optical_depth, band%maximum_optical_path))
+        ! The ozone-only g points see no absorber below the ozone layer.
+        do k = 1, levels
+          direct(k) = path_transmission(magnification*optical_depth(k), band%maximum_optical_path)
+          diffuse(k) = path_transmission(band%diffusivity*optical_depth(k), band%maximum_optical_path)
+        end do
       else
         ! A window g point passes the atmosphere unabsorbed.
         direct = 1.0_real64

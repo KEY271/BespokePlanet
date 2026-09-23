@@ -123,7 +123,7 @@ module dry_radiation
   public :: radiation_downward_column, radiation_upward_column
   public :: radiation_band_downward_column, radiation_band_upward_column
   public :: shortwave_downward_flux, solar_zenith_cosine
-  public :: ozone_layer_optical_depth, ozone_layer_fraction
+  public :: ozone_layer_optical_depth, ozone_layer_fraction, ozone_layer_fractions
   public :: ozone_longwave_layer_optical_depth
   public :: reference_layer_humidity
   public :: gas_longwave_layer_optical_depth
@@ -271,6 +271,44 @@ contains
     fraction = (erf(x_upper) - erf(x_lower))*normalization
   end function ozone_layer_fraction_normalized
 
+  !> Fractions of the prescribed ozone column in every layer of a column, equal
+  !> bit for bit to ozone_layer_fraction_normalized layer by layer.  Each
+  !> interface shares its erf between the two layers it bounds, and an interface
+  !> outside the ozone layer takes the erf of the bound it is clipped to, which
+  !> the normalization needs anyway; only the interfaces within the ozone layer
+  !> call erf.
+  pure subroutine ozone_layer_fractions(config, pressure_half, fraction)
+    type(radiation_config), intent(in) :: config
+    real(real64), intent(in) :: pressure_half(0:)
+    real(real64), intent(out) :: fraction(:)
+    real(real64) :: interface_erf(0:size(fraction)), normalization, lower_erf, upper_erf
+    integer :: k
+
+    lower_erf = erf(log(config%ozone_pressure_lower_bound/config%ozone_peak_pressure)/ &
+                    (sqrt(2.0_real64)*config%ozone_log_pressure_width))
+    upper_erf = erf(log(config%ozone_pressure_upper_bound/config%ozone_peak_pressure)/ &
+                    (sqrt(2.0_real64)*config%ozone_log_pressure_width))
+    normalization = 1.0_real64/(upper_erf - lower_erf)
+    do k = 0, size(fraction)
+      if (pressure_half(k) <= config%ozone_pressure_lower_bound) then
+        interface_erf(k) = lower_erf
+      else if (pressure_half(k) >= config%ozone_pressure_upper_bound) then
+        interface_erf(k) = upper_erf
+      else
+        interface_erf(k) = erf(log(pressure_half(k)/config%ozone_peak_pressure)/ &
+                               (sqrt(2.0_real64)*config%ozone_log_pressure_width))
+      end if
+    end do
+    do k = 1, size(fraction)
+      if (min(pressure_half(k), config%ozone_pressure_upper_bound) <= &
+          max(pressure_half(k - 1), config%ozone_pressure_lower_bound)) then
+        fraction(k) = 0.0_real64
+      else
+        fraction(k) = (interface_erf(k) - interface_erf(k - 1))*normalization
+      end if
+    end do
+  end subroutine ozone_layer_fractions
+
   !> Fraction of the prescribed ozone column within one pressure layer.
   pure real(real64) function ozone_layer_fraction(config, pressure_top, pressure_bottom) result(fraction)
     type(radiation_config), intent(in) :: config
@@ -366,7 +404,7 @@ contains
     real(real64), intent(in), optional :: specific_humidity(:)
     real(real64), intent(out) :: transmission(:), emission(:), downward_longwave(0:)
     real(real64), intent(out) :: shortwave_downward, incoming_shortwave, shortwave_heating(:)
-    real(real64) :: ozone_fraction(size(temperature)), ozone_normalization
+    real(real64) :: ozone_fraction(size(temperature))
     real(real64) :: pressure_thickness, layer_humidity, layer_longwave_optical_depth
     real(real64) :: layer_shortwave_optical_depth, shortwave_transmission, shortwave_absorbed
     real(real64) :: ultraviolet_downward, non_ultraviolet_downward
@@ -384,14 +422,12 @@ contains
     dry_air_specific_heat = config%dry_air_specific_heat
     shortwave_heating = 0.0_real64
     ! The ozone fraction of a layer is shared by its longwave and shortwave optical depths.
-    ozone_normalization = ozone_profile_normalization(config)
+    call ozone_layer_fractions(config, pressure_half, ozone_fraction)
     do k = 1, number_of_levels
       pressure_thickness = pressure_half(k) - pressure_half(k - 1)
       if (pressure_thickness <= 0.0_real64) then
         error stop 'radiation pressures must increase downward'
       end if
-      ozone_fraction(k) = ozone_layer_fraction_normalized(config, pressure_half(k - 1), pressure_half(k), &
-                                                          ozone_normalization)
       if (present(specific_humidity)) then
         layer_humidity = specific_humidity(k)
       else
@@ -465,7 +501,7 @@ contains
     type(band_column_fluxes), intent(out) :: fluxes
     real(real64), intent(in), optional :: specific_humidity(:)
     real(real64) :: humidity(size(temperature)), ozone_fraction(size(temperature))
-    real(real64) :: ozone_normalization, cos_zenith, incoming
+    real(real64) :: cos_zenith, incoming
     integer :: levels, k
 
     levels = size(temperature)
@@ -477,12 +513,10 @@ contains
     if (any(temperature <= 0.0_real64)) error stop 'radiation temperature must be positive'
     if (surface_albedo < 0.0_real64 .or. surface_albedo > 1.0_real64) error stop 'surface albedo is outside [0,1]'
     call validate_cloud_layers(clouds, levels)
-    ozone_normalization = ozone_profile_normalization(config)
     do k = 1, levels
       if (pressure_half(k) <= pressure_half(k - 1)) error stop 'radiation pressures must increase downward'
-      ozone_fraction(k) = ozone_layer_fraction_normalized(config, pressure_half(k - 1), pressure_half(k), &
-                                                          ozone_normalization)
     end do
+    call ozone_layer_fractions(config, pressure_half, ozone_fraction)
     if (present(specific_humidity)) then
       if (size(specific_humidity) /= levels) error stop 'radiation humidity shape mismatch'
       humidity = max(specific_humidity, 0.0_real64)

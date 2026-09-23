@@ -76,3 +76,5 @@ q_k=\frac{\mathrm{erf}[x(p_U)]-\mathrm{erf}[x(p_L)]}{\mathrm{erf}[x(p_b)]-\mathr
 $$
 
 とする。
+
+気柱のすべての層をまとめて求めるとき（`ozone_layer_fractions`）は、隣り合う層が共有する界面の $\mathrm{erf}$ を 1 回だけ計算する。$p_a$ より上と $p_b$ より下の界面は $p_a$、$p_b$ に切り詰められるので、分母で求める $\mathrm{erf}[x(p_a)]$、$\mathrm{erf}[x(p_b)]$ をそのまま使う。$\mathrm{erf}$ を呼ぶのはオゾン層の中にある界面だけになり、結果は層ごとの式とビット単位で一致する。
