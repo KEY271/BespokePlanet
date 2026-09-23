@@ -17,6 +17,7 @@ module radiation_case_output
                                   dry_air_specific_heat
   use topography, only: topography_config, topography_diagnostics
   use earth_topography, only: earth_topography_config, earth_topography_diagnostics
+  use ocean_q_flux, only: q_flux_diagnostics
   implicit none
   private
 
@@ -357,7 +358,7 @@ contains
                                       duration, number_of_steps, maximum_cfl, elapsed_wall_seconds, nlon, mu, &
                                       pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
                                       a_half, b_half, options, terrain, terrain_diagnostics, &
-                                      earth_terrain, earth_terrain_diagnostics)
+                                      earth_terrain, earth_terrain_diagnostics, q_flux)
     character(*), intent(in) :: case_directory, case_name
     type(dry_model_physics_config), intent(in) :: physics
     type(planet_config), intent(in) :: planet
@@ -371,6 +372,7 @@ contains
     type(topography_diagnostics), intent(in), optional :: terrain_diagnostics
     type(earth_topography_config), intent(in), optional :: earth_terrain
     type(earth_topography_diagnostics), intent(in), optional :: earth_terrain_diagnostics
+    type(q_flux_diagnostics), intent(in), optional :: q_flux
     type(radiation_config) :: radiation
     logical :: earth
     integer :: unit
@@ -590,6 +592,31 @@ contains
     write (unit, '(a)') '    "projection_counts": "both filtered states; changes above 32 relative machine epsilons",'
     write (unit, '(a)') '    "scaled_surface_residual": "h*F + k*(Tf-T) - h*M, W m-1",'
     write (unit, '(a)') '    "time_integration": "previous-time physics; leapfrog and RAW; energy-preserving phase projection"'
+    write (unit, '(a)') '  },'
+    write (unit, '(a)') '  "q_flux": {'
+    if (physics%q_flux%enabled) then
+      if (.not. present(q_flux)) error stop 'Q-flux metadata requires its diagnostics'
+      write (unit, '(a)') '    "enabled": true,'
+      write (unit, '(a)') '    "profile": "Q = -q_* (1 - 3 sin^2 phi) - ocean-area mean, per ocean area, zero on pure land",'
+      write (unit, '(a)') '    "prescribed_transport": "(3 sqrt(3)/2) Phi_max sin(phi) cos(phi)^2 northward",'
+      write (unit, '(a,es24.16e3,a)') '    "maximum_transport_w": ', physics%q_flux%maximum_transport, ','
+      write (unit, '(a,es24.16e3,a)') '    "scale_w_m-2": ', q_flux%scale, ','
+      write (unit, '(a,es24.16e3,a)') '    "removed_ocean_mean_w_m-2": ', q_flux%removed_ocean_mean, ','
+      write (unit, '(a,es24.16e3,a)') '    "ocean_area_fraction": ', q_flux%ocean_area_fraction, ','
+      write (unit, '(a,es24.16e3,a)') '    "ocean_integral_w_m-2_of_planet": ', q_flux%ocean_integral, ','
+      write (unit, '(a,es24.16e3,a)') '    "implied_transport_maximum_w": ', q_flux%maximum_transport, ','
+      write (unit, '(a,es24.16e3,a)') '    "implied_transport_maximum_latitude_deg": ', &
+        q_flux%maximum_transport_latitude, ','
+      write (unit, '(a,es24.16e3,a)') '    "implied_transport_minimum_w": ', q_flux%minimum_transport, ','
+      write (unit, '(a,es24.16e3,a)') '    "implied_transport_minimum_latitude_deg": ', &
+        q_flux%minimum_transport_latitude, ','
+      write (unit, '(a,es24.16e3,a)') '    "implied_transport_north_pole_residual_w": ', &
+        q_flux%polar_residual_transport, ','
+      write (unit, '(a)') '    "static_field": "ocean_q_flux.bin",'
+      write (unit, '(a)') '    "coupling": "added to the whole mixed layer, below ice included; no atmospheric flux"'
+    else
+      write (unit, '(a)') '    "enabled": false'
+    end if
     write (unit, '(a)') '  },'
     if (radiation%land_sea_mixing_enabled) then
       if (.not. earth .and. (.not. present(terrain) .or. .not. present(terrain_diagnostics))) then

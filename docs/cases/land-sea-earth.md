@@ -5,7 +5,7 @@
 ## 陸海ケースとの差分
 
 - 地表ジオポテンシャル $\Phi_s$ と陸面率 $f_L$ を `generate_topography` の代わりに `generate_earth_topography` で作る。`scripts/prepare_earth_topography.py` が ETOPO 2022 から作った中間ファイル `core/data/earth_topography_0p5deg.bin`（[前処理](../dynamics/earth-topography.md#前処理)）を読み、$f_L$ は各格子点の担当領域でのセル平均（平滑化なし）、$z_s$ は切断波数に応じた幅 $s=c\cdot180^\circ/T$（$c=1.0$）の Gauss 核で平滑化してから $\Phi_s$ を切断する。
-- 地表のパラメータ（$C_s,C_d,C_o,K_{sd},\alpha_L,\alpha_o$ と[バケツモデル](../tendency/bucket.md)の $W_{\max},W_0$）、雲、放射、対流調節、大規模凝結、摩擦、暦（地軸の傾き $23.4^\circ$）、自転角速度、$N=12$、$\Delta t=1200\,\mathrm{s}$、超粘性は陸海ケースと同じとする。地球の地形でもバケツのパラメータを変えない。陸海ケースの結果と比べるとき地形以外の差を持ち込まないためである。陸上の積雪・氷床は扱わないので、南極やグリーンランドの上でもアルベドは $\alpha_L=0.2$ のままである。
+- 地表のパラメータ（$C_s,C_d,C_o,K_{sd},\alpha_L,\alpha_o$ と[バケツモデル](../tendency/bucket.md)の $W_{\max},W_0$）、雲、放射、対流調節、大規模凝結、摩擦、暦（地軸の傾き $23.4^\circ$）、自転角速度、$N=12$、$\Delta t=1200\,\mathrm{s}$、超粘性は陸海ケースと同じとする。地球の地形でもバケツのパラメータを変えない。陸海ケースの結果と比べるとき地形以外の差を持ち込まないためである。[Q flux](../tendency/q-flux.md) も同じ $\Phi_{\max}$ を使い、地球の陸面率に対して海面積平均を引き直す。陸上の積雪・氷床は扱わないので、南極やグリーンランドの上でもアルベドは $\alpha_L=0.2$ のままである。
 - 出力先は `moist_land_sea_earth_t31` と `moist_land_sea_earth_t63`、コマンドライン引数は `land-earth` と `land-earth-t63` である。`all` にも含まれる。
 - メタデータの `topography` には、形状の一覧の代わりに[地球の地形](../dynamics/earth-topography.md#出力)のとおり中間ファイルの由来と診断量を書き、`initial_condition` には地球地形である旨を書く。
 

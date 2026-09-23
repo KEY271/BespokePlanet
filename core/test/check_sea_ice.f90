@@ -15,6 +15,7 @@ program check_sea_ice
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate
   use dry_radiation, only: radiation_diagnostics, radiation_tendency, move_radiation_diagnostics
   use radiation_diagnostics_collector, only: radiation_monthly_accumulator, radiation_monthly_means, radiation_daily_accumulator
+  use ocean_q_flux, only: q_flux_diagnostics
   implicit none
   type(sea_ice_config) :: ice
   real(real64), parameter :: co = 1.2558e8_real64, dt = 1200.0_real64, sigma = 5.670374419e-8_real64
@@ -225,7 +226,8 @@ contains
     type(topography_diagnostics) :: terrain_stats
     complex(real64), allocatable :: zs(:,:,:), ds(:,:,:), temps(:,:,:), lps(:,:), qs(:,:,:)
     real(real64), allocatable :: humidity(:,:,:), deep(:,:), water_field(:,:), cloud(:,:)
-    real(real64), allocatable :: ph(:), dp(:), layer(:), alpha(:), tref(:), ah(:), bh(:)
+    real(real64), allocatable :: ph(:), dp(:), layer(:), alpha(:), tref(:), ah(:), bh(:), q_flux(:,:)
+    type(q_flux_diagnostics) :: q_flux_summary
     call transform%init(7)
     call coordinate%init_default()
     nlon = transform%get_nlon()
@@ -290,9 +292,11 @@ contains
         log(ps), surface, deep, options, humidity_spectral=qs, humidity=humidity, time_seconds=solver%get_time(), &
         step=solver%get_step(), cloud_cover=cloud, surface_water=water_field, tiles=output_tiles)
       call solver%get_reference_atmosphere(ph, dp, layer, alpha, tref, ah, bh)
+      call solver%get_ocean_q_flux(q_flux, q_flux_summary)
       call write_radiation_metadata(trim(output_directory), 'sea_ice_test', physics, radiation_case_planet(physics), &
         7, dt, 120.0_real64*dt, 120, 0.0_real64, 0.0_real64, nlon, transform%mu, ph, dp, layer, alpha, tref, ah, bh, &
-        options, terrain=terrain, terrain_diagnostics=terrain_stats)
+        options, terrain=terrain, terrain_diagnostics=terrain_stats, q_flux=q_flux_summary)
+      call write_field(trim(output_directory)//'/ocean_q_flux.bin', nlon, q_flux)
       call write_field(trim(output_directory)//'/land_fraction.bin', nlon, land)
     end if
   end subroutine check_coupled_steps

@@ -100,6 +100,7 @@ Rscript scripts/analyze_moist_land_sea_earth.R output/moist_land_sea_earth_t31
 - [Slab ocean](./docs/tendency/slab-ocean.md)
 - [陸と海の混合](./docs/tendency/land-sea-surface.md)
 - [海氷と陸海別温度](./docs/tendency/sea-ice.md)
+- [Q flux](./docs/tendency/q-flux.md)
 - [上層の Rayleigh 摩擦](./docs/tendency/upper-rayleigh-friction.md)
 - [Held–Suarez 強制](./docs/tendency/Held-Suarez.md)
 - [Betts–Miller 型の乾燥対流調節](./docs/tendency/dry-convective-adjustment.md)

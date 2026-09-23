@@ -97,6 +97,9 @@ contains
           .not. (physics%radiation%slab_ocean_enabled .or. physics%radiation%land_sea_mixing_enabled)) &
         error stop 'sea ice requires a radiative ocean surface'
     end if
+    if (physics%q_flux%enabled .and. (.not. physics%radiation%enabled .or. &
+        .not. (physics%sea_ice%enabled .or. physics%radiation%land_sea_mixing_enabled))) &
+      error stop 'Q flux requires the tiled ocean surface (sea ice or land-sea mixing)'
     call zero_dry_tendency(rhs)
     call workspace%zero_forcing()
     if (present(land_fraction)) then

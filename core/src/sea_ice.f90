@@ -121,22 +121,29 @@ contains
   end subroutine solve_ice_surface
 
   subroutine advance_sea_ice(config, heat_capacity, interval, ocean_temperature, area, volume, &
-                             open_water_flux, conductive_heat, melt_heat, new_temperature, new_area, new_volume, budget)
+                             open_water_flux, conductive_heat, melt_heat, new_temperature, new_area, new_volume, budget, &
+                             ocean_heat_convergence)
     type(sea_ice_config), intent(in) :: config
     real(real64), intent(in) :: heat_capacity, interval, ocean_temperature, area, volume
     real(real64), intent(in) :: open_water_flux, conductive_heat, melt_heat
     real(real64), intent(out) :: new_temperature, new_area, new_volume
     type(sea_ice_budget), intent(out) :: budget
-    real(real64) :: latent, heat, freezing_heat, added_area, delta_volume, trial_volume, initial_energy
+    !> Prescribed Q flux into the whole mixed layer, per ocean area (docs/tendency/q-flux.md).
+    real(real64), intent(in), optional :: ocean_heat_convergence
+    real(real64) :: convergence, latent, heat, freezing_heat, added_area, delta_volume, trial_volume, initial_energy
 
     if (.not. all(ieee_is_finite([heat_capacity, interval, ocean_temperature, area, volume, &
                                   open_water_flux, conductive_heat, melt_heat]))) error stop 'nonfinite sea-ice update'
     if (heat_capacity <= 0.0_real64 .or. interval <= 0.0_real64 .or. area < 0.0_real64 .or. &
         area > 1.0_real64 .or. volume < 0.0_real64 .or. melt_heat < 0.0_real64) error stop 'invalid sea-ice update'
     if ((area == 0.0_real64) .neqv. (volume == 0.0_real64)) error stop 'inconsistent sea-ice area and volume'
+    convergence = 0.0_real64
+    if (present(ocean_heat_convergence)) convergence = ocean_heat_convergence
+    if (.not. ieee_is_finite(convergence)) error stop 'nonfinite ocean heat convergence'
     latent = config%density*config%latent_heat
     budget = sea_ice_budget()
-    heat = interval*(1.0_real64 - area)*open_water_flux
+    ! The Q flux enters below the ice as well, so it takes no open-water factor.
+    heat = interval*((1.0_real64 - area)*open_water_flux + convergence)
     ! Algebraically Co*(To* - Tf), without cancellation after the small warming step.
     freezing_heat = heat_capacity*(ocean_temperature - config%freezing_temperature) + heat
     new_temperature = ocean_temperature + heat/heat_capacity

@@ -70,7 +70,7 @@ contains
             workspace%forcing_sea_ice_fraction(i, j), workspace%forcing_sea_ice_volume(i, j), &
             workspace%sea_ice_temperature(i, j), workspace%incoming_shortwave(i, j), &
             workspace%reflected_shortwave(i, j), workspace%outgoing_longwave(i, j), budget, humidity, &
-            workspace%ice_surface_residual(i, j))
+            workspace%ice_surface_residual(i, j), workspace%ocean_q_flux(i, j))
           workspace%ice_energy_residual(i, j) = budget%energy_residual
           workspace%forcing_temperature(i, j, :) = workspace%forcing_temperature(i, j, :) + temperature_contribution
           cycle

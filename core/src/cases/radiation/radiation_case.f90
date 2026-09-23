@@ -15,6 +15,7 @@ module radiation_case
   use topography, only: topography_config, topography_diagnostics, generate_topography
   use earth_topography, only: earth_topography_config, earth_topography_diagnostics, generate_earth_topography
   use field_binary_writer, only: write_field
+  use ocean_q_flux, only: q_flux_diagnostics
   use dry_radiation, only: radiation_diagnostics, radiation_calendar_date
   use radiation_diagnostics_collector, only: radiation_case_diagnostics, radiation_monthly_means
   use filesystem, only: make_directory
@@ -116,6 +117,8 @@ contains
     type(earth_topography_config) :: earth_terrain
     type(earth_topography_diagnostics) :: earth_terrain_diagnostics
     real(real64), allocatable :: land_fraction(:, :), analytic_height(:, :), truncated_height(:, :)
+    real(real64), allocatable :: q_flux(:, :)
+    type(q_flux_diagnostics) :: q_flux_summary
     complex(real64), allocatable :: surface_geopotential(:, :)
     real(real64), allocatable :: pressure_half(:), delta_pressure(:), layer_l(:), alpha(:)
     real(real64), allocatable :: reference_temperature(:), a_half(:), b_half(:)
@@ -190,6 +193,8 @@ contains
     else
       call set_radiation_case_state(solver, transform, physics, planet)
     end if
+    call solver%get_ocean_q_flux(q_flux, q_flux_summary)
+    if (physics%q_flux%enabled) call write_field(trim(case_directory)//'/ocean_q_flux.bin', nlon, q_flux)
     call diagnostics%reset()
     call write_current_radiation_snapshot(solver, case_directory, 1, nlon, options)
     number_of_steps = nint(radiation_duration/numerics%time_step)
@@ -250,20 +255,20 @@ contains
                                     numerics%truncation, numerics%time_step, radiation_duration, number_of_steps, &
                                     maximum_cfl, elapsed_wall_seconds, nlon, transform%mu, &
                                     pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
-                                    a_half, b_half, options, terrain, terrain_diagnostics)
+                                    a_half, b_half, options, terrain, terrain_diagnostics, q_flux=q_flux_summary)
     else if (variant == land_earth_variant) then
       call write_radiation_metadata(case_directory, case_name, physics, planet, &
                                     numerics%truncation, numerics%time_step, radiation_duration, number_of_steps, &
                                     maximum_cfl, elapsed_wall_seconds, nlon, transform%mu, &
                                     pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
-                                    a_half, b_half, options, earth_terrain=earth_terrain, &
+                                    a_half, b_half, options, q_flux=q_flux_summary, earth_terrain=earth_terrain, &
                                     earth_terrain_diagnostics=earth_terrain_diagnostics)
     else
       call write_radiation_metadata(case_directory, case_name, physics, planet, &
                                     numerics%truncation, numerics%time_step, radiation_duration, number_of_steps, &
                                     maximum_cfl, elapsed_wall_seconds, nlon, transform%mu, &
                                     pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
-                                    a_half, b_half, options)
+                                    a_half, b_half, options, q_flux=q_flux_summary)
     end if
   end subroutine run_radiative_surface_case
 

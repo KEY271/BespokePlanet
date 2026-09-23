@@ -118,6 +118,8 @@ contains
     physics%condensation%enabled = .true.
     physics%cloud%enabled = .true.
     physics%sea_ice%enabled = .true.
+    ! Stands in for the ocean heat transport the slab ocean lacks (docs/tendency/q-flux.md).
+    physics%q_flux%enabled = .true.
   end function moist_case_physics
 
   !> Moist physics with one land--ocean surface budget mixed at every grid point.

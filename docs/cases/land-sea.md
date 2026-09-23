@@ -7,7 +7,7 @@
 次の点を湿潤ケースから変更する。
 
 - 地表ジオポテンシャル $\Phi_s$ に、[地形](../dynamics/topography.md#既定の惑星)の既定の惑星から生成した値を使う。$\Phi_s$ は積分中ずっと固定する。
-- 同じ生成から得た陸面率 $f_L$ を[陸海タイル](../tendency/land-sea-surface.md)に渡し、各温度で計算したフラックスを面積平均する。陸は[二層の地面](../tendency/ground.md)と[バケツ](../tendency/bucket.md)、海は深さ 30 m の [slab ocean](../tendency/slab-ocean.md) と[海氷](../tendency/sea-ice.md)である。$T_L,T_d,T_o,A,V,W$ を予報する。
+- 同じ生成から得た陸面率 $f_L$ を[陸海タイル](../tendency/land-sea-surface.md)に渡し、各温度で計算したフラックスを面積平均する。陸は[二層の地面](../tendency/ground.md)と[バケツ](../tendency/bucket.md)、海は深さ 30 m の [slab ocean](../tendency/slab-ocean.md) と[海氷](../tendency/sea-ice.md)である。湿潤ケースと同じ [Q flux](../tendency/q-flux.md) を海だけに与え、海面積平均を引いて全球の海への積分を 0 にする。$T_L,T_d,T_o,A,V,W$ を予報する。
 - 初期値は[地形上の初期状態](../dynamics/topography.md#地形上の初期状態)のとおり、放射ケースの基本場を気圧の関数として読み、地表面気圧を $\Phi^\ast(\varphi,p_s)=\Phi_s$ から決める。
 - 出力に陸面率・地表高度の静的な場と、陸と海で分けた全球平均を加える。
 
@@ -47,6 +47,7 @@ $T=31$ と $T=63$ はそれぞれコマンドライン引数 `land` と `land-t6
 積分の開始時に一度だけ、時間に依らない格子の場を書く。
 
 - 陸面率 $f_L(\lambda,\varphi)$（`land_fraction.bin`）
+- 海面積当たりの [Q flux](../tendency/q-flux.md#出力) $Q(\lambda,\varphi)$（`ocean_q_flux.bin`）
 - 格子の地表高度 $z_s(\lambda,\varphi)$（切断後、m、`surface_height.bin`）
 
 1 日ごとの日平均量には、[陸と海の混合](../tendency/land-sea-surface.md#診断)の定義で次を加える。全球平均の表面温度は陸・開水面・氷表面の面積平均である。

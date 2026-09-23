@@ -177,8 +177,18 @@ module dry_physics_config
     integer :: maximum_iterations = 100
   end type sea_ice_config
 
+  !> Prescribed, time-independent ocean heat convergence standing in for the
+  !> ocean heat transport (docs/tendency/q-flux.md).  The northward transport
+  !> (3 sqrt(3)/2) maximum_transport sin(phi) cos(phi)^2 peaks at sin(phi) = 1/sqrt(3).
+  type, public :: q_flux_config
+    logical :: enabled = .false.
+    !> Peak northward ocean heat transport, W.
+    real(real64) :: maximum_transport = 1.5e15_real64
+  end type q_flux_config
+
   type, public :: dry_model_physics_config
     type(sea_ice_config) :: sea_ice
+    type(q_flux_config) :: q_flux
     type(held_suarez_config) :: held_suarez
     type(surface_friction_config) :: surface_friction
     type(rayleigh_friction_config) :: rayleigh_friction

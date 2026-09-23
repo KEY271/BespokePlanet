@@ -14,24 +14,31 @@ contains
   subroutine tiled_surface_tendency(config, ice, pressure, air, u, v, mu, longitude, time, interval, &
                                     land, tl, td, to, area, volume, land_latent, ocean_latent, cloud, &
                                     air_rhs, land_rhs, deep_rhs, ocean_rhs, area_rhs, volume_rhs, &
-                                    ice_temperature, incoming, reflected, outgoing, budget, humidity, surface_residual)
+                                    ice_temperature, incoming, reflected, outgoing, budget, humidity, surface_residual, &
+                                    ocean_heat_convergence)
     type(radiation_config), intent(in) :: config
     type(sea_ice_config), intent(in) :: ice
     real(real64), intent(in) :: pressure(0:), air(:), u, v, mu, longitude, time, interval
     real(real64), intent(in) :: land, tl, td, to, area, volume, land_latent, ocean_latent, cloud
     real(real64), intent(in), optional :: humidity(:)
     real(real64), intent(out), optional :: surface_residual
+    !> Prescribed Q flux per ocean area (docs/tendency/q-flux.md); zero when absent.
+    real(real64), intent(in), optional :: ocean_heat_convergence
     real(real64), intent(out) :: air_rhs(:), land_rhs, deep_rhs, ocean_rhs, area_rhs, volume_rhs
     real(real64), intent(out) :: ice_temperature, incoming, reflected, outgoing
     type(sea_ice_budget), intent(out) :: budget
     real(real64) :: transmission(size(air)), emission(size(air)), downward(0:size(air)), sw_rhs(size(air))
     real(real64) :: sw, sw_surface, lower_pressure, exchange, ta, sigma, co, wl, wo, wi
     real(real64) :: hl, ho, hi, fl, fo, ground_heat, conduction, melting, surface_upward
-    real(real64) :: new_temperature, new_area, new_volume, albedo
+    real(real64) :: new_temperature, new_area, new_volume, albedo, convergence
     integer :: levels
 
     levels = size(air)
     if (present(surface_residual)) surface_residual = 0.0_real64
+    convergence = 0.0_real64
+    if (present(ocean_heat_convergence)) convergence = ocean_heat_convergence
+    if (.not. ieee_is_finite(convergence)) error stop 'nonfinite ocean heat convergence'
+    if (land >= 1.0_real64 .and. convergence /= 0.0_real64) error stop 'Q flux on a pure land point'
     if (.not. all(ieee_is_finite([land, interval, tl, td, to, area, volume, cloud, land_latent, ocean_latent]))) &
       error stop 'nonfinite surface tile input'
     if (land > 0.0_real64) then
@@ -99,12 +106,12 @@ contains
       end if
       if (ice%enabled) then
         call advance_sea_ice(ice, co, interval, to, area, volume, fo, conduction, melting, &
-                             new_temperature, new_area, new_volume, budget)
+                             new_temperature, new_area, new_volume, budget, convergence)
         ocean_rhs = (new_temperature - to)/interval
         area_rhs = (new_area - area)/interval
         volume_rhs = (new_volume - volume)/interval
       else
-        ocean_rhs = fo/co
+        ocean_rhs = (fo + convergence)/co
       end if
     end if
     call radiation_upward_column(config, pressure, transmission, emission, downward, surface_upward, air_rhs, outgoing)

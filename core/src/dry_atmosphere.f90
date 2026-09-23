@@ -11,6 +11,7 @@ module dry_atmosphere
                        enforce_dry_state_constraints, enforce_dry_spectral_field
   use dry_physics_config, only: dry_model_physics_config, dry_reference_temperature
   use sea_ice, only: equilibrate_sea_ice, validate_sea_ice_config
+  use ocean_q_flux, only: q_flux_diagnostics, build_ocean_q_flux, validate_q_flux_config
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use dry_stepper, only: dry_stepper_type
   use numerics_config, only: model_numerics_config, dry_hyperdiffusion_config
@@ -37,6 +38,7 @@ module dry_atmosphere
     type(dry_stepper_type) :: stepper
     type(dry_workspace_type) :: workspace
     type(radiation_diagnostics) :: latest_radiation_diagnostics
+    type(q_flux_diagnostics) :: q_flux_diagnostics
     logical :: latest_diagnostics_available = .false.
     real(real64), allocatable :: gravity_wave_reference_temperature(:)
     !> Advective CFL of the state that the most recent advance started from.
@@ -71,6 +73,8 @@ module dry_atmosphere
     !> Effective column cloud cover of the most recent tendency evaluation
     !> (docs/tendency/cloud.md); zero before the first advance or without clouds.
     procedure, public :: get_cloud_cover
+    !> Prescribed Q flux per ocean area and its diagnostics (docs/tendency/q-flux.md).
+    procedure, public :: get_ocean_q_flux
   end type dry_atmosphere_solver
 
 contains
@@ -199,6 +203,8 @@ contains
     call copy_dry_state(this%current, this%previous)
     ! A plain initial state runs without forcing; the case enables the processes it needs.
     this%physics = dry_model_physics_config()
+    this%workspace%ocean_q_flux = 0.0_real64
+    this%q_flux_diagnostics = q_flux_diagnostics()
     this%latest_diagnostics_available = .false.
     this%step_number = 0
   end subroutine set_initial_state
@@ -277,7 +283,27 @@ contains
         error stop 'sea ice requires a radiative ocean surface'
       call normalize_initial_ice(this)
     end if
+    this%workspace%ocean_q_flux = 0.0_real64
+    this%q_flux_diagnostics = q_flux_diagnostics()
+    if (physics%q_flux%enabled) then
+      call validate_q_flux_config(physics%q_flux)
+      if (.not. physics%radiation%enabled .or. &
+          .not. (physics%sea_ice%enabled .or. physics%radiation%land_sea_mixing_enabled)) &
+        error stop 'Q flux requires the tiled ocean surface (sea ice or land-sea mixing)'
+      ! The land fraction is fixed by set_initial_state, which precedes set_physics.
+      call build_ocean_q_flux(physics%q_flux, earth_radius, this%transform%mu, this%workspace%gaussian_weights, &
+        this%workspace%ring_nlon, this%land_fraction, this%workspace%ocean_q_flux, this%q_flux_diagnostics)
+    end if
   end subroutine set_physics
+
+  subroutine get_ocean_q_flux(this, q_flux, diagnostics)
+    class(dry_atmosphere_solver), intent(in) :: this
+    real(real64), allocatable, intent(out) :: q_flux(:, :)
+    type(q_flux_diagnostics), intent(out), optional :: diagnostics
+    call check_initialized(this)
+    q_flux = this%workspace%ocean_q_flux
+    if (present(diagnostics)) diagnostics = this%q_flux_diagnostics
+  end subroutine get_ocean_q_flux
 
   subroutine validate_initial_ice(this)
     class(dry_atmosphere_solver), intent(in) :: this

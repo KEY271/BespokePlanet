@@ -44,6 +44,9 @@ module dry_tendency_workspace
     real(real64), allocatable :: dlogps_dlambda(:, :), dlogps_dphi(:, :)
     real(real64), allocatable :: surface_geopotential_grid(:, :)
     real(real64), allocatable :: land_fraction(:, :)
+    !> Time-independent Q flux per ocean area (docs/tendency/q-flux.md).  The
+    !> solver sets it with the physics; prepare leaves it untouched.
+    real(real64), allocatable :: ocean_q_flux(:, :)
     real(real64), allocatable :: pressure_half(:, :, :), delta_p(:, :, :)
     real(real64), allocatable :: layer_l(:, :, :), alpha(:, :, :)
     real(real64), allocatable :: geopotential(:, :, :), geopotential_half(:, :, :)
@@ -147,6 +150,8 @@ contains
     allocate (this%dlogps_dlambda(nx, ny), this%dlogps_dphi(nx, ny))
     allocate (this%surface_geopotential_grid(nx, ny))
     allocate (this%land_fraction(nx, ny))
+    allocate (this%ocean_q_flux(nx, ny))
+    this%ocean_q_flux = 0.0_real64
     allocate (this%pressure_half(nx, ny, 0:levels))
     allocate (this%delta_p(nx, ny, levels), this%layer_l(nx, ny, levels))
     allocate (this%alpha(nx, ny, levels))
