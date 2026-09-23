@@ -182,6 +182,26 @@ module dry_physics_config
     integer :: maximum_iterations = 100
   end type sea_ice_config
 
+  !> Large-scale snowfall, its melting in warm layers, and the land snowpack
+  !> (docs/tendency/snow.md).  Every temperature is in K.  The snowpack is a
+  !> water-equivalent mass per unit land area; no snow collects on sea ice.
+  type, public :: snow_config
+    logical :: enabled = .false.
+    !> Condensate of a layer colder than this (-10 C) is snow.
+    real(real64) :: formation_temperature = 263.15_real64
+    !> Falling snow melts in a layer warmer than this (5 C), using the excess sensible heat.
+    real(real64) :: atmospheric_melting_temperature = 278.15_real64
+    !> The snowpack melts with the heat of the land surface above this temperature.
+    real(real64) :: surface_melting_temperature = 275.0_real64
+    !> S_0 of the snow cover f = S/(S + S_0): 0.05 m water equivalent.
+    real(real64) :: masking_water_equivalent = 50.0_real64
+    !> Land albedo increase at full snow cover, alpha_L + f*albedo_increase.
+    real(real64) :: albedo_increase = 0.4_real64
+    real(real64) :: latent_heat_of_fusion = 3.34e5_real64
+    !> Initial snowpack on land, kg m^-2 of land area.
+    real(real64) :: initial_water_equivalent = 0.0_real64
+  end type snow_config
+
   !> Prescribed, time-independent ocean heat convergence standing in for the
   !> ocean heat transport (docs/tendency/q-flux.md).  The northward transport
   !> (3 sqrt(3)/2) maximum_transport sin(phi) cos(phi)^2 peaks at sin(phi) = 1/sqrt(3).
@@ -205,6 +225,7 @@ module dry_physics_config
     type(moist_convection_config) :: moist_convection
     type(condensation_config) :: condensation
     type(cloud_config) :: cloud
+    type(snow_config) :: snow
   end type dry_model_physics_config
 
   public :: radiation_days_per_year, radiation_orbital_period, radiation_planet_rotation_rate

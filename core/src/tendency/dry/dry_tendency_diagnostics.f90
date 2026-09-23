@@ -41,6 +41,15 @@ contains
     diagnostics%surface_water = workspace%surface_water
     diagnostics%surface_wetness = workspace%surface_wetness
     diagnostics%runoff = workspace%runoff
+    if (workspace%snow_enabled) then
+      diagnostics%snow_water = workspace%snow_water
+      allocate (diagnostics%snow_fraction, mold=workspace%snow_water)
+      diagnostics%snow_fraction = 0.0_real64
+      where (workspace%snow_water > 0.0_real64) diagnostics%snow_fraction = workspace%snow_water/ &
+        (workspace%snow_water + workspace%snow_masking_water_equivalent)
+      diagnostics%snowfall = workspace%snowfall
+      diagnostics%snow_melt = workspace%snow_melt
+    end if
     allocate (diagnostics%zonal_temperature(workspace%ny, levels))
     allocate (diagnostics%zonal_u(workspace%ny, levels), diagnostics%zonal_v(workspace%ny, levels))
     allocate (diagnostics%zonal_uv(workspace%ny, levels), diagnostics%zonal_vt(workspace%ny, levels))
@@ -181,6 +190,18 @@ contains
             land_weight*workspace%water_budget_residual(i, j)
           diagnostics%maximum_water_budget_residual = max(diagnostics%maximum_water_budget_residual, &
             abs(workspace%water_budget_residual(i, j)))
+          if (workspace%snow_enabled) then
+            diagnostics%mean_snowfall = diagnostics%mean_snowfall + area_weight*workspace%snowfall(i, j)
+            diagnostics%mean_atmospheric_snow_melt = diagnostics%mean_atmospheric_snow_melt + &
+              area_weight*workspace%atmospheric_snow_melt(i, j)
+            diagnostics%mean_land_snowfall = diagnostics%mean_land_snowfall + land_weight*workspace%snowfall(i, j)
+            diagnostics%mean_snow_water = diagnostics%mean_snow_water + land_weight*workspace%snow_water(i, j)
+            diagnostics%mean_snow_fraction = diagnostics%mean_snow_fraction + &
+              land_weight*diagnostics%snow_fraction(i, j)
+            diagnostics%mean_snow_melt = diagnostics%mean_snow_melt + land_weight*workspace%snow_melt(i, j)
+            diagnostics%maximum_snow_budget_residual = max(diagnostics%maximum_snow_budget_residual, &
+              abs(workspace%snow_budget_residual(i, j)))
+          end if
         end if
       end do
     end do
@@ -196,6 +217,10 @@ contains
       diagnostics%mean_runoff = diagnostics%mean_runoff/land_area
       diagnostics%dry_land_fraction = diagnostics%dry_land_fraction/land_area
       diagnostics%mean_water_budget_residual = diagnostics%mean_water_budget_residual/land_area
+      diagnostics%mean_land_snowfall = diagnostics%mean_land_snowfall/land_area
+      diagnostics%mean_snow_water = diagnostics%mean_snow_water/land_area
+      diagnostics%mean_snow_fraction = diagnostics%mean_snow_fraction/land_area
+      diagnostics%mean_snow_melt = diagnostics%mean_snow_melt/land_area
     end if
     if (ocean_area > 0.0_real64) then
       diagnostics%mean_ocean_surface_temperature = diagnostics%mean_ocean_surface_temperature/ocean_area

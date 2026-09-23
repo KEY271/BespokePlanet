@@ -5,14 +5,16 @@
 !> the latent heat flux L E is recorded in the workspace so that the radiation
 !> tendency, evaluated afterwards, takes exactly the same value from the surface
 !> energy budget.  Evaluated on the RAW-filtered previous time level with the
-!> wind and density the sensible heat flux uses.
+!> wind and density the sensible heat flux uses.  A land snowpack scales the
+!> land moisture exchange by 1 - f (docs/tendency/snow.md).
 module dry_evaporation_tendency
   use iso_fortran_env, only: real64
   use planet_parameters, only: earth_gravity
-  use dry_physics_config, only: radiation_config, evaporation_config, bucket_config
+  use dry_physics_config, only: radiation_config, evaporation_config, bucket_config, snow_config
   use moist_thermodynamics, only: latent_heat_of_condensation
   use surface_exchange, only: surface_evaporation_flux
   use land_bucket, only: bucket_wetness, limit_bucket_evaporation
+  use land_snow, only: snow_cover_fraction
   use dry_tendency_workspace, only: dry_workspace_type
   implicit none
   private
@@ -20,10 +22,11 @@ module dry_evaporation_tendency
 
 contains
 
-  subroutine add_dry_evaporation_tendency(config, surface, bucket, interval, workspace)
+  subroutine add_dry_evaporation_tendency(config, surface, bucket, snow, interval, workspace)
     type(evaporation_config), intent(in) :: config
     type(radiation_config), intent(in) :: surface
     type(bucket_config), intent(in) :: bucket
+    type(snow_config), intent(in) :: snow
     real(real64), intent(in) :: interval
     type(dry_workspace_type), intent(inout) :: workspace
     integer :: i, j, levels
@@ -46,6 +49,9 @@ contains
               workspace%previous_pressure_half(i, j, :), workspace%previous_temperature_grid(i, j, levels), &
               workspace%previous_humidity_grid(i, j, levels), workspace%previous_land_temperature(i, j), &
               workspace%previous_u(i, j, levels), workspace%previous_v(i, j, levels))
+            ! The snow-covered part exchanges no moisture with the air.
+            if (snow%enabled) potential_evaporation = (1.0_real64 - &
+              snow_cover_fraction(snow, workspace%previous_snow_water(i, j)))*potential_evaporation
             if (bucket%enabled) then
               land_evaporation = limit_bucket_evaporation(potential_evaporation, &
                 workspace%previous_surface_water(i, j), bucket%capacity, interval)

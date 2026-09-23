@@ -11,6 +11,7 @@ module dry_atmosphere
                        enforce_dry_state_constraints, enforce_dry_spectral_field
   use dry_physics_config, only: dry_model_physics_config, dry_reference_temperature
   use sea_ice, only: equilibrate_sea_ice, validate_sea_ice_config
+  use land_snow, only: validate_snow_config
   use ocean_q_flux, only: q_flux_diagnostics, build_ocean_q_flux, validate_q_flux_config
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use dry_stepper, only: dry_stepper_type
@@ -199,6 +200,7 @@ contains
     this%current%ocean_temperature = 0.0_real64
     this%current%sea_ice_fraction = 0.0_real64
     this%current%sea_ice_volume = 0.0_real64
+    this%current%snow_water = 0.0_real64
     call enforce_dry_state_constraints(this%current, this%truncation)
     call copy_dry_state(this%current, this%previous)
     ! A plain initial state runs without forcing; the case enables the processes it needs.
@@ -214,7 +216,7 @@ contains
   !> budget supply the initial values here.  The fields have the padded grid
   !> shape of the transform (transform%allocate_field).
   subroutine set_surface_state(this, surface_temperature, deep_temperature, surface_water, &
-                               land_temperature, ocean_temperature, sea_ice_fraction, sea_ice_volume)
+                               land_temperature, ocean_temperature, sea_ice_fraction, sea_ice_volume, snow_water)
     class(dry_atmosphere_solver), intent(inout) :: this
     real(real64), intent(in) :: surface_temperature(:, :), deep_temperature(:, :)
     real(real64), intent(in), optional :: surface_water(:, :)
@@ -222,6 +224,8 @@ contains
     real(real64), intent(in), optional :: ocean_temperature(:, :)
     real(real64), intent(in), optional :: sea_ice_fraction(:, :)
     real(real64), intent(in), optional :: sea_ice_volume(:, :)
+    !> Land snowpack, kg m^-2 of land area (docs/tendency/snow.md); zero when absent.
+    real(real64), intent(in), optional :: snow_water(:, :)
 
     call check_initialized(this)
     if (any(shape(surface_temperature) /= shape(this%current%surface_temperature)) .or. &
@@ -266,6 +270,14 @@ contains
       this%current%surface_water = surface_water
       this%previous%surface_water = surface_water
     end if
+    this%current%snow_water = 0.0_real64
+    if (present(snow_water)) then
+      if (any(shape(snow_water) /= shape(this%current%snow_water))) error stop 'snow_water shape mismatch'
+      if (.not. all(ieee_is_finite(snow_water))) error stop 'nonfinite initial snowpack'
+      if (any(snow_water < 0.0_real64)) error stop 'negative initial snowpack'
+      where (this%land_fraction > 0.0_real64) this%current%snow_water = snow_water
+    end if
+    this%previous%snow_water = this%current%snow_water
   end subroutine set_surface_state
 
   !> Selects which physical processes are active.  set_initial_state disables
@@ -282,6 +294,11 @@ contains
           .not. (physics%radiation%slab_ocean_enabled .or. physics%radiation%land_sea_mixing_enabled)) &
         error stop 'sea ice requires a radiative ocean surface'
       call normalize_initial_ice(this)
+    end if
+    if (physics%snow%enabled) then
+      call validate_snow_config(physics)
+    else if (any(this%current%snow_water /= 0.0_real64)) then
+      error stop 'a snowpack requires snow to be enabled'
     end if
     this%workspace%ocean_q_flux = 0.0_real64
     this%q_flux_diagnostics = q_flux_diagnostics()
@@ -370,7 +387,7 @@ contains
   subroutine get_fields(this, zeta, delta, temperature, surface_pressure, u, v, cfl, &
                         surface_temperature, deep_temperature, specific_humidity, surface_water, &
                         land_temperature, ocean_temperature, sea_ice_fraction, sea_ice_volume, &
-                        sea_ice_temperature, sea_ice_thickness)
+                        sea_ice_temperature, sea_ice_thickness, snow_water, snow_fraction)
     class(dry_atmosphere_solver), intent(inout) :: this
     real(real64), allocatable, intent(out) :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :)
     real(real64), allocatable, intent(out) :: surface_pressure(:, :), u(:, :, :), v(:, :, :)
@@ -385,6 +402,10 @@ contains
     real(real64), allocatable, intent(out), optional :: sea_ice_volume(:, :)
     real(real64), allocatable, intent(out), optional :: sea_ice_temperature(:, :)
     real(real64), allocatable, intent(out), optional :: sea_ice_thickness(:, :)
+    !> Land snowpack, kg m^-2 of land area; zero without snow.
+    real(real64), allocatable, intent(out), optional :: snow_water(:, :)
+    !> Snow cover f = S/(S + S_0) of the snowpack; zero without snow.
+    real(real64), allocatable, intent(out), optional :: snow_fraction(:, :)
     type(radiation_diagnostics) :: surface_sample
     type(dry_tendency_type) :: snapshot_rhs
     real(real64), allocatable :: temporary(:, :), temporary_u(:, :), temporary_v(:, :), log_ps(:, :)
@@ -470,6 +491,15 @@ contains
     end if
     if (present(deep_temperature)) deep_temperature = this%current%deep_temperature
     if (present(surface_water)) surface_water = this%current%surface_water
+    if (present(snow_water)) snow_water = this%current%snow_water
+    if (present(snow_fraction)) then
+      allocate (snow_fraction, mold=this%current%snow_water)
+      snow_fraction = 0.0_real64
+      if (this%physics%snow%enabled) then
+        where (this%current%snow_water > 0.0_real64) snow_fraction = this%current%snow_water/ &
+          (this%current%snow_water + this%physics%snow%masking_water_equivalent)
+      end if
+    end if
     if (present(cfl)) then
       nlon = this%transform%get_nlon()
       maximum_speed = 0.0_real64

@@ -168,6 +168,7 @@ contains
     end select
     options%include_surface_tiles = physics%radiation%land_sea_mixing_enabled .or. physics%sea_ice%enabled
     options%include_sea_ice = physics%sea_ice%enabled
+    options%include_snow = physics%snow%enabled
     planet = radiation_case_planet(physics)
     solar_day = physics%radiation%solar_day
     days_per_month = physics%radiation%days_per_month
@@ -295,7 +296,8 @@ contains
                              specific_humidity=humidity, surface_water=surface_water, &
                              land_temperature=tiles%land_temperature, ocean_temperature=tiles%ocean_temperature, &
                              sea_ice_fraction=tiles%sea_ice_fraction, sea_ice_volume=tiles%sea_ice_volume, &
-                             sea_ice_temperature=tiles%sea_ice_temperature, sea_ice_thickness=tiles%sea_ice_thickness)
+                             sea_ice_temperature=tiles%sea_ice_temperature, sea_ice_thickness=tiles%sea_ice_thickness, &
+                             snow_water=tiles%snow_water, snow_fraction=tiles%snow_fraction)
       call solver%get_cloud_cover(cloud_cover)
       log_surface_pressure = log(surface_pressure)
       call write_radiation_yearly_snapshot(case_directory, year, ring_nlon, &

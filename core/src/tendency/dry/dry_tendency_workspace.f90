@@ -110,6 +110,15 @@ module dry_tendency_workspace
     real(real64), allocatable :: sea_ice_volume(:, :), previous_sea_ice_volume(:, :), forcing_sea_ice_volume(:, :)
     real(real64), allocatable :: sea_ice_temperature(:, :), sea_ice_thickness(:, :)
     real(real64), allocatable :: ice_energy_residual(:, :), ice_surface_residual(:, :)
+    !> Land snowpack of the current and previous time level and its tendency, kg m^-2 of land
+    !> area, with the large-scale snowfall reaching the surface and the snow melted in the
+    !> column (per grid area) and on land (per land area), kg m^-2 s^-1 (docs/tendency/snow.md).
+    real(real64), allocatable :: snow_water(:, :), previous_snow_water(:, :), forcing_snow_water(:, :)
+    real(real64), allocatable :: snowfall(:, :), atmospheric_snow_melt(:, :), snow_melt(:, :)
+    real(real64), allocatable :: snow_budget_residual(:, :)
+    logical :: snow_enabled = .false.
+    !> S_0 of the snow cover, for the diagnostics of the current state.
+    real(real64) :: snow_masking_water_equivalent = 50.0_real64
     logical :: physics_grids_ready = .false.
     logical :: held_suarez_grids_ready = .false.
     logical :: radiation_grids_ready = .false.
@@ -229,6 +238,16 @@ contains
     this%sea_ice_thickness = 0.0_real64
     this%previous_surface_water = 0.0_real64
     this%surface_water = 0.0_real64
+    allocate (this%snow_water(nx, ny), this%previous_snow_water(nx, ny), this%forcing_snow_water(nx, ny))
+    allocate (this%snowfall(nx, ny), this%atmospheric_snow_melt(nx, ny), this%snow_melt(nx, ny))
+    allocate (this%snow_budget_residual(nx, ny))
+    this%snow_water = 0.0_real64
+    this%previous_snow_water = 0.0_real64
+    this%forcing_snow_water = 0.0_real64
+    this%snowfall = 0.0_real64
+    this%atmospheric_snow_melt = 0.0_real64
+    this%snow_melt = 0.0_real64
+    this%snow_budget_residual = 0.0_real64
   end subroutine initialize_workspace
 
   !> Zeroes the grid-space right-hand side and the flux records.  Points outside a
@@ -264,6 +283,11 @@ contains
     this%convective_precipitation = 0.0_real64
     this%large_scale_precipitation = 0.0_real64
     this%cloud_cover = 0.0_real64
+    this%forcing_snow_water = 0.0_real64
+    this%snowfall = 0.0_real64
+    this%atmospheric_snow_melt = 0.0_real64
+    this%snow_melt = 0.0_real64
+    this%snow_budget_residual = 0.0_real64
   end subroutine zero_forcing
 
   !> Diagnoses every grid field that more than one tendency needs.
@@ -299,6 +323,10 @@ contains
     call copy_surface_field(physics_state%sea_ice_fraction, this%previous_sea_ice_fraction, 'sea_ice_fraction')
     call copy_surface_field(state%sea_ice_volume, this%sea_ice_volume, 'sea_ice_volume')
     call copy_surface_field(physics_state%sea_ice_volume, this%previous_sea_ice_volume, 'sea_ice_volume')
+    call copy_surface_field(state%snow_water, this%snow_water, 'snow_water')
+    call copy_surface_field(physics_state%snow_water, this%previous_snow_water, 'snow_water')
+    this%snow_enabled = physics%snow%enabled
+    this%snow_masking_water_equivalent = physics%snow%masking_water_equivalent
     this%full_level_eta = coordinate%full_level_eta
     this%physics_grids_ready = physics%held_suarez%enabled .or. physics%surface_friction%enabled .or. &
                                physics%rayleigh_friction%enabled .or. physics%radiation%enabled .or. &

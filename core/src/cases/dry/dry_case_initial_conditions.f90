@@ -123,7 +123,9 @@ contains
     physics%q_flux%enabled = .true.
   end function moist_case_physics
 
-  !> Moist physics with one land--ocean surface budget mixed at every grid point.
+  !> Moist physics with one land--ocean surface budget mixed at every grid point,
+  !> the land bucket and the large-scale snowfall with its land snowpack
+  !> (docs/tendency/snow.md).
   function land_sea_case_physics() result(physics)
     type(dry_model_physics_config) :: physics
 
@@ -131,6 +133,7 @@ contains
     physics%radiation%land_sea_mixing_enabled = .true.
     physics%evaporation%ocean_surface_wetness = 1.0_real64
     physics%bucket%enabled = .true.
+    physics%snow%enabled = .true.
   end function land_sea_case_physics
 
   !> The planet of the radiation case rotates with the calendar of its radiation
@@ -203,6 +206,7 @@ contains
     complex(real64), allocatable :: state_zeta(:, :, :), state_delta(:, :, :), state_temperature(:, :, :)
     complex(real64), allocatable :: state_log_ps(:, :), humidity(:, :, :)
     real(real64), allocatable :: surface_water(:, :), lowest_temperature(:, :), ocean_temperature(:, :)
+    real(real64), allocatable :: snow_water(:, :)
     type(hybrid_sigma_coordinate) :: coordinate
     integer :: number_of_levels
 
@@ -221,11 +225,16 @@ contains
     allocate (surface_water, mold=land_fraction)
     surface_water = 0.0_real64
     where (land_fraction > 0.0_real64) surface_water = physics%bucket%initial_water
+    allocate (snow_water, mold=land_fraction)
+    snow_water = 0.0_real64
+    if (physics%snow%enabled) then
+      where (land_fraction > 0.0_real64) snow_water = physics%snow%initial_water_equivalent
+    end if
     ! Land starts at T_N; the ocean at the analytic profile (docs/cases/land-sea.md).
     call transform%spectral_to_grid(state_temperature(:, :, number_of_levels), lowest_temperature)
     call initial_ocean_temperature(transform, physics%radiation, lowest_temperature, ocean_temperature)
     call solver%set_surface_state(lowest_temperature, lowest_temperature, surface_water, &
-                                  ocean_temperature=ocean_temperature)
+                                  ocean_temperature=ocean_temperature, snow_water=snow_water)
     call solver%set_physics(physics)
   end subroutine set_land_sea_case_state
 

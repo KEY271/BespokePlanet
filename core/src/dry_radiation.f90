@@ -39,6 +39,16 @@ module dry_radiation
     real(real64) :: dry_land_fraction = 0.0_real64
     real(real64) :: mean_water_budget_residual = 0.0_real64
     real(real64) :: maximum_water_budget_residual = 0.0_real64
+    !> Snow (docs/tendency/snow.md): global means of the large-scale snowfall reaching the
+    !> surface and of the snow melted in the air (kg m^-2 s^-1), and land-area means of the
+    !> snowfall, the snowpack (kg m^-2), its cover fraction and its melt (kg m^-2 s^-1).
+    real(real64) :: mean_snowfall = 0.0_real64
+    real(real64) :: mean_atmospheric_snow_melt = 0.0_real64
+    real(real64) :: mean_land_snowfall = 0.0_real64
+    real(real64) :: mean_snow_water = 0.0_real64
+    real(real64) :: mean_snow_fraction = 0.0_real64
+    real(real64) :: mean_snow_melt = 0.0_real64
+    real(real64) :: maximum_snow_budget_residual = 0.0_real64
     real(real64) :: mean_kinetic_energy = 0.0_real64
     real(real64) :: mean_surface_pressure = 0.0_real64
     real(real64) :: mean_incoming_shortwave = 0.0_real64
@@ -76,6 +86,9 @@ module dry_radiation
     real(real64), allocatable :: zonal_vq(:, :)
     real(real64), allocatable :: cloud_cover(:, :)
     real(real64), allocatable :: surface_water(:, :), surface_wetness(:, :), runoff(:, :)
+    !> Snow grid fields, allocated only with snow: snowpack (kg m^-2 of land), cover
+    !> fraction, surface snowfall (kg m^-2 s^-1) and land snowmelt (kg m^-2 s^-1 of land).
+    real(real64), allocatable :: snow_water(:, :), snow_fraction(:, :), snowfall(:, :), snow_melt(:, :)
   end type radiation_diagnostics
 
   public :: radiation_downward_column, radiation_upward_column
@@ -121,6 +134,13 @@ contains
     destination%dry_land_fraction = source%dry_land_fraction
     destination%mean_water_budget_residual = source%mean_water_budget_residual
     destination%maximum_water_budget_residual = source%maximum_water_budget_residual
+    destination%mean_snowfall = source%mean_snowfall
+    destination%mean_atmospheric_snow_melt = source%mean_atmospheric_snow_melt
+    destination%mean_land_snowfall = source%mean_land_snowfall
+    destination%mean_snow_water = source%mean_snow_water
+    destination%mean_snow_fraction = source%mean_snow_fraction
+    destination%mean_snow_melt = source%mean_snow_melt
+    destination%maximum_snow_budget_residual = source%maximum_snow_budget_residual
     destination%mean_kinetic_energy = source%mean_kinetic_energy
     destination%mean_surface_pressure = source%mean_surface_pressure
     destination%mean_incoming_shortwave = source%mean_incoming_shortwave
@@ -148,6 +168,10 @@ contains
     if (allocated(source%surface_water)) call move_alloc(source%surface_water, destination%surface_water)
     if (allocated(source%surface_wetness)) call move_alloc(source%surface_wetness, destination%surface_wetness)
     if (allocated(source%runoff)) call move_alloc(source%runoff, destination%runoff)
+    if (allocated(source%snow_water)) call move_alloc(source%snow_water, destination%snow_water)
+    if (allocated(source%snow_fraction)) call move_alloc(source%snow_fraction, destination%snow_fraction)
+    if (allocated(source%snowfall)) call move_alloc(source%snowfall, destination%snowfall)
+    if (allocated(source%snow_melt)) call move_alloc(source%snow_melt, destination%snow_melt)
     if (allocated(source%surface_temperature)) call move_alloc(source%surface_temperature, destination%surface_temperature)
     if (allocated(source%deep_temperature)) call move_alloc(source%deep_temperature, destination%deep_temperature)
     if (allocated(source%surface_pressure)) call move_alloc(source%surface_pressure, destination%surface_pressure)

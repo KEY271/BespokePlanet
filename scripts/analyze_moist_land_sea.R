@@ -9,6 +9,10 @@ case_dir <- if (length(args) >= 1) args[[1]] else "output/moist_land_sea_t31"
 analysis_dir <- if (length(args) >= 2) args[[2]] else file.path(case_dir, "analysis")
 dir.create(analysis_dir, recursive = TRUE, showWarnings = FALSE)
 png_device_type <- if (capabilities("aqua")) "quartz" else "cairo"
+# Shared snow and sea-ice map, kept next to this script.
+script_path <- sub("^--file=", "", grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE))
+script_dir <- if (length(script_path) == 1) dirname(normalizePath(script_path)) else "scripts"
+source(file.path(script_dir, "snow_sea_ice_map.R"))
 
 metadata_path <- file.path(case_dir, "metadata.json")
 if (!file.exists(metadata_path)) stop("Missing ", metadata_path)
@@ -742,6 +746,19 @@ summary_table <- data.frame(
 )
 write.csv(summary_table, file.path(analysis_dir, "analysis_summary.csv"), row.names = FALSE)
 
+# Land snow cover and sea ice on one map, for March and September. Runs
+# without snow output (older cases) skip the figure.
+snow_fraction_monthly <- snow_ice_read_monthly(case_dir, "snow_fraction", final_months, read_grid)
+has_snow <- !is.null(snow_fraction_monthly)
+if (has_snow) {
+  draw_snow_sea_ice_maps(file.path(analysis_dir, "final_year_snow_and_sea_ice_maps.png"),
+                         nlon, latitude, grid_longitude, land_fraction, calendar_month,
+                         snow_fraction_monthly, snow_ice_read_monthly(case_dir, "sea_ice_fraction", final_months, read_grid),
+                         json_number("masking_water_equivalent_kg_m-2"),
+                         sprintf("final year (months %d–%d)", min(final_months), max(final_months)),
+                         png_device_type)
+}
+
 notes <- c(
   "Final-year mixed land/sea climate analysis",
   sprintf("Input months: %d-%d (12 equal 30-day months; April through March).", min(final_months), max(final_months)),
@@ -753,6 +770,7 @@ notes <- c(
   "The surface-water map shows final-year mean land-bucket water in fixed 15 kg/m2 bins spanning the 150 kg/m2 capacity; ocean is masked.",
   "Mass streamfunction uses monthly zonal-mean v and monthly zonal-mean surface pressure; pressure shown is the reference full-level pressure.",
   "Climographs use snapped native-grid cells with land_fraction >= 0.75, are reordered to January-December, and share both vertical-axis ranges across all panels.",
+  "The snow and sea-ice map shows March and September monthly means: land (land_fraction >= 0.5) by snow cover f = S/(S+S_0) with the equivalent snow water S, other cells by sea-ice concentration; cover below 1% counts as none. It is written only when the case has snow output.",
   "All annual means use the final 12 monthly means with equal weights."
 )
 writeLines(notes, file.path(analysis_dir, "README.txt"))

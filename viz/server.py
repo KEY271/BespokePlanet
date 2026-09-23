@@ -71,7 +71,11 @@ FIELD_DEFINITIONS["sea_ice_fraction"] = {"label": "sea ice concentration", "symb
 FIELD_DEFINITIONS["sea_ice_volume"] = {"label": "sea ice volume / ocean area", "symbol": "V", "unit": "m", "signed": False, "zero_based": True}
 FIELD_DEFINITIONS["sea_ice_thickness"] = {"label": "sea ice thickness", "symbol": "h", "unit": "m", "signed": False, "zero_based": True}
 FIELD_DEFINITIONS["sea_ice_temperature"] = {"label": "sea ice surface temperature", "symbol": "Tᵢ", "unit": "K", "signed": False}
-MASKED_TILE_FIELDS = {"land_temperature", "ocean_temperature", "deep_temperature", "sea_ice_temperature", "sea_ice_thickness"}
+FIELD_DEFINITIONS["snow_water"] = {"label": "land snowpack (water equivalent)", "symbol": "S", "unit": "kg m⁻²", "signed": False, "zero_based": True}
+FIELD_DEFINITIONS["snow_fraction"] = {"label": "land snow cover", "symbol": "f", "unit": "1", "signed": False, "zero_based": True}
+FIELD_DEFINITIONS["snowfall"] = {"label": "large-scale snowfall", "symbol": "Pₛₙ", "unit": "mm day⁻¹", "signed": False, "zero_based": True}
+LAND_TILE_FIELDS = {"land_temperature", "deep_temperature", "snow_water", "snow_fraction"}
+MASKED_TILE_FIELDS = {"land_temperature", "ocean_temperature", "deep_temperature", "sea_ice_temperature", "sea_ice_thickness", "snow_water", "snow_fraction"}
 
 class DataError(RuntimeError):
     """Raised when a run contains malformed or incomplete data."""
@@ -510,7 +514,7 @@ class Repository:
                     if not all(math.isfinite(a) and 0 <= a <= 1 for a in coverage):
                         raise DataError("Invalid sea-ice mask")
                     present = [a > 0.0 and f < 1.0 for a, f in zip(coverage, land)]
-                elif field in {"land_temperature", "deep_temperature"}:
+                elif field in LAND_TILE_FIELDS:
                     # Legacy ground-only radiation has no land-fraction file.
                     ground_only = "ground" in run.metadata and not run.metadata.get("surface_tiles")
                     present = [ground_only or f > 0.0 for f in land]

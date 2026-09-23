@@ -34,6 +34,7 @@ module radiation_case_output
     logical :: include_land_sea = .false.
     logical :: include_surface_tiles = .false.
     logical :: include_sea_ice = .false.
+    logical :: include_snow = .false.
   end type radiation_output_options
 
   !> Precipitation and evaporation are aggregated in kg m^-2 s^-1 and written in mm day^-1.
@@ -68,6 +69,9 @@ contains
         'land_surface_water_kg_m-2,land_surface_wetness,land_runoff_mm_day-1,dry_land_fraction,'// &
         'land_water_budget_residual_mm_day-1,maximum_land_water_budget_residual_mm_day-1'
     end if
+    if (options%include_snow) header = header//',snowfall_mm_day-1,atmospheric_snow_melt_mm_day-1,'// &
+      'land_snowfall_mm_day-1,land_snow_water_kg_m-2,land_snow_fraction,land_snow_melt_mm_day-1,'// &
+      'maximum_snow_budget_residual_mm_day-1'
     if (options%include_sea_ice) header = header//',sea_ice_area_m2,sea_ice_volume_m3,mean_sea_ice_thickness_m'
     if (options%include_sea_ice) header = header// &
       ',maximum_ice_energy_residual_j_m-2,maximum_ice_scaled_surface_residual_w_m-1,'// &
@@ -122,6 +126,11 @@ contains
         csv_real(mm_per_day*means%mean_water_budget_residual)//','// &
         csv_real(mm_per_day*means%maximum_water_budget_residual)
     end if
+    if (options%include_snow) row = row//','//csv_real(mm_per_day*means%mean_snowfall)//','// &
+      csv_real(mm_per_day*means%mean_atmospheric_snow_melt)//','// &
+      csv_real(mm_per_day*means%mean_land_snowfall)//','//csv_real(means%mean_snow_water)//','// &
+      csv_real(means%mean_snow_fraction)//','//csv_real(mm_per_day*means%mean_snow_melt)//','// &
+      csv_real(mm_per_day*means%maximum_snow_budget_residual)
     if (options%include_sea_ice) row = row//','//csv_real(means%sea_ice_area)//','// &
       csv_real(means%sea_ice_total_volume)//','//csv_real(means%mean_sea_ice_thickness)
     if (options%include_sea_ice) row = row//','//csv_real(means%ice_checks%energy_residual)//','// &
@@ -207,6 +216,19 @@ contains
       call write_field(trim(case_directory)//'/monthly_runoff_m'//month_text//'.bin', &
                        nlon, mm_per_day*means%runoff)
     end if
+    if (options%include_snow) then
+      if (.not. allocated(means%snow_water) .or. .not. allocated(means%snow_fraction) .or. &
+          .not. allocated(means%snowfall) .or. .not. allocated(means%snow_melt)) error stop 'snow monthly means are missing'
+      call check_finite('monthly_snow_water', nlon, means%snow_water)
+      call check_finite('monthly_snow_fraction', nlon, means%snow_fraction)
+      call check_finite('monthly_snowfall', nlon, means%snowfall)
+      call check_finite('monthly_snow_melt', nlon, means%snow_melt)
+      call write_field(trim(case_directory)//'/monthly_snow_water_m'//month_text//'.bin', nlon, means%snow_water)
+      call write_field(trim(case_directory)//'/monthly_snow_fraction_m'//month_text//'.bin', nlon, means%snow_fraction)
+      call write_field(trim(case_directory)//'/monthly_snowfall_m'//month_text//'.bin', nlon, mm_per_day*means%snowfall)
+      call write_field(trim(case_directory)//'/monthly_snow_melt_m'//month_text//'.bin', nlon, &
+                       mm_per_day*means%snow_melt)
+    end if
   end subroutine write_radiation_monthly_output
 
   subroutine write_radiation_yearly_snapshot(case_directory, year, nlon, &
@@ -279,6 +301,15 @@ contains
     if (options%include_land_sea) then
       call check_finite('yearly_surface_water', nlon, surface_water)
       call write_field(trim(case_directory)//'/yearly_surface_water_y'//year_text//'.bin', nlon, surface_water)
+    end if
+    if (options%include_snow) then
+      if (.not. present(tiles)) error stop 'missing yearly snowpack'
+      if (.not. allocated(tiles%snow_water) .or. .not. allocated(tiles%snow_fraction)) &
+        error stop 'missing yearly snowpack'
+      call check_finite('yearly_snow_water', nlon, tiles%snow_water)
+      call check_finite('yearly_snow_fraction', nlon, tiles%snow_fraction)
+      call write_field(trim(case_directory)//'/yearly_snow_water_y'//year_text//'.bin', nlon, tiles%snow_water)
+      call write_field(trim(case_directory)//'/yearly_snow_fraction_y'//year_text//'.bin', nlon, tiles%snow_fraction)
     end if
     call write_spectral_field(trim(case_directory)//'/yearly_log_surface_pressure_spectral_y'// &
                               year_text//'.bin', log_surface_pressure_spectral)
@@ -541,9 +572,13 @@ contains
           physics%cloud%convective_reference_precipitation, ','
         write (unit, '(a,es24.16e3)') '      "convective_maximum_cover": ', physics%cloud%convective_maximum_cover
         write (unit, '(a)') '    },'
-        if (physics%bucket%enabled) then
+        if (physics%bucket%enabled .and. physics%snow%enabled) then
           write (unit, '(a)') '    "physics_order": "evaporation candidate; dry adjustment, moist adjustment, '// &
-            'condensation and cloud diagnosis on provisional fields; land bucket; radiation"'
+            'condensation with snowfall and cloud diagnosis on provisional fields; radiation with surface tiles '// &
+            'and land snowmelt; land bucket"'
+        else if (physics%bucket%enabled) then
+          write (unit, '(a)') '    "physics_order": "evaporation candidate; dry adjustment, moist adjustment, '// &
+            'condensation and cloud diagnosis on provisional fields; radiation; land bucket"'
         else
           write (unit, '(a)') '    "physics_order": "evaporation; dry adjustment, moist adjustment, condensation '// &
             'and cloud diagnosis on provisional fields; radiation"'
@@ -551,7 +586,7 @@ contains
       else
         if (physics%bucket%enabled) then
           write (unit, '(a)') '    "physics_order": "evaporation candidate; dry adjustment, moist adjustment, '// &
-            'condensation on provisional fields; land bucket; radiation"'
+            'condensation on provisional fields; radiation; land bucket"'
         else
           write (unit, '(a)') '    "physics_order": "evaporation; dry adjustment, moist adjustment, condensation '// &
             'on provisional fields; radiation"'
@@ -592,11 +627,42 @@ contains
     write (unit, '(a)') '    "volume_basis": "ice volume / ocean area, metres",'
     write (unit, '(a)') '    "melting_area": "(A + new_ice_area) * sqrt(V_new / V_old) for net melting",'
     write (unit, '(a)') '    "sublimation_and_deposition": "none",'
-    write (unit, '(a)') '    "snow": "none",'
+    if (physics%snow%enabled) then
+      write (unit, '(a)') '    "snow": "none kept on ice; snowfall on the ocean melts with the heat of the whole mixed layer",'
+    else
+      write (unit, '(a)') '    "snow": "none",'
+    end if
     write (unit, '(a)') '    "daily_residuals": "maximum absolute local residuals; energy per ocean area",'
     write (unit, '(a)') '    "projection_counts": "both filtered states; changes above 32 relative machine epsilons",'
     write (unit, '(a)') '    "scaled_surface_residual": "h*F + k*(Tf-T) - h*M, W m-1",'
     write (unit, '(a)') '    "time_integration": "previous-time physics; leapfrog and RAW; energy-preserving phase projection"'
+    write (unit, '(a)') '  },'
+    write (unit, '(a)') '  "snow": {'
+    if (physics%snow%enabled) then
+      write (unit, '(a)') '    "enabled": true,'
+      write (unit, '(a)') '    "scope": "large-scale condensation only; convective precipitation is rain",'
+      write (unit, '(a)') '    "phase": "condensate of a layer with provisional temperature below formation_temperature '// &
+        'is snow and releases L_v + L_f",'
+      write (unit, '(a)') '    "atmospheric_melting": "falling snow melts in layers warmer than '// &
+        'atmospheric_melting_temperature with c_p (T - T_melt) dp/g, down to that temperature",'
+      write (unit, '(a)') '    "land_snowpack": "water equivalent per land area; f = S/(S + S_0); albedo alpha_L + '// &
+        'albedo_increase f; sensible and latent exchange times (1 - f)",'
+      write (unit, '(a)') '    "land_melting": "heat C_L (T_L - surface_melting_temperature) of the updated land '// &
+        'temperature melts the snowpack; meltwater enters the bucket",'
+      write (unit, '(a)') '    "ocean": "snowfall melts at once with the heat of the whole mixed layer; no snow on ice",'
+      write (unit, '(a,es24.16e3,a)') '    "formation_temperature_k": ', physics%snow%formation_temperature, ','
+      write (unit, '(a,es24.16e3,a)') '    "atmospheric_melting_temperature_k": ', &
+        physics%snow%atmospheric_melting_temperature, ','
+      write (unit, '(a,es24.16e3,a)') '    "surface_melting_temperature_k": ', &
+        physics%snow%surface_melting_temperature, ','
+      write (unit, '(a,es24.16e3,a)') '    "masking_water_equivalent_kg_m-2": ', &
+        physics%snow%masking_water_equivalent, ','
+      write (unit, '(a,es24.16e3,a)') '    "albedo_increase": ', physics%snow%albedo_increase, ','
+      write (unit, '(a,es24.16e3,a)') '    "latent_heat_of_fusion_j_kg-1": ', physics%snow%latent_heat_of_fusion, ','
+      write (unit, '(a,es24.16e3)') '    "initial_water_equivalent_kg_m-2": ', physics%snow%initial_water_equivalent
+    else
+      write (unit, '(a)') '    "enabled": false'
+    end if
     write (unit, '(a)') '  },'
     write (unit, '(a)') '  "q_flux": {'
     if (physics%q_flux%enabled) then
@@ -800,6 +866,15 @@ contains
       write (unit, '(a)') '    "monthly_runoff": "monthly_runoff_m{month:04d}.bin",'
       write (unit, '(a)') '    "yearly_surface_water": "yearly_surface_water_y{year:04d}.bin",'
     end if
+    if (options%include_snow) then
+      write (unit, '(a)') '    "monthly_snow_water": "monthly_snow_water_m{month:04d}.bin",'
+      write (unit, '(a)') '    "monthly_snow_fraction": "monthly_snow_fraction_m{month:04d}.bin",'
+      write (unit, '(a)') '    "monthly_snowfall": "monthly_snowfall_m{month:04d}.bin",'
+      write (unit, '(a)') '    "monthly_snow_melt": "monthly_snow_melt_m{month:04d}.bin",'
+      write (unit, '(a)') '    "yearly_snow_water": "yearly_snow_water_y{year:04d}.bin",'
+      write (unit, '(a)') '    "yearly_snow_fraction": "yearly_snow_fraction_y{year:04d}.bin",'
+      write (unit, '(a)') '    "snow_bases": "snow_water, snow_fraction and snow_melt per land area; snowfall per grid area",'
+    end if
     write (unit, '(a)') '    "monthly_zonal_fields": "monthly_{name}_m{month:04d}.bin",'
     write (unit, '(a)') '    "yearly_grid_level_fields": '// &
       '"yearly_{name}_y{year:04d}_l{level:02d}.bin",'
@@ -818,6 +893,10 @@ contains
     if (options%include_surface_tiles) then
       write (unit, '(a)') '      "land_temperature": "K", "ocean_temperature": "K", "sea_ice_temperature": "K",'
       write (unit, '(a)') '      "sea_ice_fraction": "1", "sea_ice_volume": "m", "sea_ice_thickness": "m",'
+    end if
+    if (options%include_snow) then
+      write (unit, '(a)') '      "snow_water": "kg m^-2 (mm water equivalent)", "snow_fraction": "1",'
+      write (unit, '(a)') '      "snowfall": "mm day^-1 water equivalent", "snow_melt": "mm day^-1 water equivalent",'
     end if
     write (unit, '(a)') '      "temperature": "K", "surface_pressure": "Pa",'
     write (unit, '(a)') '      "zeta": "s^-1", "delta": "s^-1", "u": "m s^-1", "v": "m s^-1",'

@@ -111,6 +111,20 @@ class RadiationRepositoryTest(unittest.TestCase):
         self.assertTrue(all(math.isfinite(value) for value in values[1:]))
         self.assertAlmostEqual(stats["minimum"], 271.35, places=4)
 
+    def test_snow_fields_mask_pure_ocean(self):
+        for prefix, suffix in (("monthly", "m0001"), ("yearly", "y0001")):
+            self.write(f"{prefix}_snow_water_{suffix}.bin", [80, 20, 0, 0])
+            self.write(f"{prefix}_snow_fraction_{suffix}.bin", [80 / 130, 20 / 70, 0, 0])
+        self.write("monthly_snowfall_m0001.bin", [1, 2, 3, 0])
+        repository = Repository(self.root)
+        payload, stats = repository.field_frame(repository.get_run("ice.yearly"), "snow_water", 1)
+        values = array("f", payload)
+        self.assertEqual(list(values[:2]), [80, 20])
+        self.assertTrue(all(math.isnan(value) for value in values[2:]))
+        self.assertEqual(stats["maximum"], 80)
+        payload, _ = repository.field_frame(repository.get_run("ice"), "snowfall", 1)
+        self.assertEqual(list(array("f", payload)), [1, 2, 3, 0])
+
     def test_legacy_ground_temperature_without_land_mask(self):
         metadata_path = self.run_path / "metadata.json"
         metadata = json.loads(metadata_path.read_text())

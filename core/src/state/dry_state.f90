@@ -25,6 +25,8 @@ module dry_state
     real(real64), allocatable :: ocean_temperature(:, :)
     real(real64), allocatable :: sea_ice_fraction(:, :)
     real(real64), allocatable :: sea_ice_volume(:, :)
+    !> Land snowpack, water equivalent in kg m^-2 of land area (docs/tendency/snow.md).
+    real(real64), allocatable :: snow_water(:, :)
   end type dry_state_type
 
   type, public :: dry_tendency_type
@@ -59,6 +61,7 @@ contains
     if (allocated(state%ocean_temperature)) deallocate (state%ocean_temperature)
     if (allocated(state%sea_ice_fraction)) deallocate (state%sea_ice_fraction)
     if (allocated(state%sea_ice_volume)) deallocate (state%sea_ice_volume)
+    if (allocated(state%snow_water)) deallocate (state%snow_water)
     allocate (state%zeta(0:truncation + 1, 0:truncation, number_of_levels))
     allocate (state%delta(0:truncation + 1, 0:truncation, number_of_levels))
     allocate (state%temperature(0:truncation + 1, 0:truncation, number_of_levels))
@@ -84,6 +87,7 @@ contains
     if (allocated(state%ocean_temperature)) deallocate (state%ocean_temperature)
     if (allocated(state%sea_ice_fraction)) deallocate (state%sea_ice_fraction)
     if (allocated(state%sea_ice_volume)) deallocate (state%sea_ice_volume)
+    if (allocated(state%snow_water)) deallocate (state%snow_water)
     allocate (state%surface_temperature(nx, ny), state%deep_temperature(nx, ny), state%surface_water(nx, ny))
     state%surface_temperature = 0.0_real64
     state%deep_temperature = 0.0_real64
@@ -96,6 +100,8 @@ contains
     state%sea_ice_fraction = 0.0_real64
     allocate (state%sea_ice_volume(nx, ny))
     state%sea_ice_volume = 0.0_real64
+    allocate (state%snow_water(nx, ny))
+    state%snow_water = 0.0_real64
   end subroutine allocate_dry_surface_fields
 
   subroutine allocate_dry_tendency(tendency, truncation, number_of_levels, nx, ny)
@@ -146,6 +152,7 @@ contains
     call copy_grid_field(source%ocean_temperature, destination%ocean_temperature, 'ocean_temperature')
     call copy_grid_field(source%sea_ice_fraction, destination%sea_ice_fraction, 'sea_ice_fraction')
     call copy_grid_field(source%sea_ice_volume, destination%sea_ice_volume, 'sea_ice_volume')
+    call copy_grid_field(source%snow_water, destination%snow_water, 'snow_water')
   end subroutine copy_dry_state
 
   subroutine copy_grid_field(source, destination, name)
@@ -176,6 +183,7 @@ contains
     call swap_grid_field(first%ocean_temperature, second%ocean_temperature)
     call swap_grid_field(first%sea_ice_fraction, second%sea_ice_fraction)
     call swap_grid_field(first%sea_ice_volume, second%sea_ice_volume)
+    call swap_grid_field(first%snow_water, second%snow_water)
   end subroutine swap_dry_states
 
   subroutine swap_level_field(first, second)

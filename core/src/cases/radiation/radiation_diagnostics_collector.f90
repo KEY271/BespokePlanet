@@ -28,6 +28,8 @@ module radiation_diagnostics_collector
     real(real64), allocatable :: cloud_cover(:, :)
     real(real64), allocatable :: surface_water(:, :), surface_wetness(:, :), runoff(:, :)
     real(real64), allocatable :: zonal_humidity(:, :), eddy_vq(:, :)
+    !> Snow fields; unallocated without snow.  In a yearly snapshot the fluxes stay unallocated.
+    real(real64), allocatable :: snow_water(:, :), snow_fraction(:, :), snowfall(:, :), snow_melt(:, :)
   end type radiation_monthly_means
 
   !> Online equal-weight mean of the zonal and surface fields over one output interval.
@@ -36,6 +38,7 @@ module radiation_diagnostics_collector
     integer :: sample_count = 0
     logical :: moist = .false.
     logical :: tiles = .false.
+    logical :: snow = .false.
     real(real64), allocatable :: land_temperature_sum(:, :)
     real(real64), allocatable :: ocean_temperature_sum(:, :)
     real(real64), allocatable :: sea_ice_fraction_sum(:, :)
@@ -56,6 +59,8 @@ module radiation_diagnostics_collector
     real(real64), allocatable :: surface_water_sum(:, :), surface_wetness_sum(:, :), runoff_sum(:, :)
     real(real64), allocatable :: zonal_humidity_sum(:, :)
     real(real64), allocatable :: zonal_vq_sum(:, :)
+    real(real64), allocatable :: snow_water_sum(:, :), snow_fraction_sum(:, :), snowfall_sum(:, :)
+    real(real64), allocatable :: snow_melt_sum(:, :)
   contains
     procedure, public :: add => add_monthly_sample
     procedure, public :: take => take_monthly_means
@@ -87,6 +92,13 @@ module radiation_diagnostics_collector
     real(real64) :: dry_land_fraction_sum = 0.0_real64
     real(real64) :: water_budget_residual_sum = 0.0_real64
     real(real64) :: maximum_water_budget_residual = 0.0_real64
+    real(real64) :: snowfall_sum = 0.0_real64
+    real(real64) :: atmospheric_snow_melt_sum = 0.0_real64
+    real(real64) :: land_snowfall_sum = 0.0_real64
+    real(real64) :: snow_water_sum = 0.0_real64
+    real(real64) :: snow_fraction_sum = 0.0_real64
+    real(real64) :: snow_melt_sum = 0.0_real64
+    real(real64) :: maximum_snow_budget_residual = 0.0_real64
     real(real64) :: kinetic_energy_sum = 0.0_real64
     real(real64) :: surface_pressure_sum = 0.0_real64
     real(real64) :: incoming_shortwave_sum = 0.0_real64
@@ -195,12 +207,28 @@ contains
         allocate (this%zonal_humidity_sum, mold=sample%zonal_humidity)
         allocate (this%zonal_vq_sum, mold=sample%zonal_vq)
       end if
+      this%snow = allocated(sample%snow_water)
+      if (this%snow) then
+        if (.not. allocated(sample%snow_fraction) .or. .not. allocated(sample%snowfall) .or. &
+            .not. allocated(sample%snow_melt)) error stop 'incomplete snow diagnostic sample'
+        allocate (this%snow_water_sum, mold=sample%snow_water)
+        allocate (this%snow_fraction_sum, mold=sample%snow_fraction)
+        allocate (this%snowfall_sum, mold=sample%snowfall)
+        allocate (this%snow_melt_sum, mold=sample%snow_melt)
+      end if
       call this%reset()
     end if
     if (this%moist .neqv. allocated(sample%precipitation)) then
       error stop 'radiation diagnostic samples must all carry, or all lack, the moist fields'
     end if
     if (this%tiles .neqv. allocated(sample%sea_ice_fraction)) error stop 'inconsistent tile diagnostics'
+    if (this%snow .neqv. allocated(sample%snow_water)) error stop 'inconsistent snow diagnostics'
+    if (this%snow) then
+      this%snow_water_sum = this%snow_water_sum + sample%snow_water
+      this%snow_fraction_sum = this%snow_fraction_sum + sample%snow_fraction
+      this%snowfall_sum = this%snowfall_sum + sample%snowfall
+      this%snow_melt_sum = this%snow_melt_sum + sample%snow_melt
+    end if
     if (this%tiles) then
       this%land_temperature_sum = this%land_temperature_sum + sample%land_temperature
       this%ocean_temperature_sum = this%ocean_temperature_sum + sample%ocean_temperature
@@ -270,6 +298,12 @@ contains
       means%zonal_humidity = this%zonal_humidity_sum*inverse_count
       means%eddy_vq = this%zonal_vq_sum*inverse_count - means%zonal_v*means%zonal_humidity
     end if
+    if (this%snow) then
+      means%snow_water = this%snow_water_sum*inverse_count
+      means%snow_fraction = this%snow_fraction_sum*inverse_count
+      means%snowfall = this%snowfall_sum*inverse_count
+      means%snow_melt = this%snow_melt_sum*inverse_count
+    end if
     call this%reset()
   end subroutine take_monthly_means
 
@@ -299,6 +333,10 @@ contains
     if (allocated(this%cloud_cover_sum)) this%cloud_cover_sum = 0.0_real64
     if (allocated(this%zonal_humidity_sum)) this%zonal_humidity_sum = 0.0_real64
     if (allocated(this%zonal_vq_sum)) this%zonal_vq_sum = 0.0_real64
+    if (allocated(this%snow_water_sum)) this%snow_water_sum = 0.0_real64
+    if (allocated(this%snow_fraction_sum)) this%snow_fraction_sum = 0.0_real64
+    if (allocated(this%snowfall_sum)) this%snowfall_sum = 0.0_real64
+    if (allocated(this%snow_melt_sum)) this%snow_melt_sum = 0.0_real64
   end subroutine reset_monthly_accumulator
 
   integer function monthly_sample_count(this) result(count)
@@ -331,6 +369,13 @@ contains
     this%water_budget_residual_sum = this%water_budget_residual_sum + sample%mean_water_budget_residual
     this%maximum_water_budget_residual = max(this%maximum_water_budget_residual, &
       sample%maximum_water_budget_residual)
+    this%snowfall_sum = this%snowfall_sum + sample%mean_snowfall
+    this%atmospheric_snow_melt_sum = this%atmospheric_snow_melt_sum + sample%mean_atmospheric_snow_melt
+    this%land_snowfall_sum = this%land_snowfall_sum + sample%mean_land_snowfall
+    this%snow_water_sum = this%snow_water_sum + sample%mean_snow_water
+    this%snow_fraction_sum = this%snow_fraction_sum + sample%mean_snow_fraction
+    this%snow_melt_sum = this%snow_melt_sum + sample%mean_snow_melt
+    this%maximum_snow_budget_residual = max(this%maximum_snow_budget_residual, sample%maximum_snow_budget_residual)
     this%kinetic_energy_sum = this%kinetic_energy_sum + sample%mean_kinetic_energy
     this%surface_pressure_sum = this%surface_pressure_sum + sample%mean_surface_pressure
     this%incoming_shortwave_sum = this%incoming_shortwave_sum + sample%mean_incoming_shortwave
@@ -385,6 +430,13 @@ contains
     means%dry_land_fraction = this%dry_land_fraction_sum*inverse_count
     means%mean_water_budget_residual = this%water_budget_residual_sum*inverse_count
     means%maximum_water_budget_residual = this%maximum_water_budget_residual
+    means%mean_snowfall = this%snowfall_sum*inverse_count
+    means%mean_atmospheric_snow_melt = this%atmospheric_snow_melt_sum*inverse_count
+    means%mean_land_snowfall = this%land_snowfall_sum*inverse_count
+    means%mean_snow_water = this%snow_water_sum*inverse_count
+    means%mean_snow_fraction = this%snow_fraction_sum*inverse_count
+    means%mean_snow_melt = this%snow_melt_sum*inverse_count
+    means%maximum_snow_budget_residual = this%maximum_snow_budget_residual
     means%mean_kinetic_energy = this%kinetic_energy_sum*inverse_count
     means%mean_surface_pressure = this%surface_pressure_sum*inverse_count
     means%mean_incoming_shortwave = this%incoming_shortwave_sum*inverse_count
@@ -429,6 +481,13 @@ contains
     this%dry_land_fraction_sum = 0.0_real64
     this%water_budget_residual_sum = 0.0_real64
     this%maximum_water_budget_residual = 0.0_real64
+    this%snowfall_sum = 0.0_real64
+    this%atmospheric_snow_melt_sum = 0.0_real64
+    this%land_snowfall_sum = 0.0_real64
+    this%snow_water_sum = 0.0_real64
+    this%snow_fraction_sum = 0.0_real64
+    this%snow_melt_sum = 0.0_real64
+    this%maximum_snow_budget_residual = 0.0_real64
     this%kinetic_energy_sum = 0.0_real64
     this%surface_pressure_sum = 0.0_real64
     this%incoming_shortwave_sum = 0.0_real64

@@ -7,7 +7,7 @@
 !> has been added.  This module accumulates nothing over time and writes no files.
 module dry_radiation_tendency
   use iso_fortran_env, only: real64
-  use dry_physics_config, only: radiation_config, sea_ice_config
+  use dry_physics_config, only: radiation_config, sea_ice_config, snow_config
   use surface_tiles, only: tiled_surface_tendency
   use sea_ice, only: sea_ice_budget, solve_ice_surface
   use dry_vertical_coordinate, only: dry_air_kappa
@@ -26,9 +26,12 @@ contains
   !> specific humidity and the shortwave reflection the cloud cover diagnosed by the
   !> convection tendency of this evaluation (zero unless the cloud diagnosis is
   !> enabled); otherwise the fixed reference humidity stands in for the water vapour.
-  subroutine add_dry_radiation_tendency(config, ice, interval, moisture_enabled, transform_mu, workspace)
+  !> With snow enabled the tiled surface also advances the land snowpack
+  !> (docs/tendency/snow.md); its tendency and melt are recorded in the workspace.
+  subroutine add_dry_radiation_tendency(config, ice, snow, interval, moisture_enabled, transform_mu, workspace)
     type(radiation_config), intent(in) :: config
     type(sea_ice_config), intent(in) :: ice
+    type(snow_config), intent(in) :: snow
     real(real64), intent(in) :: interval
     logical, intent(in) :: moisture_enabled
     real(real64), intent(in) :: transform_mu(:)
@@ -70,8 +73,15 @@ contains
             workspace%forcing_sea_ice_fraction(i, j), workspace%forcing_sea_ice_volume(i, j), &
             workspace%sea_ice_temperature(i, j), workspace%incoming_shortwave(i, j), &
             workspace%reflected_shortwave(i, j), workspace%outgoing_longwave(i, j), budget, humidity, &
-            workspace%ice_surface_residual(i, j), workspace%ocean_q_flux(i, j))
+            workspace%ice_surface_residual(i, j), workspace%ocean_q_flux(i, j), snow, &
+            workspace%previous_snow_water(i, j), workspace%snowfall(i, j), &
+            workspace%forcing_snow_water(i, j), workspace%snow_melt(i, j))
           workspace%ice_energy_residual(i, j) = budget%energy_residual
+          ! Pure ocean keeps no snowpack, so only land points have a snow budget.
+          if (snow%enabled .and. workspace%land_fraction(i, j) > 0.0_real64) then
+            workspace%snow_budget_residual(i, j) = workspace%forcing_snow_water(i, j) - &
+              (workspace%snowfall(i, j) - workspace%snow_melt(i, j))
+          end if
           workspace%forcing_temperature(i, j, :) = workspace%forcing_temperature(i, j, :) + temperature_contribution
           cycle
         end if

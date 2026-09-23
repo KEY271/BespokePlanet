@@ -1,4 +1,6 @@
-!> Precipitation recharge and overflow runoff of the land bucket.
+!> Precipitation recharge and overflow runoff of the land bucket.  The liquid
+!> input is the rain (the precipitation less the large-scale snowfall) plus the
+!> land snowmelt; both snow fluxes are zero without snow (docs/tendency/snow.md).
 module dry_bucket_tendency
   use iso_fortran_env, only: real64
   use dry_physics_config, only: bucket_config
@@ -25,7 +27,8 @@ contains
       do i = 1, workspace%ring_nlon(j)
         if (workspace%land_fraction(i, j) > 0.0_real64) then
           precipitation = workspace%convective_precipitation(i, j) + &
-                          workspace%large_scale_precipitation(i, j)
+                          workspace%large_scale_precipitation(i, j) - workspace%snowfall(i, j) + &
+                          workspace%snow_melt(i, j)
           call advance_bucket(workspace%previous_surface_water(i, j), precipitation, &
             workspace%land_evaporation(i, j), config%capacity, interval, &
             workspace%forcing_surface_water(i, j), workspace%runoff(i, j))

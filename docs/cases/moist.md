@@ -10,7 +10,7 @@
 - 開水面からの[蒸発](../tendency/evaporation.md)を有効にする。開水面は常に飽和しているとみなし $\beta=1$ とする。潜熱フラックス $LE$ は海洋の熱収支から差し引く。
 - [海氷](../tendency/sea-ice.md)を有効にし、海水温と海氷面積率・体積を予報する。海水の凍結温度は 271.35 K、氷表面温度の上限は 273.15 K、氷のアルベドは 0.60。氷面の昇華・凝華は扱わない。
 - 海洋の熱輸送の代わりに [Q flux](../tendency/q-flux.md) を有効にする。北向き熱輸送の最大 $\Phi_{\max}=1.5\,\mathrm{PW}$ の南北対称な分布から、赤道で $-15.3$、極で $+30.6\,\mathrm{W\,m^{-2}}$ の時間に依らない熱源を混合層に与える。
-- [湿潤対流調節](../tendency/moist-convective-adjustment.md)と[大規模凝結](../tendency/large-scale-condensation.md)を有効にする。[乾燥対流調節](../tendency/dry-convective-adjustment.md)は[湿潤対流調節](../tendency/moist-convective-adjustment.md#乾燥対流調節の変更)の節の変更を加えた上で引き続き用いる。
+- [湿潤対流調節](../tendency/moist-convective-adjustment.md)と[大規模凝結](../tendency/large-scale-condensation.md)を有効にする。[降雪](../tendency/snow.md)は無効で、凝結はすべて雨である。[乾燥対流調節](../tendency/dry-convective-adjustment.md)は[湿潤対流調節](../tendency/moist-convective-adjustment.md#乾燥対流調節の変更)の節の変更を加えた上で引き続き用いる。
 - 地表摩擦は放射ケースから引き継ぐ [Held–Suarez 強制](../tendency/Held-Suarez.md#rayleigh-摩擦)の Rayleigh 摩擦（$\sigma_b=0.7$、時定数 $1\,\mathrm{day}$）をそのまま使い、拡散型の境界層スキームは持たない。
 - [上層の Rayleigh 摩擦](../tendency/upper-rayleigh-friction.md)は slab ocean ケースから引き継ぐ。上端 2 層（$1$--$3\,\mathrm{hPa}$ と $3$--$10\,\mathrm{hPa}$）の風を時定数 $1\,\mathrm{day}$ で減衰させ、放射と湿潤過程による上層風の加速を抑える。全層一様の発散への超粘性（$\tau_\delta=1\,\mathrm{hour}$）も併用する。
 - [長波放射](../tendency/longwave-radiation.md)の水蒸気による光学的厚さ $\Delta\tau^{\mathrm{H_2O}}_k=bq_k\Delta p_k/p_0$ に、slab ocean ケースの固定した[基準水蒸気分布](../tendency/longwave-radiation.md#基準水蒸気分布)ではなく、予報した比湿の正の部分 $\overline q_k^{+,n-1}$ を使う。これにより、比湿の変動が長波放射に反映される簡易的な水蒸気フィードバックを持つ。

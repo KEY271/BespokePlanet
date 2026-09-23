@@ -13,6 +13,10 @@ case_dir <- if (length(args) >= 1) args[[1]] else "output/moist_land_sea_earth_t
 analysis_dir <- if (length(args) >= 2) args[[2]] else file.path(case_dir, "analysis")
 dir.create(analysis_dir, recursive = TRUE, showWarnings = FALSE)
 png_device_type <- if (capabilities("aqua")) "quartz" else "cairo"
+# Shared snow and sea-ice map, kept next to this script.
+script_path <- sub("^--file=", "", grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE))
+script_dir <- if (length(script_path) == 1) dirname(normalizePath(script_path)) else "scripts"
+source(file.path(script_dir, "snow_sea_ice_map.R"))
 
 metadata_path <- file.path(case_dir, "metadata.json")
 if (!file.exists(metadata_path)) stop("Missing ", metadata_path)
@@ -557,6 +561,18 @@ if (has_sea_ice) {
   mtext(sprintf("Sea ice in the %s (native-grid area weighted)", period_label),
         side = 3, outer = TRUE, line = 0.5, cex = 1.12)
   dev.off()
+}
+
+# --- Land snow and sea ice ---------------------------------------------------
+# Land snow cover and sea ice on one map, for March and September. Runs
+# without snow output (older cases) skip the figure.
+snow_fraction_monthly <- snow_ice_read_monthly(case_dir, "snow_fraction", final_months, read_grid)
+has_snow <- !is.null(snow_fraction_monthly)
+if (has_snow) {
+  draw_snow_sea_ice_maps(file.path(analysis_dir, "final_year_snow_and_sea_ice_maps.png"),
+                         nlon, latitude, grid_longitude, land_fraction, calendar_month,
+                         snow_fraction_monthly, if (has_sea_ice) sea_ice_fraction_monthly else NULL,
+                         json_number("masking_water_equivalent_kg_m-2"), period_label, png_device_type)
 }
 
 # --- Koppen first-letter groups -------------------------------------------
@@ -1214,6 +1230,7 @@ notes <- c(
   "Mass streamfunction uses monthly zonal-mean v and monthly zonal-mean surface pressure; pressure shown is the reference full-level pressure.",
   "The spin-up figure uses all daily global means in daily_global.csv, not only the final year.",
   "The analytic-continent comparison is not terrain-only when the reference run predates sea ice; the figure states this when detected.",
+  "The snow and sea-ice map shows March and September monthly means: land (land_fraction >= 0.5) by snow cover f = S/(S+S_0) with the equivalent snow water S, other cells by sea-ice concentration; cover below 1% counts as none. It is written only when the case has snow output.",
   "All annual means use the final 12 monthly means with equal weights."
 )
 if (has_sea_ice) notes <- c(notes,

@@ -6,7 +6,8 @@
 !>   2. moist convective adjustment on the provisional field advanced by the dry
 !>      tendency over the leapfrog width,
 !>   3. large-scale condensation on the field advanced further by the moist
-!>      convective tendency,
+!>      convective tendency, with the snowfall and its melting in warm layers
+!>      when snow is enabled (docs/tendency/snow.md),
 !>   4. the effective column cloud cover from the field advanced by the
 !>      condensation and from the convective precipitation (docs/tendency/cloud.md),
 !>
@@ -36,31 +37,40 @@ contains
   !> humidity; the processes see max(humidity, 0).
   subroutine add_convection_column_tendency(physics, interval, pressure_half, temperature, humidity, &
                                             temperature_rhs, humidity_rhs, convective_precipitation, &
-                                            large_scale_precipitation, cloud_cover)
+                                            large_scale_precipitation, cloud_cover, snowfall, snow_melt)
     type(dry_model_physics_config), intent(in) :: physics
     real(real64), intent(in) :: interval
     real(real64), intent(in) :: pressure_half(0:), temperature(:), humidity(:)
     real(real64), intent(inout) :: temperature_rhs(:), humidity_rhs(:)
     real(real64), intent(out) :: convective_precipitation, large_scale_precipitation, cloud_cover
+    real(real64), intent(out), optional :: snowfall, snow_melt
     real(real64), dimension(size(temperature)) :: full_level_pressure, delta_pressure
+    real(real64) :: column_snowfall, column_snow_melt
 
     call full_level_pressures(pressure_half, full_level_pressure, delta_pressure)
     call add_convection_column_tendency_from_levels(physics, interval, full_level_pressure, delta_pressure, &
                                                     temperature, humidity, temperature_rhs, humidity_rhs, &
-                                                    convective_precipitation, large_scale_precipitation, cloud_cover)
+                                                    convective_precipitation, large_scale_precipitation, cloud_cover, &
+                                                    column_snowfall, column_snow_melt)
+    if (present(snowfall)) snowfall = column_snowfall
+    if (present(snow_melt)) snow_melt = column_snow_melt
   end subroutine add_convection_column_tendency
 
   !> `cloud_cover` is the effective column cloud cover diagnosed from the field
   !> left by the three processes; zero unless the cloud diagnosis is enabled.
+  !> `snowfall` is the snow part of the large-scale precipitation reaching the
+  !> surface and `snow_melt` the snow melted within the column; both are zero
+  !> unless snow is enabled.
   subroutine add_convection_column_tendency_from_levels(physics, interval, full_level_pressure, delta_pressure, &
                                                         temperature, humidity, temperature_rhs, humidity_rhs, &
                                                         convective_precipitation, large_scale_precipitation, &
-                                                        cloud_cover)
+                                                        cloud_cover, snowfall, snow_melt)
     type(dry_model_physics_config), intent(in) :: physics
     real(real64), intent(in) :: interval
     real(real64), intent(in) :: full_level_pressure(:), delta_pressure(:), temperature(:), humidity(:)
     real(real64), intent(inout) :: temperature_rhs(:), humidity_rhs(:)
     real(real64), intent(out) :: convective_precipitation, large_scale_precipitation, cloud_cover
+    real(real64), intent(out) :: snowfall, snow_melt
     real(real64), dimension(size(temperature)) :: exner
     real(real64), dimension(size(temperature)) :: clipped_humidity, dry_temperature_tendency, dry_humidity_tendency
     real(real64), dimension(size(temperature)) :: provisional_temperature, provisional_humidity
@@ -72,6 +82,8 @@ contains
     convective_precipitation = 0.0_real64
     large_scale_precipitation = 0.0_real64
     cloud_cover = 0.0_real64
+    snowfall = 0.0_real64
+    snow_melt = 0.0_real64
     exner = (full_level_pressure/reference_surface_pressure)**dry_air_kappa
     clipped_humidity = max(humidity, 0.0_real64)
     dry_temperature_tendency = 0.0_real64
@@ -107,7 +119,7 @@ contains
       call large_scale_condensation_from_levels(physics%condensation, full_level_pressure, delta_pressure, &
                                                 provisional_temperature, provisional_humidity, interval, &
                                                 condensation_temperature_tendency, condensation_humidity_tendency, &
-                                                large_scale_precipitation)
+                                                large_scale_precipitation, physics%snow, snowfall, snow_melt)
       temperature_rhs = temperature_rhs + condensation_temperature_tendency
       humidity_rhs = humidity_rhs + condensation_humidity_tendency
       provisional_temperature = provisional_temperature + interval*condensation_temperature_tendency
@@ -136,7 +148,7 @@ contains
           workspace%previous_temperature_grid(i, j, :), workspace%previous_humidity_grid(i, j, :), &
           workspace%forcing_temperature(i, j, :), workspace%forcing_humidity(i, j, :), &
           workspace%convective_precipitation(i, j), workspace%large_scale_precipitation(i, j), &
-          workspace%cloud_cover(i, j))
+          workspace%cloud_cover(i, j), workspace%snowfall(i, j), workspace%atmospheric_snow_melt(i, j))
       end do
     end do
     !$omp end parallel do

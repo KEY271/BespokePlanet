@@ -42,7 +42,7 @@ just run slab-ocean
 # 地軸傾斜を地球の値に戻した湿潤ケースを T31 で5年間実行
 just run moist
 
-# 湿潤ケースに大陸・山脈と陸海混合の地表を加えた陸海ケースを T31 / T63 で5年間実行
+# 湿潤ケースに大陸・山脈と陸海混合の地表、降雪と陸の積雪を加えた陸海ケースを T31 / T63 で5年間実行
 just run land
 just run land-t63
 
@@ -54,7 +54,7 @@ just run land-earth-t63
 just viz
 ```
 
-計算結果の解析は `scripts/` の R スクリプトで行う。いずれも第1引数にケースの出力ディレクトリ、第2引数に解析結果の出力先を取り（省略時は `output/<ケース>/analysis/`）、日平均の時系列と最終年の月平均から図と CSV を書く。陸海ケースでは雨温図・ケッペンの気候区分・帯状平均・質量流線関数などを作る。
+計算結果の解析は `scripts/` の R スクリプトで行う。いずれも第1引数にケースの出力ディレクトリ、第2引数に解析結果の出力先を取り（省略時は `output/<ケース>/analysis/`）、日平均の時系列と最終年の月平均から図と CSV を書く。陸海ケースでは雨温図・ケッペンの気候区分・帯状平均・質量流線関数などを作る。雪を含む陸海ケースでは、3 月と 9 月の月平均の陸の積雪率と海氷面積率を一枚にまとめた地図 `final_year_snow_and_sea_ice_maps.png` も書く（描画は両スクリプト共通の `scripts/snow_sea_ice_map.R`）。
 
 ```sh
 # 湿潤 aquaplanet ケース（5 年の全球平均の時系列、最終年の帯状平均と質量流線関数）
@@ -108,6 +108,7 @@ Rscript scripts/analyze_moist_land_sea_earth.R output/moist_land_sea_earth_t31
 - [蒸発](./docs/tendency/evaporation.md)
 - [陸面のバケツモデル](./docs/tendency/bucket.md)
 - [大規模凝結](./docs/tendency/large-scale-condensation.md)
+- [降雪と積雪](./docs/tendency/snow.md)
 - [簡略化 Betts–Miller 型の湿潤対流調節](./docs/tendency/moist-convective-adjustment.md)
 - [雲](./docs/tendency/cloud.md)
 

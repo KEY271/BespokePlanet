@@ -13,7 +13,9 @@
 !> evaluated before the radiation so that the surface budget can take the same
 !> latent heat flux, and the convective processes before the radiation so that
 !> the shortwave reflection can take the cloud cover of the same evaluation
-!> (docs/dynamics/moist.md, "physical processes").
+!> (docs/dynamics/moist.md, "physical processes").  The land bucket follows the
+!> radiation, which advances the land snowpack, so that the bucket takes the
+!> rain and the snowmelt of the same evaluation (docs/tendency/snow.md).
 module dry_tendency_evaluator
   use iso_fortran_env, only: real64
   use harmonics, only: harmonic_transform
@@ -30,6 +32,7 @@ module dry_tendency_evaluator
   use dry_evaporation_tendency, only: add_dry_evaporation_tendency
   use dry_bucket_tendency, only: add_dry_bucket_tendency
   use sea_ice, only: validate_sea_ice_config
+  use land_snow, only: validate_snow_config
   use dry_radiation_tendency, only: add_dry_radiation_tendency, diagnose_surface_tiles
   use dry_convection_tendency, only: add_dry_convection_tendency
   use dry_tendency_diagnostics, only: collect_dry_diagnostics
@@ -97,6 +100,7 @@ contains
           .not. (physics%radiation%slab_ocean_enabled .or. physics%radiation%land_sea_mixing_enabled)) &
         error stop 'sea ice requires a radiative ocean surface'
     end if
+    if (physics%snow%enabled) call validate_snow_config(physics)
     if (physics%q_flux%enabled .and. (.not. physics%radiation%enabled .or. &
         .not. (physics%sea_ice%enabled .or. physics%radiation%land_sea_mixing_enabled))) &
       error stop 'Q flux requires the tiled ocean surface (sea ice or land-sea mixing)'
@@ -122,17 +126,18 @@ contains
       call add_dry_held_suarez_tendency(physics%held_suarez, transform, workspace)
     end if
     if (physics%evaporation%enabled) then
-      call add_dry_evaporation_tendency(physics%evaporation, physics%radiation, physics%bucket, interval, workspace)
+      call add_dry_evaporation_tendency(physics%evaporation, physics%radiation, physics%bucket, physics%snow, &
+        interval, workspace)
     end if
     if (physics%convection%enabled .or. physics%moist_convection%enabled .or. physics%condensation%enabled .or. &
         physics%cloud%enabled) then
       call add_dry_convection_tendency(physics, interval, workspace)
     end if
-    if (physics%bucket%enabled) call add_dry_bucket_tendency(physics%bucket, interval, workspace)
     if (physics%radiation%enabled) then
-      call add_dry_radiation_tendency(physics%radiation, physics%sea_ice, interval, &
+      call add_dry_radiation_tendency(physics%radiation, physics%sea_ice, physics%snow, interval, &
         physics%moisture%enabled, transform%mu, workspace)
     end if
+    if (physics%bucket%enabled) call add_dry_bucket_tendency(physics%bucket, interval, workspace)
 
     if (present(diagnostics)) then
       call diagnose_surface_tiles(physics%radiation, physics%sea_ice, physics%moisture%enabled, transform%mu, workspace)

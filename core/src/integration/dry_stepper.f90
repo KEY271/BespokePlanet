@@ -161,6 +161,8 @@ contains
     if (physics%bucket%enabled) then
       candidate%surface_water = min(physics%bucket%capacity, max(0.0_real64, candidate%surface_water))
     end if
+    candidate%snow_water = previous%snow_water + centered_interval*workspace%forcing_snow_water
+    if (physics%snow%enabled) candidate%snow_water = max(0.0_real64, candidate%snow_water)
     ocean_heat_capacity = physics%radiation%seawater_density*physics%radiation%seawater_specific_heat* &
       physics%radiation%slab_ocean_depth
     if (physics%sea_ice%enabled) call constrain_ice(candidate)
@@ -211,6 +213,13 @@ contains
       if (physics%bucket%enabled) then
         filtered%surface_water = min(physics%bucket%capacity, max(0.0_real64, filtered%surface_water))
         next%surface_water = min(physics%bucket%capacity, max(0.0_real64, next%surface_water))
+      end if
+      call apply_raw_filter(previous%snow_water, current%snow_water, candidate%snow_water, &
+                            filtered%snow_water, next%snow_water, numerics%raw_filter)
+      if (physics%snow%enabled) then
+        ! As for the bucket, the clipping of a filtered negative snowpack is not budgeted.
+        filtered%snow_water = max(0.0_real64, filtered%snow_water)
+        next%snow_water = max(0.0_real64, next%snow_water)
       end if
     else
       call copy_dry_state(current, filtered)
