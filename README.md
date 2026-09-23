@@ -82,8 +82,9 @@ just test-viz
 ### 傾向
 
 - [物理過程を評価する時刻](./docs/tendency/physics-time-level.md)
-- [長波放射](./docs/tendency/longwave-radiation.md)
-- [短波放射](./docs/tendency/shortwave-radiation.md)
+- [帯域別放射](./docs/tendency/band-radiation.md)（放射を用いるケースの放射）
+- [長波放射](./docs/tendency/longwave-radiation.md)（灰色スキーム）
+- [短波放射](./docs/tendency/shortwave-radiation.md)（灰色スキーム）
 - [オゾン](./docs/tendency/ozone.md)
 - [地面](./docs/tendency/ground.md)
 - [Slab ocean](./docs/tendency/slab-ocean.md)

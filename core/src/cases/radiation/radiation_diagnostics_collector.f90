@@ -8,7 +8,7 @@
 module radiation_diagnostics_collector
   use iso_fortran_env, only: real64
   use sea_ice, only: sea_ice_checks
-  use dry_radiation, only: radiation_diagnostics
+  use dry_radiation, only: radiation_diagnostics, band_radiation_sample
   implicit none
   private
 
@@ -30,6 +30,12 @@ module radiation_diagnostics_collector
     real(real64), allocatable :: zonal_humidity(:, :), eddy_vq(:, :)
     !> Snow fields; unallocated without snow.  In a yearly snapshot the fluxes stay unallocated.
     real(real64), allocatable :: snow_water(:, :), snow_fraction(:, :), snowfall(:, :), snow_melt(:, :)
+    !> Band-radiation fields; unallocated with the grey scheme.  The cloud
+    !> pressures are fraction-weighted means, zero where the cloud never occurred.
+    real(real64), allocatable :: outgoing_longwave(:, :), reflected_shortwave(:, :)
+    real(real64), allocatable :: clear_outgoing_longwave(:, :), clear_reflected_shortwave(:, :)
+    real(real64), allocatable :: large_scale_cloud_fraction(:, :), convective_cloud_fraction(:, :)
+    real(real64), allocatable :: large_scale_cloud_pressure(:, :), convective_cloud_pressure(:, :)
   end type radiation_monthly_means
 
   !> Online equal-weight mean of the zonal and surface fields over one output interval.
@@ -61,6 +67,8 @@ module radiation_diagnostics_collector
     real(real64), allocatable :: zonal_vq_sum(:, :)
     real(real64), allocatable :: snow_water_sum(:, :), snow_fraction_sum(:, :), snowfall_sum(:, :)
     real(real64), allocatable :: snow_melt_sum(:, :)
+    logical :: band = .false.
+    type(band_radiation_sample) :: band_sum
   contains
     procedure, public :: add => add_monthly_sample
     procedure, public :: take => take_monthly_means
@@ -117,6 +125,7 @@ module radiation_diagnostics_collector
     real(real64) :: maximum_wind_latitude_degrees = 0.0_real64
     integer :: maximum_wind_level = 0
     real(real64) :: maximum_wind_eta = 0.0_real64
+    type(band_radiation_sample) :: band_sum
   contains
     procedure, public :: add => add_daily_sample
     procedure, public :: take => take_daily_means
@@ -216,6 +225,11 @@ contains
         allocate (this%snowfall_sum, mold=sample%snowfall)
         allocate (this%snow_melt_sum, mold=sample%snow_melt)
       end if
+      this%band = sample%band%enabled
+      if (this%band) then
+        this%band_sum = sample%band
+        this%band_sum%enabled = .true.
+      end if
       call this%reset()
     end if
     if (this%moist .neqv. allocated(sample%precipitation)) then
@@ -223,6 +237,19 @@ contains
     end if
     if (this%tiles .neqv. allocated(sample%sea_ice_fraction)) error stop 'inconsistent tile diagnostics'
     if (this%snow .neqv. allocated(sample%snow_water)) error stop 'inconsistent snow diagnostics'
+    if (this%band .neqv. sample%band%enabled) error stop 'inconsistent band radiation diagnostics'
+    if (this%band) then
+      associate (sum => this%band_sum, band => sample%band)
+        sum%outgoing_longwave = sum%outgoing_longwave + band%outgoing_longwave
+        sum%reflected_shortwave = sum%reflected_shortwave + band%reflected_shortwave
+        sum%clear_outgoing_longwave = sum%clear_outgoing_longwave + band%clear_outgoing_longwave
+        sum%clear_reflected_shortwave = sum%clear_reflected_shortwave + band%clear_reflected_shortwave
+        sum%large_scale_cloud_fraction = sum%large_scale_cloud_fraction + band%large_scale_cloud_fraction
+        sum%convective_cloud_fraction = sum%convective_cloud_fraction + band%convective_cloud_fraction
+        sum%large_scale_cloud_pressure = sum%large_scale_cloud_pressure + band%large_scale_cloud_pressure
+        sum%convective_cloud_pressure = sum%convective_cloud_pressure + band%convective_cloud_pressure
+      end associate
+    end if
     if (this%snow) then
       this%snow_water_sum = this%snow_water_sum + sample%snow_water
       this%snow_fraction_sum = this%snow_fraction_sum + sample%snow_fraction
@@ -304,6 +331,24 @@ contains
       means%snowfall = this%snowfall_sum*inverse_count
       means%snow_melt = this%snow_melt_sum*inverse_count
     end if
+    if (this%band) then
+      associate (sum => this%band_sum)
+        means%outgoing_longwave = sum%outgoing_longwave*inverse_count
+        means%reflected_shortwave = sum%reflected_shortwave*inverse_count
+        means%clear_outgoing_longwave = sum%clear_outgoing_longwave*inverse_count
+        means%clear_reflected_shortwave = sum%clear_reflected_shortwave*inverse_count
+        means%large_scale_cloud_fraction = sum%large_scale_cloud_fraction*inverse_count
+        means%convective_cloud_fraction = sum%convective_cloud_fraction*inverse_count
+        allocate (means%large_scale_cloud_pressure, mold=sum%large_scale_cloud_pressure)
+        allocate (means%convective_cloud_pressure, mold=sum%convective_cloud_pressure)
+        means%large_scale_cloud_pressure = 0.0_real64
+        means%convective_cloud_pressure = 0.0_real64
+        where (sum%large_scale_cloud_fraction > 0.0_real64) &
+          means%large_scale_cloud_pressure = sum%large_scale_cloud_pressure/sum%large_scale_cloud_fraction
+        where (sum%convective_cloud_fraction > 0.0_real64) &
+          means%convective_cloud_pressure = sum%convective_cloud_pressure/sum%convective_cloud_fraction
+      end associate
+    end if
     call this%reset()
   end subroutine take_monthly_means
 
@@ -337,6 +382,16 @@ contains
     if (allocated(this%snow_fraction_sum)) this%snow_fraction_sum = 0.0_real64
     if (allocated(this%snowfall_sum)) this%snowfall_sum = 0.0_real64
     if (allocated(this%snow_melt_sum)) this%snow_melt_sum = 0.0_real64
+    if (this%band) then
+      this%band_sum%outgoing_longwave = 0.0_real64
+      this%band_sum%reflected_shortwave = 0.0_real64
+      this%band_sum%clear_outgoing_longwave = 0.0_real64
+      this%band_sum%clear_reflected_shortwave = 0.0_real64
+      this%band_sum%large_scale_cloud_fraction = 0.0_real64
+      this%band_sum%convective_cloud_fraction = 0.0_real64
+      this%band_sum%large_scale_cloud_pressure = 0.0_real64
+      this%band_sum%convective_cloud_pressure = 0.0_real64
+    end if
   end subroutine reset_monthly_accumulator
 
   integer function monthly_sample_count(this) result(count)
@@ -389,6 +444,23 @@ contains
     this%signed_column_water_sum = this%signed_column_water_sum + sample%mean_signed_column_water
     this%negative_column_water_sum = this%negative_column_water_sum + sample%mean_negative_column_water
     this%cloud_cover_sum = this%cloud_cover_sum + sample%mean_cloud_cover
+    if (sample%band%enabled) then
+      associate (sum => this%band_sum, band => sample%band)
+        sum%enabled = .true.
+        sum%mean_clear_reflected_shortwave = sum%mean_clear_reflected_shortwave + band%mean_clear_reflected_shortwave
+        sum%mean_clear_outgoing_longwave = sum%mean_clear_outgoing_longwave + band%mean_clear_outgoing_longwave
+        sum%mean_window_outgoing_longwave = sum%mean_window_outgoing_longwave + band%mean_window_outgoing_longwave
+        sum%mean_surface_incident_shortwave = sum%mean_surface_incident_shortwave + &
+          band%mean_surface_incident_shortwave
+        sum%mean_atmospheric_shortwave_absorption = sum%mean_atmospheric_shortwave_absorption + &
+          band%mean_atmospheric_shortwave_absorption
+        sum%mean_surface_downward_longwave = sum%mean_surface_downward_longwave + band%mean_surface_downward_longwave
+        sum%mean_surface_upward_longwave = sum%mean_surface_upward_longwave + band%mean_surface_upward_longwave
+        sum%mean_large_scale_cloud_fraction = sum%mean_large_scale_cloud_fraction + &
+          band%mean_large_scale_cloud_fraction
+        sum%mean_convective_cloud_fraction = sum%mean_convective_cloud_fraction + band%mean_convective_cloud_fraction
+      end associate
+    end if
     ! The interval maximum keeps the first sample that reaches it.
     if (sample%maximum_wind_speed > this%maximum_wind_speed) then
       this%maximum_wind_speed = sample%maximum_wind_speed
@@ -450,6 +522,18 @@ contains
     means%mean_signed_column_water = this%signed_column_water_sum*inverse_count
     means%mean_negative_column_water = this%negative_column_water_sum*inverse_count
     means%mean_cloud_cover = this%cloud_cover_sum*inverse_count
+    associate (sum => this%band_sum, band => means%band)
+      band%enabled = sum%enabled
+      band%mean_clear_reflected_shortwave = sum%mean_clear_reflected_shortwave*inverse_count
+      band%mean_clear_outgoing_longwave = sum%mean_clear_outgoing_longwave*inverse_count
+      band%mean_window_outgoing_longwave = sum%mean_window_outgoing_longwave*inverse_count
+      band%mean_surface_incident_shortwave = sum%mean_surface_incident_shortwave*inverse_count
+      band%mean_atmospheric_shortwave_absorption = sum%mean_atmospheric_shortwave_absorption*inverse_count
+      band%mean_surface_downward_longwave = sum%mean_surface_downward_longwave*inverse_count
+      band%mean_surface_upward_longwave = sum%mean_surface_upward_longwave*inverse_count
+      band%mean_large_scale_cloud_fraction = sum%mean_large_scale_cloud_fraction*inverse_count
+      band%mean_convective_cloud_fraction = sum%mean_convective_cloud_fraction*inverse_count
+    end associate
     means%maximum_wind_speed = max(this%maximum_wind_speed, 0.0_real64)
     means%maximum_wind_longitude_degrees = this%maximum_wind_longitude_degrees
     means%maximum_wind_latitude_degrees = this%maximum_wind_latitude_degrees
@@ -501,6 +585,7 @@ contains
     this%signed_column_water_sum = 0.0_real64
     this%negative_column_water_sum = 0.0_real64
     this%cloud_cover_sum = 0.0_real64
+    this%band_sum = band_radiation_sample()
     this%maximum_wind_speed = -1.0_real64
     this%maximum_wind_longitude_degrees = 0.0_real64
     this%maximum_wind_latitude_degrees = 0.0_real64

@@ -13,11 +13,11 @@
 - [湿潤対流調節](../tendency/moist-convective-adjustment.md)と[大規模凝結](../tendency/large-scale-condensation.md)を有効にする。[降雪](../tendency/snow.md)は無効で、凝結はすべて雨である。[乾燥対流調節](../tendency/dry-convective-adjustment.md)は[湿潤対流調節](../tendency/moist-convective-adjustment.md#乾燥対流調節の変更)の節の変更を加えた上で引き続き用いる。
 - 地表摩擦は放射ケースから引き継ぐ [Held–Suarez 強制](../tendency/Held-Suarez.md#rayleigh-摩擦)の Rayleigh 摩擦（$\sigma_b=0.7$、時定数 $1\,\mathrm{day}$）をそのまま使い、拡散型の境界層スキームは持たない。
 - [上層の Rayleigh 摩擦](../tendency/upper-rayleigh-friction.md)は slab ocean ケースから引き継ぐ。上端 2 層（$1$--$3\,\mathrm{hPa}$ と $3$--$10\,\mathrm{hPa}$）の風を時定数 $1\,\mathrm{day}$ で減衰させ、放射と湿潤過程による上層風の加速を抑える。全層一様の発散への超粘性（$\tau_\delta=1\,\mathrm{hour}$）も併用する。
-- [長波放射](../tendency/longwave-radiation.md)の水蒸気による光学的厚さ $\Delta\tau^{\mathrm{H_2O}}_k=bq_k\Delta p_k/p_0$ に、slab ocean ケースの固定した[基準水蒸気分布](../tendency/longwave-radiation.md#基準水蒸気分布)ではなく、予報した比湿の正の部分 $\overline q_k^{+,n-1}$ を使う。これにより、比湿の変動が長波放射に反映される簡易的な水蒸気フィードバックを持つ。
-- [雲](../tendency/cloud.md)の診断を有効にし、対流調節と大規模凝結の後の相対湿度と対流性降水から気柱の実効雲量を診断して、[短波放射](../tendency/shortwave-radiation.md)で下向き短波を一回だけ反射する（雲量 1 で $\alpha_c=0.43$）。雲による短波の吸収は扱わない。海面のアルベドは雲を繰り込んだ $0.3$ から開いた海面の $\alpha_o=0.06$ に変える。長波には雲を入れない。
+- [帯域別放射](../tendency/band-radiation.md)の水蒸気の吸収（長波の線吸収と自己連続吸収、短波の近赤外吸収）に、slab ocean ケースの固定した[基準水蒸気分布](../tendency/longwave-radiation.md#基準水蒸気分布)ではなく、予報した比湿の正の部分 $\overline q_k^{+,n-1}$ を使う。これにより、比湿の変動が放射に反映される水蒸気フィードバックを持つ。
+- [雲](../tendency/cloud.md)の診断を有効にし、対流調節と大規模凝結の後の相対湿度と対流性降水から、大規模雲と対流雲の面積率と高さを診断する。放射は晴天・大規模雲・対流雲の 3 つの副気柱で解き、雲は長波では黒体、短波では雲頂でアルベド $0.43$ で反射する（[帯域別放射](../tendency/band-radiation.md#6-雲の種類と副気柱)）。雲による短波の吸収は扱わない。海面のアルベドは雲を繰り込んだ $0.3$ から開いた海面の $\alpha_o=0.06$ に変える。
 - 地軸の傾きを slab ocean ケースの $0$ から[放射ケース](./radiation.md)と同じ $\varepsilon=23.4^\circ$（[暦と軌道](../calendar.md)）に戻す。したがって日変化と季節変化の両方を持ち、積分開始の 4 月 1 日は北半球の春分である。海洋の熱容量は 30 m の水柱のものなので、季節変化に対する海面温度の応答は地球の海洋より速い。
 
-[オゾン](../tendency/ozone.md)、長波の係数 $a,b,\mu$、海面との顕熱交換、地表摩擦、[暦と軌道](../calendar.md)、自転角速度、計算期間、タイムステップおよび出力間隔は slab ocean ケースと同じとする。短波は水蒸気に依存させず、雲の放射効果は短波にだけ入れる。長波は灰色大気で大気の窓を持たないので、水蒸気フィードバックは地球より強めに出る傾向がある（[長波放射](../tendency/longwave-radiation.md#パラメータの根拠)）。Frierson 型の湿潤 GCM が持つ拡散型の境界層スキームは持たず、地表のバルクフラックス、対流調節、Rayleigh 摩擦で代替しているので、Frierson や Isca のモデルの再現ではない。すべての物理過程は[物理過程を評価する時刻](../tendency/physics-time-level.md)のとおり $\overline X^{n-1}$ の場で評価し、蒸発 → 対流調節・大規模凝結 → 雲量の診断 → 放射の順序（[湿潤大気](../dynamics/moist.md#物理過程)）で逐次に評価する。
+[オゾン](../tendency/ozone.md)、帯域別放射の係数、海面との顕熱交換、地表摩擦、[暦と軌道](../calendar.md)、自転角速度、計算期間、タイムステップおよび出力間隔は slab ocean ケースと同じとする。Frierson 型の湿潤 GCM が持つ拡散型の境界層スキームは持たず、地表のバルクフラックス、対流調節、Rayleigh 摩擦で代替しているので、Frierson や Isca のモデルの再現ではない。すべての物理過程は[物理過程を評価する時刻](../tendency/physics-time-level.md)のとおり $\overline X^{n-1}$ の場で評価し、蒸発 → 対流調節・大規模凝結 → 雲量の診断 → 放射の順序（[湿潤大気](../dynamics/moist.md#物理過程)）で逐次に評価する。
 
 ## 解像度
 

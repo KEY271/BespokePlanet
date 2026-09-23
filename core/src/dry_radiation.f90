@@ -4,16 +4,45 @@ module dry_radiation
   use dry_physics_config, only: radiation_config, radiation_orbital_period, radiation_planet_rotation_rate, &
                                 radiation_surface_heat_capacity
   use surface_exchange, only: surface_sensible_heat_flux
+  use dry_physics_config, only: radiation_scheme_band
+  use cloud_diagnostics, only: cloud_layers
+  use band_radiation, only: band_column_fluxes, band_longwave_subbands, band_longwave_optics, &
+                            band_longwave_downward, band_longwave_upward, band_shortwave, band_surface_emission, &
+                            validate_cloud_layers
   implicit none
   private
 
   real(real64), parameter :: pi = acos(-1.0_real64)
+
+  !> Band-radiation part of a diagnostic sample (docs/tendency/band-radiation.md,
+  !> 10.5): global means in W m^-2 and the cloud sub-column fractions, and the grid
+  !> fields of the monthly means.  The cloud pressures are the full-level pressure
+  !> of each cloud times its fraction, so that their sums over a month divided by
+  !> the summed fraction give the mean cloud pressure.  Unallocated and zero with
+  !> the grey scheme.
+  type, public :: band_radiation_sample
+    logical :: enabled = .false.
+    real(real64) :: mean_clear_reflected_shortwave = 0.0_real64
+    real(real64) :: mean_clear_outgoing_longwave = 0.0_real64
+    real(real64) :: mean_window_outgoing_longwave = 0.0_real64
+    real(real64) :: mean_surface_incident_shortwave = 0.0_real64
+    real(real64) :: mean_atmospheric_shortwave_absorption = 0.0_real64
+    real(real64) :: mean_surface_downward_longwave = 0.0_real64
+    real(real64) :: mean_surface_upward_longwave = 0.0_real64
+    real(real64) :: mean_large_scale_cloud_fraction = 0.0_real64
+    real(real64) :: mean_convective_cloud_fraction = 0.0_real64
+    real(real64), allocatable :: outgoing_longwave(:, :), reflected_shortwave(:, :)
+    real(real64), allocatable :: clear_outgoing_longwave(:, :), clear_reflected_shortwave(:, :)
+    real(real64), allocatable :: large_scale_cloud_fraction(:, :), convective_cloud_fraction(:, :)
+    real(real64), allocatable :: large_scale_cloud_pressure(:, :), convective_cloud_pressure(:, :)
+  end type band_radiation_sample
 
   !> One instantaneous sample of the global and zonal diagnostics that the
   !> radiation, slab-ocean, moist and land--sea cases aggregate.  The moist fields are zero
   !> and unallocated unless the moist processes are active.
   type, public :: radiation_diagnostics
     type(sea_ice_checks) :: ice_checks
+    type(band_radiation_sample) :: band
     real(real64), allocatable :: land_temperature(:, :)
     real(real64), allocatable :: ocean_temperature(:, :)
     real(real64), allocatable :: sea_ice_fraction(:, :)
@@ -92,8 +121,9 @@ module dry_radiation
   end type radiation_diagnostics
 
   public :: radiation_downward_column, radiation_upward_column
-  public :: shortwave_downward_flux
-  public :: ozone_layer_optical_depth
+  public :: radiation_band_downward_column, radiation_band_upward_column
+  public :: shortwave_downward_flux, solar_zenith_cosine
+  public :: ozone_layer_optical_depth, ozone_layer_fraction
   public :: ozone_longwave_layer_optical_depth
   public :: reference_layer_humidity
   public :: gas_longwave_layer_optical_depth
@@ -110,6 +140,7 @@ contains
 
     destination%time_seconds = source%time_seconds
     destination%ice_checks = source%ice_checks
+    destination%band = source%band
     destination%mean_atmospheric_temperature = source%mean_atmospheric_temperature
     destination%mean_surface_temperature = source%mean_surface_temperature
     destination%mean_deep_temperature = source%mean_deep_temperature
@@ -185,8 +216,16 @@ contains
   real(real64) function shortwave_downward_flux(config, sin_latitude, longitude, time_seconds) result(flux)
     type(radiation_config), intent(in) :: config
     real(real64), intent(in) :: sin_latitude, longitude, time_seconds
+
+    flux = config%solar_constant*max(0.0_real64, solar_zenith_cosine(config, sin_latitude, longitude, time_seconds))
+  end function shortwave_downward_flux
+
+  !> Cosine of the solar zenith angle mu_0, negative on the night side.
+  real(real64) function solar_zenith_cosine(config, sin_latitude, longitude, time_seconds) result(cos_zenith)
+    type(radiation_config), intent(in) :: config
+    real(real64), intent(in) :: sin_latitude, longitude, time_seconds
     real(real64) :: orbital_longitude, solar_right_ascension, orbital_period, axial_tilt
-    real(real64) :: sin_declination, cos_declination, cos_latitude, hour_angle, cos_zenith
+    real(real64) :: sin_declination, cos_declination, cos_latitude, hour_angle
 
     if (abs(sin_latitude) > 1.0_real64) error stop 'radiation latitude sine is outside [-1,1]'
     orbital_period = radiation_orbital_period(config)
@@ -198,8 +237,7 @@ contains
     cos_latitude = sqrt(max(0.0_real64, 1.0_real64 - sin_latitude**2))
     hour_angle = radiation_planet_rotation_rate(config)*time_seconds + longitude - solar_right_ascension
     cos_zenith = sin_latitude*sin_declination + cos_latitude*cos_declination*cos(hour_angle)
-    flux = config%solar_constant*max(0.0_real64, cos_zenith)
-  end function shortwave_downward_flux
+  end function solar_zenith_cosine
 
   !> 1/(erf(x_upper) - erf(x_lower)) of the whole prescribed ozone column, the
   !> normalization every layer fraction shares.
@@ -411,12 +449,83 @@ contains
     outgoing = upward(0)
   end subroutine radiation_upward_column
 
+  !> Downward stage of the band radiation (docs/tendency/band-radiation.md): the
+  !> longwave transmittances and sources of the clear sub-column, the area-mean
+  !> downward longwave, and the whole shortwave for a surface of area-mean
+  !> albedo `surface_albedo`.  Without `specific_humidity` the fixed reference
+  !> humidity stands in for the water vapour, as in the grey scheme.
+  subroutine radiation_band_downward_column(config, pressure_half, temperature, sin_latitude, longitude, &
+                                            time_seconds, surface_albedo, clouds, transmission, source, &
+                                            downward_longwave, shortwave_heating, fluxes, specific_humidity)
+    type(radiation_config), intent(in) :: config
+    real(real64), intent(in) :: pressure_half(0:), temperature(:), sin_latitude, longitude, time_seconds
+    real(real64), intent(in) :: surface_albedo
+    type(cloud_layers), intent(in) :: clouds
+    real(real64), intent(out) :: transmission(:, :), source(:, :), downward_longwave(0:), shortwave_heating(:)
+    type(band_column_fluxes), intent(out) :: fluxes
+    real(real64), intent(in), optional :: specific_humidity(:)
+    real(real64) :: humidity(size(temperature)), ozone_fraction(size(temperature))
+    real(real64) :: ozone_normalization, cos_zenith, incoming
+    integer :: levels, k
+
+    levels = size(temperature)
+    if (levels < 1 .or. size(pressure_half) /= levels + 1) &
+      error stop 'band radiation column has inconsistent vertical dimensions'
+    if (size(transmission, 1) /= band_longwave_subbands .or. size(transmission, 2) /= levels .or. &
+        any(shape(source) /= shape(transmission)) .or. size(shortwave_heating) /= levels) &
+      error stop 'band radiation work arrays have inconsistent shapes'
+    if (any(temperature <= 0.0_real64)) error stop 'radiation temperature must be positive'
+    if (surface_albedo < 0.0_real64 .or. surface_albedo > 1.0_real64) error stop 'surface albedo is outside [0,1]'
+    call validate_cloud_layers(clouds, levels)
+    ozone_normalization = ozone_profile_normalization(config)
+    do k = 1, levels
+      if (pressure_half(k) <= pressure_half(k - 1)) error stop 'radiation pressures must increase downward'
+      ozone_fraction(k) = ozone_layer_fraction_normalized(config, pressure_half(k - 1), pressure_half(k), &
+                                                          ozone_normalization)
+    end do
+    if (present(specific_humidity)) then
+      if (size(specific_humidity) /= levels) error stop 'radiation humidity shape mismatch'
+      humidity = max(specific_humidity, 0.0_real64)
+    else
+      do k = 1, levels
+        humidity(k) = reference_layer_humidity(config, pressure_half(k - 1), pressure_half(k), pressure_half(levels))
+      end do
+    end if
+    call band_longwave_optics(config%band, config%stefan_boltzmann_constant, config%gravity_acceleration, &
+                              pressure_half, temperature, humidity, ozone_fraction, transmission, source)
+    call band_longwave_downward(config%band, clouds, transmission, source, downward_longwave)
+    cos_zenith = solar_zenith_cosine(config, sin_latitude, longitude, time_seconds)
+    incoming = config%solar_constant*max(0.0_real64, cos_zenith)
+    call band_shortwave(config%band, config%gravity_acceleration, config%dry_air_specific_heat, pressure_half, &
+                        humidity, ozone_fraction, incoming, cos_zenith, surface_albedo, clouds, &
+                        shortwave_heating, fluxes)
+    fluxes%surface_downward_longwave = downward_longwave(levels)
+  end subroutine radiation_band_downward_column
+
+  !> Upward stage of the band radiation: `surface_emission` is the area-weighted
+  !> black-body emission of the surface in each longwave sub-band.  Returns the
+  !> longwave heating and completes the longwave entries of `fluxes`.
+  subroutine radiation_band_upward_column(config, pressure_half, clouds, transmission, source, downward_longwave, &
+                                          surface_emission, heating, fluxes)
+    type(radiation_config), intent(in) :: config
+    real(real64), intent(in) :: pressure_half(0:), transmission(:, :), source(:, :), downward_longwave(0:)
+    type(cloud_layers), intent(in) :: clouds
+    real(real64), intent(in) :: surface_emission(:)
+    real(real64), intent(out) :: heating(:)
+    type(band_column_fluxes), intent(inout) :: fluxes
+
+    if (size(surface_emission) /= band_longwave_subbands) error stop 'band surface emission has the wrong length'
+    call band_longwave_upward(config%band, clouds, config%gravity_acceleration, config%dry_air_specific_heat, &
+                              pressure_half, transmission, source, downward_longwave, surface_emission, heating, fluxes)
+  end subroutine radiation_band_upward_column
+
   subroutine radiation_tendency(config, pressure_half, temperature, surface_temperature, &
                                 deep_temperature, lowest_u, lowest_v, sin_latitude, &
                                 longitude, time_seconds, temperature_tendency, &
                                 surface_temperature_tendency, deep_temperature_tendency, &
                                 incoming_shortwave, reflected_shortwave, outgoing_longwave, &
-                                latent_heat_flux, specific_humidity, cloud_cover, land_fraction)
+                                latent_heat_flux, specific_humidity, cloud_cover, land_fraction, clouds, &
+                                band_fluxes)
     type(radiation_config), intent(in) :: config
     real(real64), intent(in) :: pressure_half(0:), temperature(:)
     real(real64), intent(in) :: surface_temperature, deep_temperature
@@ -431,6 +540,14 @@ contains
     !> Fraction of the grid cell covered by land.  It is required by the mixed
     !> surface path and absent on the legacy ground/slab paths.
     real(real64), intent(in), optional :: land_fraction
+    !> Cloud sub-columns of the band scheme, which ignores `cloud_cover`, and the
+    !> band column fluxes for the diagnostics.
+    type(cloud_layers), intent(in), optional :: clouds
+    type(band_column_fluxes), intent(out), optional :: band_fluxes
+    type(cloud_layers) :: column_clouds
+    type(band_column_fluxes) :: fluxes
+    real(real64) :: band_transmission(band_longwave_subbands, size(temperature))
+    real(real64) :: band_source(band_longwave_subbands, size(temperature))
     real(real64) :: upward_longwave(0:size(temperature)), downward_longwave(0:size(temperature))
     real(real64) :: transmission(size(temperature)), emission(size(temperature))
     real(real64) :: sw_heating(size(temperature))
@@ -495,6 +612,42 @@ contains
       if (size(specific_humidity) /= number_of_levels) then
         error stop 'radiation humidity column has an inconsistent length'
       end if
+    end if
+
+    if (config%scheme == radiation_scheme_band) then
+      column_clouds = cloud_layers()
+      if (present(clouds)) then
+        column_clouds = clouds
+      else if (cloud > 0.0_real64) then
+        error stop 'band radiation takes the cloud sub-columns, not the effective cloud cover'
+      end if
+      call radiation_band_downward_column(config, pressure_half, temperature, sin_latitude, longitude, time_seconds, &
+        surface_albedo, column_clouds, band_transmission, band_source, downward_longwave, sw_heating, fluxes, &
+        specific_humidity)
+      call radiation_band_upward_column(config, pressure_half, column_clouds, band_transmission, band_source, &
+        downward_longwave, band_surface_emission(config%band, stefan_boltzmann_constant, surface_temperature), &
+        temperature_tendency, fluxes)
+      temperature_tendency = temperature_tendency + sw_heating
+      sensible_heat = surface_sensible_heat_flux(config, pressure_half, temperature(number_of_levels), &
+                                                 surface_temperature, lowest_u, lowest_v)
+      pressure_thickness = pressure_half(number_of_levels) - pressure_half(number_of_levels - 1)
+      temperature_tendency(number_of_levels) = temperature_tendency(number_of_levels) + &
+        dry_gravity_acceleration/(dry_air_specific_heat*pressure_thickness)*sensible_heat
+      incoming_shortwave = fluxes%incoming_shortwave
+      reflected_shortwave = fluxes%reflected_shortwave
+      outgoing_longwave = fluxes%outgoing_longwave
+      surface_deep_heat = ground_exchange*(surface_temperature - deep_temperature)
+      ! The atmosphere sees the sub-band sum of sigma T_s^4, equal to it within rounding.
+      surface_temperature_tendency = ((1.0_real64 - surface_albedo)*fluxes%surface_incident_shortwave + &
+        downward_longwave(number_of_levels) - stefan_boltzmann_constant*surface_temperature**4 - &
+        surface_deep_heat - sensible_heat - surface_latent_heat)/surface_heat_capacity
+      if (.not. config%land_sea_mixing_enabled .and. config%slab_ocean_enabled) then
+        deep_temperature_tendency = 0.0_real64
+      else
+        deep_temperature_tendency = surface_deep_heat/config%deep_ground_heat_capacity
+      end if
+      if (present(band_fluxes)) band_fluxes = fluxes
+      return
     end if
 
     call radiation_downward_column(config, pressure_half, temperature, sin_latitude, longitude, time_seconds, &

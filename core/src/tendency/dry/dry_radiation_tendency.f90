@@ -7,13 +7,16 @@
 !> has been added.  This module accumulates nothing over time and writes no files.
 module dry_radiation_tendency
   use iso_fortran_env, only: real64
-  use dry_physics_config, only: radiation_config, sea_ice_config, snow_config
+  use dry_physics_config, only: radiation_config, sea_ice_config, snow_config, radiation_scheme_band
+  use cloud_diagnostics, only: cloud_layers
+  use band_radiation, only: band_column_fluxes, band_longwave_subbands
   use surface_tiles, only: tiled_surface_tendency
   use sea_ice, only: sea_ice_budget, solve_ice_surface
   use dry_vertical_coordinate, only: dry_air_kappa
   use surface_exchange, only: lowest_full_level_pressure, surface_transfer_mass_flux
   use moist_thermodynamics, only: latent_heat_of_condensation
-  use dry_radiation, only: radiation_tendency, reference_layer_humidity, radiation_downward_column
+  use dry_radiation, only: radiation_tendency, reference_layer_humidity, radiation_downward_column, &
+                           radiation_band_downward_column
   use dry_tendency_workspace, only: dry_workspace_type
   implicit none
   private
@@ -42,14 +45,19 @@ contains
     real(real64) :: surface_contribution, deep_contribution
     type(sea_ice_budget) :: budget
     real(real64) :: humidity(workspace%number_of_levels)
+    type(cloud_layers) :: clouds
+    type(band_column_fluxes) :: fluxes
 
     levels = workspace%number_of_levels
     !$omp parallel do default(shared) schedule(dynamic, 2) &
     !$omp   private(i, j, k, longitude, incoming_shortwave, reflected_shortwave, outgoing_longwave) &
-    !$omp   private(temperature_contribution, surface_contribution, deep_contribution, budget, humidity)
+    !$omp   private(temperature_contribution, surface_contribution, deep_contribution, budget, humidity) &
+    !$omp   private(clouds, fluxes)
     do j = 1, workspace%ny
       do i = 1, workspace%ring_nlon(j)
         longitude = 2.0_real64*acos(-1.0_real64)*real(i - 1, real64)/real(workspace%ring_nlon(j), real64)
+        clouds = column_cloud_layers(workspace, i, j)
+        fluxes = band_column_fluxes()
         if (workspace%surface_tiles_enabled) then
           ! Dry columns use the same prescribed humidity profile as the legacy radiation path.
           if (moisture_enabled) then
@@ -75,7 +83,8 @@ contains
             workspace%reflected_shortwave(i, j), workspace%outgoing_longwave(i, j), budget, humidity, &
             workspace%ice_surface_residual(i, j), workspace%ocean_q_flux(i, j), snow, &
             workspace%previous_snow_water(i, j), workspace%snowfall(i, j), &
-            workspace%forcing_snow_water(i, j), workspace%snow_melt(i, j))
+            workspace%forcing_snow_water(i, j), workspace%snow_melt(i, j), clouds, fluxes)
+          call record_band_fluxes(config, fluxes, workspace, i, j)
           workspace%ice_energy_residual(i, j) = budget%energy_residual
           ! Pure ocean keeps no snowpack, so only land points have a snow budget.
           if (snow%enabled .and. workspace%land_fraction(i, j) > 0.0_real64) then
@@ -96,7 +105,8 @@ contains
               deep_contribution, incoming_shortwave, reflected_shortwave, outgoing_longwave, &
               latent_heat_flux=workspace%latent_heat_flux(i, j), &
               specific_humidity=workspace%previous_humidity_grid(i, j, :), &
-              cloud_cover=workspace%cloud_cover(i, j), land_fraction=workspace%land_fraction(i, j))
+              cloud_cover=workspace%cloud_cover(i, j), land_fraction=workspace%land_fraction(i, j), &
+              clouds=clouds, band_fluxes=fluxes)
           else
             call radiation_tendency(config, workspace%previous_pressure_half(i, j, :), &
             workspace%previous_temperature_grid(i, j, :), &
@@ -106,7 +116,8 @@ contains
             longitude, workspace%evaluation_time, temperature_contribution, surface_contribution, &
             deep_contribution, incoming_shortwave, reflected_shortwave, outgoing_longwave, &
             latent_heat_flux=workspace%latent_heat_flux(i, j), &
-            specific_humidity=workspace%previous_humidity_grid(i, j, :), cloud_cover=workspace%cloud_cover(i, j))
+            specific_humidity=workspace%previous_humidity_grid(i, j, :), cloud_cover=workspace%cloud_cover(i, j), &
+            clouds=clouds, band_fluxes=fluxes)
           end if
         else
           if (config%land_sea_mixing_enabled) then
@@ -118,7 +129,7 @@ contains
               longitude, workspace%evaluation_time, temperature_contribution, surface_contribution, &
               deep_contribution, incoming_shortwave, reflected_shortwave, outgoing_longwave, &
               latent_heat_flux=workspace%latent_heat_flux(i, j), &
-              land_fraction=workspace%land_fraction(i, j))
+              land_fraction=workspace%land_fraction(i, j), band_fluxes=fluxes)
           else
             call radiation_tendency(config, workspace%previous_pressure_half(i, j, :), &
             workspace%previous_temperature_grid(i, j, :), &
@@ -127,7 +138,7 @@ contains
             workspace%previous_u(i, j, levels), workspace%previous_v(i, j, levels), transform_mu(j), &
             longitude, workspace%evaluation_time, temperature_contribution, surface_contribution, &
             deep_contribution, incoming_shortwave, reflected_shortwave, outgoing_longwave, &
-            latent_heat_flux=workspace%latent_heat_flux(i, j))
+            latent_heat_flux=workspace%latent_heat_flux(i, j), band_fluxes=fluxes)
           end if
         end if
         workspace%forcing_temperature(i, j, :) = workspace%forcing_temperature(i, j, :) + temperature_contribution
@@ -137,10 +148,40 @@ contains
         workspace%incoming_shortwave(i, j) = incoming_shortwave
         workspace%reflected_shortwave(i, j) = reflected_shortwave
         workspace%outgoing_longwave(i, j) = outgoing_longwave
+        call record_band_fluxes(config, fluxes, workspace, i, j)
       end do
     end do
     !$omp end parallel do
   end subroutine add_dry_radiation_tendency
+
+  !> Cloud sub-columns of one grid point from the latest cloud diagnosis.
+  pure function column_cloud_layers(workspace, i, j) result(clouds)
+    type(dry_workspace_type), intent(in) :: workspace
+    integer, intent(in) :: i, j
+    type(cloud_layers) :: clouds
+
+    clouds%large_scale_fraction = workspace%large_scale_cloud_fraction(i, j)
+    clouds%convective_fraction = workspace%convective_cloud_fraction(i, j)
+    clouds%large_scale_level = workspace%large_scale_cloud_level(i, j)
+    clouds%convective_level = workspace%convective_cloud_level(i, j)
+  end function column_cloud_layers
+
+  !> Keeps the band-radiation column fluxes of one grid point for the diagnostics.
+  subroutine record_band_fluxes(config, fluxes, workspace, i, j)
+    type(radiation_config), intent(in) :: config
+    type(band_column_fluxes), intent(in) :: fluxes
+    type(dry_workspace_type), intent(inout) :: workspace
+    integer, intent(in) :: i, j
+
+    if (config%scheme /= radiation_scheme_band) return
+    workspace%clear_reflected_shortwave(i, j) = fluxes%clear_reflected_shortwave
+    workspace%clear_outgoing_longwave(i, j) = fluxes%clear_outgoing_longwave
+    workspace%window_outgoing_longwave(i, j) = fluxes%window_outgoing_longwave
+    workspace%surface_incident_shortwave(i, j) = fluxes%surface_incident_shortwave
+    workspace%atmospheric_shortwave_absorption(i, j) = fluxes%atmospheric_shortwave_absorption
+    workspace%surface_downward_longwave(i, j) = fluxes%surface_downward_longwave
+    workspace%surface_upward_longwave(i, j) = fluxes%surface_upward_longwave
+  end subroutine record_band_fluxes
 
   !> Current-state temperatures for state output; the actual coupling fluxes stay untouched.
   subroutine diagnose_surface_tiles(config, ice, moist, mu, workspace)
@@ -152,7 +193,10 @@ contains
     real(real64) :: transmission(workspace%number_of_levels), emission(workspace%number_of_levels)
     real(real64) :: downward(0:workspace%number_of_levels), sw_rhs(workspace%number_of_levels)
     real(real64) :: humidity(workspace%number_of_levels), sw, incoming, longitude, p, exchange, ta, qc, melt
-    real(real64) :: land, area
+    real(real64) :: land, area, land_albedo, surface_albedo
+    real(real64) :: band_transmission(band_longwave_subbands, workspace%number_of_levels)
+    real(real64) :: band_source(band_longwave_subbands, workspace%number_of_levels)
+    type(band_column_fluxes) :: fluxes
     integer :: i, j, k, levels
     if (.not. workspace%surface_tiles_enabled) return
     levels = workspace%number_of_levels
@@ -161,7 +205,8 @@ contains
     workspace%surface_temperature_grid = 0.0_real64
     !$omp parallel do default(shared) schedule(dynamic, 2) &
     !$omp private(i, j, k, transmission, emission, downward, sw_rhs, humidity, sw, incoming, longitude, &
-    !$omp         p, exchange, ta, qc, melt, land, area)
+    !$omp         p, exchange, ta, qc, melt, land, area, land_albedo, surface_albedo, band_transmission, &
+    !$omp         band_source, fluxes)
     do j = 1, workspace%ny
       do i = 1, workspace%ring_nlon(j)
         land = workspace%land_fraction(i, j)
@@ -176,10 +221,23 @@ contains
                 workspace%pressure_half(i, j, k), workspace%pressure_half(i, j, levels))
             end do
           end if
-          call radiation_downward_column(config, workspace%pressure_half(i, j, :), &
-            workspace%temperature_grid(i, j, :), mu(j), longitude, workspace%evaluation_time, &
-            transmission, emission, downward, sw, incoming, sw_rhs, humidity)
-          sw = sw*(1.0_real64 - workspace%cloud_cover(i, j)*config%cloud_shortwave_albedo)
+          if (config%scheme == radiation_scheme_band) then
+            land_albedo = config%land_shortwave_albedo
+            if (workspace%snow_enabled .and. workspace%snow_water(i, j) > 0.0_real64) land_albedo = land_albedo + &
+              workspace%snow_albedo_increase*workspace%snow_water(i, j)/ &
+              (workspace%snow_water(i, j) + workspace%snow_masking_water_equivalent)
+            surface_albedo = land*land_albedo + (1.0_real64 - land)*((1.0_real64 - area)*config%ocean_shortwave_albedo + &
+              area*ice%albedo)
+            call radiation_band_downward_column(config, workspace%pressure_half(i, j, :), &
+              workspace%temperature_grid(i, j, :), mu(j), longitude, workspace%evaluation_time, surface_albedo, &
+              column_cloud_layers(workspace, i, j), band_transmission, band_source, downward, sw_rhs, fluxes, humidity)
+            sw = fluxes%surface_incident_shortwave
+          else
+            call radiation_downward_column(config, workspace%pressure_half(i, j, :), &
+              workspace%temperature_grid(i, j, :), mu(j), longitude, workspace%evaluation_time, &
+              transmission, emission, downward, sw, incoming, sw_rhs, humidity)
+            sw = sw*(1.0_real64 - workspace%cloud_cover(i, j)*config%cloud_shortwave_albedo)
+          end if
           p = lowest_full_level_pressure(workspace%pressure_half(i, j, :))
           exchange = surface_transfer_mass_flux(config, p, workspace%temperature_grid(i, j, levels), &
             workspace%u(i, j, levels), workspace%v(i, j, levels))*config%dry_air_specific_heat

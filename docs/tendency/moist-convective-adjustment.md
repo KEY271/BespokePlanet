@@ -80,7 +80,7 @@ $$
 k_t=\min\{k\le k_f:\;T_{v,\mathrm{ref},j}>T_{v,j}\ \text{for all}\ k\le j\le k_f\}
 $$
 
-$k_t$ より上に再び浮力が正になる層があっても、そこは対流層に含めない。一方 $k_f$ と $N$ の間に浮力が負の層があっても、$k_t\le k\le N$ の全層を対流層とする。この決め方は Frierson (2007) の level of zero buoyancy と同じであり、CAPE をこの連続した層で
+降水のある深い対流では、この $k_t$ を[帯域別放射](./band-radiation.md#62-雲の高さ)の対流雲の雲頂にも使う。浅い対流と対流のない気柱では、雲頂として 0 を返す。$k_t$ より上に再び浮力が正になる層があっても、そこは対流層に含めない。一方 $k_f$ と $N$ の間に浮力が負の層があっても、$k_t\le k\le N$ の全層を対流層とする。この決め方は Frierson (2007) の level of zero buoyancy と同じであり、CAPE をこの連続した層で
 
 $$
 \mathrm{CAPE}=\sum_{k=k_t}^{k_f}R\left(T_{v,\mathrm{ref},k}-T_{v,k}\right)\ln\frac{p_{k+1/2}}{p_{k-1/2}}

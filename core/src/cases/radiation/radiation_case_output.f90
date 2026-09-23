@@ -9,7 +9,7 @@ module radiation_case_output
   use dry_case_output, only: write_dry_reference_atmosphere
   use planet_parameters, only: planet_config
   use dry_physics_config, only: dry_model_physics_config, radiation_config, radiation_days_per_year, &
-                                radiation_orbital_period, radiation_surface_heat_capacity
+                                radiation_orbital_period, radiation_surface_heat_capacity, radiation_scheme_band
   use dry_radiation, only: radiation_diagnostics
   use radiation_diagnostics_collector, only: radiation_monthly_means
   use moist_thermodynamics, only: water_vapor_gas_constant, latent_heat_of_condensation, &
@@ -35,6 +35,8 @@ module radiation_case_output
     logical :: include_surface_tiles = .false.
     logical :: include_sea_ice = .false.
     logical :: include_snow = .false.
+    !> Band-radiation fluxes and cloud sub-columns (docs/tendency/band-radiation.md, 10.5).
+    logical :: include_band_radiation = .false.
   end type radiation_output_options
 
   !> Precipitation and evaporation are aggregated in kg m^-2 s^-1 and written in mm day^-1.
@@ -77,6 +79,11 @@ contains
       ',maximum_ice_energy_residual_j_m-2,maximum_ice_scaled_surface_residual_w_m-1,'// &
       'maximum_ice_projection_area,maximum_ice_projection_volume_m,maximum_ice_projection_temperature_k,'// &
       'maximum_ice_projection_energy_residual_j_m-2,ice_projected_cells,ice_checked_cells'
+    if (options%include_band_radiation) header = header// &
+      ',clear_sky_reflected_shortwave_w_m-2,clear_sky_outgoing_longwave_w_m-2,window_outgoing_longwave_w_m-2,'// &
+      'atmospheric_shortwave_absorption_w_m-2,surface_downward_shortwave_w_m-2,'// &
+      'surface_downward_longwave_w_m-2,surface_upward_longwave_w_m-2,'// &
+      'large_scale_cloud_fraction,convective_cloud_fraction'
     call write_csv_header(trim(case_directory)//'/daily_global.csv', header)
   end subroutine initialize_radiation_daily_output
 
@@ -138,6 +145,14 @@ contains
       csv_real(means%ice_checks%projection_volume)//','//csv_real(means%ice_checks%projection_temperature)//','// &
       csv_real(means%ice_checks%projection_energy_residual)//','//csv_integer(means%ice_checks%projected_cells)//','// &
       csv_integer(means%ice_checks%checked_cells)
+    if (options%include_band_radiation) row = row//','// &
+      csv_real(means%band%mean_clear_reflected_shortwave)//','//csv_real(means%band%mean_clear_outgoing_longwave)// &
+      ','//csv_real(means%band%mean_window_outgoing_longwave)//','// &
+      csv_real(means%band%mean_atmospheric_shortwave_absorption)//','// &
+      csv_real(means%band%mean_surface_incident_shortwave)//','// &
+      csv_real(means%band%mean_surface_downward_longwave)//','//csv_real(means%band%mean_surface_upward_longwave)// &
+      ','//csv_real(means%band%mean_large_scale_cloud_fraction)//','// &
+      csv_real(means%band%mean_convective_cloud_fraction)
     call append_csv_row(trim(case_directory)//'/daily_global.csv', row)
   end subroutine append_radiation_daily_output
 
@@ -229,6 +244,29 @@ contains
       call write_field(trim(case_directory)//'/monthly_snow_melt_m'//month_text//'.bin', nlon, &
                        mm_per_day*means%snow_melt)
     end if
+    if (options%include_band_radiation) then
+      if (.not. allocated(means%outgoing_longwave) .or. .not. allocated(means%convective_cloud_pressure)) &
+        error stop 'band radiation monthly means are missing'
+      call write_band_monthly_field('outgoing_longwave', means%outgoing_longwave)
+      call write_band_monthly_field('reflected_shortwave', means%reflected_shortwave)
+      call write_band_monthly_field('clear_sky_outgoing_longwave', means%clear_outgoing_longwave)
+      call write_band_monthly_field('clear_sky_reflected_shortwave', means%clear_reflected_shortwave)
+      call write_band_monthly_field('large_scale_cloud_fraction', means%large_scale_cloud_fraction)
+      call write_band_monthly_field('convective_cloud_fraction', means%convective_cloud_fraction)
+      call write_band_monthly_field('large_scale_cloud_pressure', means%large_scale_cloud_pressure)
+      call write_band_monthly_field('convective_cloud_pressure', means%convective_cloud_pressure)
+    end if
+
+  contains
+
+    subroutine write_band_monthly_field(name, field)
+      character(*), intent(in) :: name
+      real(real64), intent(in) :: field(:, :)
+
+      call check_finite('monthly_'//name, nlon, field)
+      call write_field(trim(case_directory)//'/monthly_'//name//'_m'//month_text//'.bin', nlon, field)
+    end subroutine write_band_monthly_field
+
   end subroutine write_radiation_monthly_output
 
   subroutine write_radiation_yearly_snapshot(case_directory, year, nlon, &
@@ -457,9 +495,19 @@ contains
     write (unit, '(a,i0)') '    "days_per_year": ', radiation_days_per_year(radiation)
     write (unit, '(a)') '  },'
     write (unit, '(a)') '  "radiation": {'
+    if (radiation%scheme == radiation_scheme_band) then
+      write (unit, '(a)') '    "scheme": "band (docs/tendency/band-radiation.md)",'
+      call write_band_radiation_metadata(unit, radiation)
+    else
+      write (unit, '(a)') '    "scheme": "grey",'
+    end if
     write (unit, '(a,es24.16e3,a)') '    "solar_constant_w_m-2": ', radiation%solar_constant, ','
     write (unit, '(a,es24.16e3,a)') '    "surface_shortwave_albedo": ', radiation%surface_shortwave_albedo, ','
-    if (physics%cloud%enabled) then
+    if (physics%cloud%enabled .and. radiation%scheme == radiation_scheme_band) then
+      write (unit, '(a)') '    "surface_albedo_meaning": "surface without clouds; cloud reflection is diagnosed",'
+      write (unit, '(a)') '    "clouds": "clear, large-scale and convective sub-columns; one cloud per cloudy '// &
+        'sub-column, black in the longwave and reflecting at its top in the shortwave",'
+    else if (physics%cloud%enabled) then
       write (unit, '(a)') '    "surface_albedo_meaning": "surface without clouds; cloud reflection is diagnosed",'
       write (unit, '(a,es24.16e3,a)') '    "cloud_shortwave_albedo": ', radiation%cloud_shortwave_albedo, ','
       write (unit, '(a)') '    "cloud_shortwave": "downward shortwave below the ozone layer reflected once by '// &
@@ -471,6 +519,9 @@ contains
     write (unit, '(a,es24.16e3,a)') '    "axial_tilt_radians": ', radiation%axial_tilt, ','
     write (unit, '(a,es24.16e3,a)') '    "orbital_period_seconds": ', orbital_period, ','
     write (unit, '(a,es24.16e3,a)') '    "rotation_rate_rad_s": ', planet%rotation_rate, ','
+    if (radiation%scheme == radiation_scheme_band) then
+      write (unit, '(a)') '    "grey_coefficients_unused": "the grey coefficients below are not used by the band scheme",'
+    end if
     write (unit, '(a)') '    "longwave_optical_depth": "grey; d tau/dp = (a mu + b q)/p_0 plus ozone '// &
       '(Byrne & O''Gorman 2013 as in Isca)",'
     write (unit, '(a,es24.16e3,a)') &
@@ -851,6 +902,13 @@ contains
       write (unit, '(a)') '    "monthly_evaporation": "monthly_evaporation_m{month:04d}.bin",'
       write (unit, '(a)') '    "monthly_precipitable_water": "monthly_precipitable_water_m{month:04d}.bin",'
       write (unit, '(a)') '    "monthly_cloud_cover": "monthly_cloud_cover_m{month:04d}.bin",'
+      if (options%include_band_radiation) then
+        write (unit, '(a)') '    "monthly_band_radiation_fields": "monthly_{outgoing_longwave, reflected_shortwave, '// &
+          'clear_sky_outgoing_longwave, clear_sky_reflected_shortwave, large_scale_cloud_fraction, '// &
+          'convective_cloud_fraction, large_scale_cloud_pressure, convective_cloud_pressure}_m{month:04d}.bin",'
+        write (unit, '(a)') '    "monthly_cloud_pressure": "full-level pressure of the cloud level weighted by the '// &
+          'cloud fraction over the month, Pa; 0 where the cloud never occurred",'
+      end if
       write (unit, '(a)') '    "yearly_cloud_cover": "yearly_cloud_cover_y{year:04d}.bin",'
       if (options%include_surface_tiles) then
         write (unit, '(a)') '    "yearly_cloud_cover_sampling": "diagnosed from the snapshot state",'
@@ -913,6 +971,52 @@ contains
     write (unit, '(a)') '}'
     close (unit)
   end subroutine write_radiation_metadata
+
+  !> Coefficients of the band radiation, written into the radiation object.
+  subroutine write_band_radiation_metadata(unit, radiation)
+    integer, intent(in) :: unit
+    type(radiation_config), intent(in) :: radiation
+
+    associate (band => radiation%band)
+      write (unit, '(a)') '    "band": {'
+      write (unit, '(a)') '      "longwave_subbands": "window, co2_centre, co2_wings, weak_water_vapour, '// &
+        'strong_water_vapour",'
+      write (unit, '(a)') '      "shortwave_bands": "uv, visible, weak_near_infrared, strong_near_infrared",'
+      write (unit, '(a,es24.16e3,a)') '      "diffusivity": ', band%diffusivity, ','
+      write (unit, '(a,es24.16e3,a)') '      "co2_volume_mixing_ratio": ', band%co2_volume_mixing_ratio, ','
+      write (unit, '(a,es24.16e3,a)') '      "co2_reference_volume_mixing_ratio": ', &
+        band%co2_reference_volume_mixing_ratio, ','
+      write (unit, '(a,es24.16e3,a)') '      "ozone_column_kg_m-2": ', band%ozone_column, ','
+      call write_real_array(unit, 'longwave_edges_cm-1', band%longwave_edges, .true.)
+      call write_real_array(unit, 'longwave_line_m2_kg-1', band%longwave_line, .true.)
+      call write_real_array(unit, 'longwave_line_pressure_exponent', band%longwave_line_pressure_exponent, .true.)
+      call write_real_array(unit, 'longwave_self_continuum_m2_kg-1', band%longwave_self_continuum, .true.)
+      call write_real_array(unit, 'longwave_co2_m2_kg-1', band%longwave_co2, .true.)
+      call write_real_array(unit, 'longwave_co2_pressure_exponent', band%longwave_co2_pressure_exponent, .true.)
+      call write_real_array(unit, 'longwave_co2_concentration_exponent', &
+                            band%longwave_co2_concentration_exponent, .true.)
+      call write_real_array(unit, 'longwave_ozone_m2_kg-1', band%longwave_ozone, .true.)
+      call write_real_array(unit, 'shortwave_band_fraction', band%shortwave_band_fraction, .true.)
+      call write_integer_array(unit, 'shortwave_gpoint_band', band%shortwave_gpoint_band, .true.)
+      call write_real_array(unit, 'shortwave_gpoint_weight', band%shortwave_gpoint_weight, .true.)
+      call write_real_array(unit, 'shortwave_gpoint_water_vapor_m2_kg-1', band%shortwave_gpoint_water_vapor, .true.)
+      call write_real_array(unit, 'shortwave_gpoint_ozone_m2_kg-1', band%shortwave_gpoint_ozone, .true.)
+      write (unit, '(a,es24.16e3,a)') '      "shortwave_water_vapor_pressure_exponent": ', &
+        band%shortwave_water_vapor_pressure_exponent, ','
+      call write_real_array(unit, 'rayleigh_direct_amplitude', band%rayleigh_direct_amplitude, .true.)
+      call write_real_array(unit, 'rayleigh_direct_slope', band%rayleigh_direct_slope, .true.)
+      call write_real_array(unit, 'rayleigh_diffuse_reflectance', band%rayleigh_diffuse_reflectance, .true.)
+      write (unit, '(a,es24.16e3,a)') '      "large_scale_cloud_shortwave_albedo": ', &
+        band%large_scale_cloud_shortwave_albedo, ','
+      write (unit, '(a,es24.16e3,a)') '      "convective_cloud_shortwave_albedo": ', &
+        band%convective_cloud_shortwave_albedo, ','
+      write (unit, '(a,es24.16e3,a)') '      "large_scale_cloud_longwave_emissivity": ', &
+        band%large_scale_cloud_longwave_emissivity, ','
+      write (unit, '(a,es24.16e3)') '      "convective_cloud_longwave_emissivity": ', &
+        band%convective_cloud_longwave_emissivity
+      write (unit, '(a)') '    },'
+    end associate
+  end subroutine write_band_radiation_metadata
 
   !> The "topography" block of an Earth-terrain run (docs/dynamics/earth-topography.md).
   subroutine write_earth_topography_metadata(unit, terrain, diagnostics)

@@ -25,7 +25,7 @@ program check_dry_atmosphere
   use dry_physics_config, only: dry_model_physics_config, radiation_config, held_suarez_config, &
                                 surface_friction_config, rayleigh_friction_config, convection_config, &
                                 radiation_days_per_year, radiation_orbital_period, radiation_planet_rotation_rate, &
-                                radiation_surface_heat_capacity
+                                radiation_surface_heat_capacity, radiation_scheme_band
   use dry_state, only: dry_state_type, dry_tendency_type, allocate_dry_state, allocate_dry_surface_fields, &
                        allocate_dry_tendency
   use dry_tendency_workspace, only: dry_workspace_type
@@ -549,12 +549,21 @@ contains
     mean_incoming_shortwave = daily_means%mean_incoming_shortwave
     mean_reflected_shortwave = daily_means%mean_reflected_shortwave
     mean_outgoing_longwave = daily_means%mean_outgoing_longwave
-    if (abs(diagnostic_time) > 1.0e-12_real64 .or. &
-        abs(mean_incoming_shortwave - radiation%solar_constant/4.0_real64) > 5.0_real64 .or. &
-        abs(mean_reflected_shortwave - radiation%surface_shortwave_albedo* &
+    ! The band scheme closes the global shortwave budget: what is not reflected at the top
+    ! is absorbed by the atmosphere or by the surface of albedo alpha_s.
+    if (physics%radiation%scheme == radiation_scheme_band) then
+      if (.not. daily_means%band%enabled .or. abs(mean_incoming_shortwave - mean_reflected_shortwave - &
+          daily_means%band%mean_atmospheric_shortwave_absorption - (1.0_real64 - &
+          physics%radiation%surface_shortwave_albedo)*daily_means%band%mean_surface_incident_shortwave) > &
+          1.0e-10_real64*mean_incoming_shortwave) error stop 'band radiation daily shortwave budget does not close'
+    else if (abs(mean_reflected_shortwave - radiation%surface_shortwave_albedo* &
           (1.0_real64 - radiation%ultraviolet_shortwave_fraction* &
           (1.0_real64 - exp(-radiation%ozone_shortwave_optical_depth)))* &
-          mean_incoming_shortwave) > 1.0e-10_real64 .or. &
+          mean_incoming_shortwave) > 1.0e-10_real64) then
+      error stop 'grey radiation daily reflected shortwave is incorrect'
+    end if
+    if (abs(diagnostic_time) > 1.0e-12_real64 .or. &
+        abs(mean_incoming_shortwave - radiation%solar_constant/4.0_real64) > 5.0_real64 .or. &
         min(mean_atmospheric_temperature, mean_surface_temperature, mean_deep_temperature, &
             mean_surface_pressure, mean_outgoing_longwave) <= 0.0_real64 .or. mean_kinetic_energy < 0.0_real64) then
       error stop 'radiation daily diagnostics are incorrect'

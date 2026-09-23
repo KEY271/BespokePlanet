@@ -33,6 +33,8 @@ module dry_tendency_evaluator
   use dry_bucket_tendency, only: add_dry_bucket_tendency
   use sea_ice, only: validate_sea_ice_config
   use land_snow, only: validate_snow_config
+  use band_radiation, only: validate_band_radiation_config
+  use dry_physics_config, only: radiation_scheme_gray, radiation_scheme_band
   use dry_radiation_tendency, only: add_dry_radiation_tendency, diagnose_surface_tiles
   use dry_convection_tendency, only: add_dry_convection_tendency
   use dry_tendency_diagnostics, only: collect_dry_diagnostics
@@ -101,6 +103,13 @@ contains
         error stop 'sea ice requires a radiative ocean surface'
     end if
     if (physics%snow%enabled) call validate_snow_config(physics)
+    if (physics%radiation%enabled) then
+      if (physics%radiation%scheme == radiation_scheme_band) then
+        call validate_band_radiation_config(physics%radiation%band)
+      else if (physics%radiation%scheme /= radiation_scheme_gray) then
+        error stop 'unknown radiation scheme'
+      end if
+    end if
     if (physics%q_flux%enabled .and. (.not. physics%radiation%enabled .or. &
         .not. (physics%sea_ice%enabled .or. physics%radiation%land_sea_mixing_enabled))) &
       error stop 'Q flux requires the tiled ocean surface (sea ice or land-sea mixing)'

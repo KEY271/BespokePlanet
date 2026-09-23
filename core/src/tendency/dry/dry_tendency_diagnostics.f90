@@ -24,6 +24,7 @@ contains
     real(real64) :: column_water, signed_column_water, negative_column_water, speed_squared, maximum_speed_squared
     real(real64) :: land_area, ocean_area, land_weight, ocean_weight, total_precipitation
     real(real64), parameter :: degrees = 180.0_real64/acos(-1.0_real64)
+    integer :: level
 
     levels = workspace%number_of_levels
     diagnostics%time_seconds = workspace%evaluation_time
@@ -68,6 +69,50 @@ contains
       diagnostics%precipitable_water = 0.0_real64
       diagnostics%zonal_humidity = 0.0_real64
       diagnostics%zonal_vq = 0.0_real64
+    end if
+    if (workspace%band_radiation_enabled) then
+      diagnostics%band%enabled = .true.
+      diagnostics%band%outgoing_longwave = workspace%outgoing_longwave
+      diagnostics%band%reflected_shortwave = workspace%reflected_shortwave
+      diagnostics%band%clear_outgoing_longwave = workspace%clear_outgoing_longwave
+      diagnostics%band%clear_reflected_shortwave = workspace%clear_reflected_shortwave
+      diagnostics%band%large_scale_cloud_fraction = workspace%large_scale_cloud_fraction
+      diagnostics%band%convective_cloud_fraction = workspace%convective_cloud_fraction
+      allocate (diagnostics%band%large_scale_cloud_pressure, mold=workspace%large_scale_cloud_fraction)
+      allocate (diagnostics%band%convective_cloud_pressure, mold=workspace%convective_cloud_fraction)
+      diagnostics%band%large_scale_cloud_pressure = 0.0_real64
+      diagnostics%band%convective_cloud_pressure = 0.0_real64
+      do j = 1, workspace%ny
+        area_weight = 0.5_real64*workspace%gaussian_weights(j)/real(workspace%ring_nlon(j), real64)
+        do i = 1, workspace%ring_nlon(j)
+          level = workspace%large_scale_cloud_level(i, j)
+          if (level > 0) diagnostics%band%large_scale_cloud_pressure(i, j) = &
+            workspace%large_scale_cloud_fraction(i, j)*workspace%previous_full_level_pressure(i, j, level)
+          level = workspace%convective_cloud_level(i, j)
+          if (level > 0) diagnostics%band%convective_cloud_pressure(i, j) = &
+            workspace%convective_cloud_fraction(i, j)*workspace%previous_full_level_pressure(i, j, level)
+          associate (band => diagnostics%band)
+            band%mean_clear_reflected_shortwave = band%mean_clear_reflected_shortwave + &
+              area_weight*workspace%clear_reflected_shortwave(i, j)
+            band%mean_clear_outgoing_longwave = band%mean_clear_outgoing_longwave + &
+              area_weight*workspace%clear_outgoing_longwave(i, j)
+            band%mean_window_outgoing_longwave = band%mean_window_outgoing_longwave + &
+              area_weight*workspace%window_outgoing_longwave(i, j)
+            band%mean_surface_incident_shortwave = band%mean_surface_incident_shortwave + &
+              area_weight*workspace%surface_incident_shortwave(i, j)
+            band%mean_atmospheric_shortwave_absorption = band%mean_atmospheric_shortwave_absorption + &
+              area_weight*workspace%atmospheric_shortwave_absorption(i, j)
+            band%mean_surface_downward_longwave = band%mean_surface_downward_longwave + &
+              area_weight*workspace%surface_downward_longwave(i, j)
+            band%mean_surface_upward_longwave = band%mean_surface_upward_longwave + &
+              area_weight*workspace%surface_upward_longwave(i, j)
+            band%mean_large_scale_cloud_fraction = band%mean_large_scale_cloud_fraction + &
+              area_weight*workspace%large_scale_cloud_fraction(i, j)
+            band%mean_convective_cloud_fraction = band%mean_convective_cloud_fraction + &
+              area_weight*workspace%convective_cloud_fraction(i, j)
+          end associate
+        end do
+      end do
     end if
     atmospheric_mass = 0.0_real64
     temperature_mass_sum = 0.0_real64

@@ -7,7 +7,8 @@ module radiation_case
   use harmonics, only: harmonic_transform
   use planet_parameters, only: planet_config
   use numerics_config, only: model_numerics_config
-  use dry_physics_config, only: dry_model_physics_config, radiation_days_per_year, radiation_orbital_period
+  use dry_physics_config, only: dry_model_physics_config, radiation_days_per_year, radiation_orbital_period, &
+                                radiation_scheme_band
   use dry_atmosphere, only: dry_atmosphere_solver
   use dry_case_initial_conditions, only: radiation_case_physics, slab_ocean_case_physics, moist_case_physics, &
                                          land_sea_case_physics, radiation_case_planet, set_radiation_case_state, &
@@ -169,6 +170,7 @@ contains
     options%include_surface_tiles = physics%radiation%land_sea_mixing_enabled .or. physics%sea_ice%enabled
     options%include_sea_ice = physics%sea_ice%enabled
     options%include_snow = physics%snow%enabled
+    options%include_band_radiation = physics%radiation%scheme == radiation_scheme_band
     planet = radiation_case_planet(physics)
     solar_day = physics%radiation%solar_day
     days_per_month = physics%radiation%days_per_month

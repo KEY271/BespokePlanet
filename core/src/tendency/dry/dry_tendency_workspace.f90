@@ -21,7 +21,7 @@ module dry_tendency_workspace
   use spectral_vector_operators, only: diagnose_horizontal_velocity
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate, dry_air_gas_constant
   use dry_state, only: dry_state_type
-  use dry_physics_config, only: dry_model_physics_config
+  use dry_physics_config, only: dry_model_physics_config, radiation_scheme_band
   use moist_thermodynamics, only: virtual_temperature_coefficient
   implicit none
   private
@@ -92,6 +92,16 @@ module dry_tendency_workspace
     !> Effective column cloud cover diagnosed after the convective processes and
     !> used by the shortwave reflection of the same evaluation (docs/tendency/cloud.md).
     real(real64), allocatable :: cloud_cover(:, :)
+    !> Cloud sub-columns of the band radiation (docs/tendency/band-radiation.md):
+    !> area fractions and levels of the large-scale and the convective cloud,
+    !> diagnosed with the cloud cover.  A level is 0 where its fraction is 0.
+    real(real64), allocatable :: large_scale_cloud_fraction(:, :), convective_cloud_fraction(:, :)
+    integer, allocatable :: large_scale_cloud_level(:, :), convective_cloud_level(:, :)
+    !> Band-radiation column fluxes kept for the diagnostics (W m^-2); zero with the grey scheme.
+    real(real64), allocatable :: clear_reflected_shortwave(:, :), clear_outgoing_longwave(:, :)
+    real(real64), allocatable :: window_outgoing_longwave(:, :), surface_incident_shortwave(:, :)
+    real(real64), allocatable :: atmospheric_shortwave_absorption(:, :)
+    real(real64), allocatable :: surface_downward_longwave(:, :), surface_upward_longwave(:, :)
 
     !> Scratch reused within a level.
     real(real64), allocatable :: temporary_grid(:, :), temporary_u(:, :), temporary_v(:, :)
@@ -103,6 +113,8 @@ module dry_tendency_workspace
     !> Wetness below this configured fraction is counted as dry land.
     real(real64) :: bucket_dry_threshold_fraction = 0.1_real64
     logical :: surface_tiles_enabled = .false.
+    !> The band radiation is active and its column fluxes are recorded.
+    logical :: band_radiation_enabled = .false.
     logical :: sea_ice_enabled = .false.
     real(real64), allocatable :: land_temperature(:, :), previous_land_temperature(:, :), forcing_land_temperature(:, :)
     real(real64), allocatable :: ocean_temperature(:, :), previous_ocean_temperature(:, :), forcing_ocean_temperature(:, :)
@@ -119,6 +131,8 @@ module dry_tendency_workspace
     logical :: snow_enabled = .false.
     !> S_0 of the snow cover, for the diagnostics of the current state.
     real(real64) :: snow_masking_water_equivalent = 50.0_real64
+    !> Land albedo increase at full snow cover, for the band shortwave of the current state.
+    real(real64) :: snow_albedo_increase = 0.4_real64
     logical :: physics_grids_ready = .false.
     logical :: held_suarez_grids_ready = .false.
     logical :: radiation_grids_ready = .false.
@@ -202,6 +216,16 @@ contains
     allocate (this%convective_precipitation(nx, ny), this%large_scale_precipitation(nx, ny))
     allocate (this%cloud_cover(nx, ny))
     this%cloud_cover = 0.0_real64
+    allocate (this%large_scale_cloud_fraction(nx, ny), this%convective_cloud_fraction(nx, ny))
+    allocate (this%large_scale_cloud_level(nx, ny), this%convective_cloud_level(nx, ny))
+    this%large_scale_cloud_fraction = 0.0_real64
+    this%convective_cloud_fraction = 0.0_real64
+    this%large_scale_cloud_level = 0
+    this%convective_cloud_level = 0
+    allocate (this%clear_reflected_shortwave(nx, ny), this%clear_outgoing_longwave(nx, ny))
+    allocate (this%window_outgoing_longwave(nx, ny), this%surface_incident_shortwave(nx, ny))
+    allocate (this%atmospheric_shortwave_absorption(nx, ny))
+    allocate (this%surface_downward_longwave(nx, ny), this%surface_upward_longwave(nx, ny))
 
     allocate (this%temporary_grid(nx, ny), this%temporary_u(nx, ny), this%temporary_v(nx, ny))
     allocate (this%dtdlambda(nx, ny), this%dtdphi(nx, ny))
@@ -283,6 +307,17 @@ contains
     this%convective_precipitation = 0.0_real64
     this%large_scale_precipitation = 0.0_real64
     this%cloud_cover = 0.0_real64
+    this%large_scale_cloud_fraction = 0.0_real64
+    this%convective_cloud_fraction = 0.0_real64
+    this%large_scale_cloud_level = 0
+    this%convective_cloud_level = 0
+    this%clear_reflected_shortwave = 0.0_real64
+    this%clear_outgoing_longwave = 0.0_real64
+    this%window_outgoing_longwave = 0.0_real64
+    this%surface_incident_shortwave = 0.0_real64
+    this%atmospheric_shortwave_absorption = 0.0_real64
+    this%surface_downward_longwave = 0.0_real64
+    this%surface_upward_longwave = 0.0_real64
     this%forcing_snow_water = 0.0_real64
     this%snowfall = 0.0_real64
     this%atmospheric_snow_melt = 0.0_real64
@@ -314,6 +349,7 @@ contains
     end if
     this%evaluation_time = evaluation_time
     this%surface_tiles_enabled = physics%radiation%land_sea_mixing_enabled .or. physics%sea_ice%enabled
+    this%band_radiation_enabled = physics%radiation%enabled .and. physics%radiation%scheme == radiation_scheme_band
     this%sea_ice_enabled = physics%sea_ice%enabled
     call copy_surface_field(state%land_temperature, this%land_temperature, 'land_temperature')
     call copy_surface_field(physics_state%land_temperature, this%previous_land_temperature, 'land_temperature')
@@ -327,6 +363,7 @@ contains
     call copy_surface_field(physics_state%snow_water, this%previous_snow_water, 'snow_water')
     this%snow_enabled = physics%snow%enabled
     this%snow_masking_water_equivalent = physics%snow%masking_water_equivalent
+    this%snow_albedo_increase = physics%snow%albedo_increase
     this%full_level_eta = coordinate%full_level_eta
     this%physics_grids_ready = physics%held_suarez%enabled .or. physics%surface_friction%enabled .or. &
                                physics%rayleigh_friction%enabled .or. physics%radiation%enabled .or. &

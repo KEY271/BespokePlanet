@@ -3,12 +3,18 @@
 !> heat by 1 - f and melts with the land heat above the melting temperature;
 !> snow falling on the ocean melts with the heat of the mixed layer
 !> (docs/tendency/snow.md).
+!> With the band radiation the shortwave sees the area-mean albedo of the tiles
+!> and the longwave the sub-band emission of every tile
+!> (docs/tendency/band-radiation.md); the tile budgets are unchanged.
 module surface_tiles
   use iso_fortran_env, only: real64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-  use dry_physics_config, only: radiation_config, sea_ice_config, snow_config
+  use dry_physics_config, only: radiation_config, sea_ice_config, snow_config, radiation_scheme_band
   use dry_vertical_coordinate, only: dry_air_kappa
-  use dry_radiation, only: radiation_downward_column, radiation_upward_column
+  use dry_radiation, only: radiation_downward_column, radiation_upward_column, &
+                           radiation_band_downward_column, radiation_band_upward_column
+  use cloud_diagnostics, only: cloud_layers
+  use band_radiation, only: band_column_fluxes, band_longwave_subbands, band_surface_emission
   use surface_exchange, only: lowest_full_level_pressure, surface_transfer_mass_flux
   use sea_ice, only: solve_ice_surface, advance_sea_ice, sea_ice_budget
   use land_snow, only: snow_cover_fraction, advance_land_snow
@@ -20,7 +26,8 @@ contains
                                     land, tl, td, to, area, volume, land_latent, ocean_latent, cloud, &
                                     air_rhs, land_rhs, deep_rhs, ocean_rhs, area_rhs, volume_rhs, &
                                     ice_temperature, incoming, reflected, outgoing, budget, humidity, surface_residual, &
-                                    ocean_heat_convergence, snow, snow_water, snowfall, snow_rhs, snow_melt)
+                                    ocean_heat_convergence, snow, snow_water, snowfall, snow_rhs, snow_melt, &
+                                    clouds, band_fluxes)
     type(radiation_config), intent(in) :: config
     type(sea_ice_config), intent(in) :: ice
     real(real64), intent(in) :: pressure(0:), air(:), u, v, mu, longitude, time, interval
@@ -35,6 +42,15 @@ contains
     type(snow_config), intent(in), optional :: snow
     real(real64), intent(in), optional :: snow_water, snowfall
     real(real64), intent(out), optional :: snow_rhs, snow_melt
+    !> Cloud sub-columns of the band scheme, which ignores `cloud`, and the band
+    !> column fluxes for the diagnostics.
+    type(cloud_layers), intent(in), optional :: clouds
+    type(band_column_fluxes), intent(out), optional :: band_fluxes
+    type(cloud_layers) :: column_clouds
+    type(band_column_fluxes) :: fluxes
+    real(real64) :: band_transmission(band_longwave_subbands, size(air)), band_source(band_longwave_subbands, size(air))
+    real(real64) :: surface_emission(band_longwave_subbands), surface_albedo
+    logical :: band_scheme
     real(real64), intent(out) :: air_rhs(:), land_rhs, deep_rhs, ocean_rhs, area_rhs, volume_rhs
     real(real64), intent(out) :: ice_temperature, incoming, reflected, outgoing
     type(sea_ice_budget), intent(out) :: budget
@@ -88,14 +104,6 @@ contains
     if (cloud < 0.0_real64 .or. cloud > 1.0_real64) error stop 'invalid cloud fraction'
     if ((land > 0.0_real64 .and. (tl <= 0.0_real64 .or. td <= 0.0_real64)) .or. &
         (land < 1.0_real64 .and. to <= 0.0_real64)) error stop 'invalid surface tile temperature'
-    call radiation_downward_column(config, pressure, air, mu, longitude, time, transmission, emission, &
-                                   downward, sw, incoming, sw_rhs, humidity)
-    sw_surface = (1.0_real64 - cloud*config%cloud_shortwave_albedo)*sw
-    lower_pressure = lowest_full_level_pressure(pressure)
-    exchange = surface_transfer_mass_flux(config, lower_pressure, air(levels), u, v)*config%dry_air_specific_heat
-    ta = air(levels)*(pressure(levels)/lower_pressure)**dry_air_kappa
-    sigma = config%stefan_boltzmann_constant
-    co = config%seawater_density*config%seawater_specific_heat*config%slab_ocean_depth
     wl = land
     wo = 1.0_real64 - land
     wi = 0.0_real64
@@ -103,6 +111,30 @@ contains
       wi = wo*area
       wo = wo*(1.0_real64 - area)
     end if
+    band_scheme = config%scheme == radiation_scheme_band
+    if (band_scheme) then
+      column_clouds = cloud_layers()
+      if (present(clouds)) then
+        column_clouds = clouds
+      else if (cloud > 0.0_real64) then
+        error stop 'band radiation takes the cloud sub-columns, not the effective cloud cover'
+      end if
+      surface_albedo = wl*land_albedo + wo*config%ocean_shortwave_albedo + wi*ice%albedo
+      call radiation_band_downward_column(config, pressure, air, mu, longitude, time, surface_albedo, &
+        column_clouds, band_transmission, band_source, downward, sw_rhs, fluxes, humidity)
+      incoming = fluxes%incoming_shortwave
+      sw_surface = fluxes%surface_incident_shortwave
+    else
+      call radiation_downward_column(config, pressure, air, mu, longitude, time, transmission, emission, &
+                                     downward, sw, incoming, sw_rhs, humidity)
+      sw_surface = (1.0_real64 - cloud*config%cloud_shortwave_albedo)*sw
+    end if
+    lower_pressure = lowest_full_level_pressure(pressure)
+    exchange = surface_transfer_mass_flux(config, lower_pressure, air(levels), u, v)*config%dry_air_specific_heat
+    ta = air(levels)*(pressure(levels)/lower_pressure)**dry_air_kappa
+    sigma = config%stefan_boltzmann_constant
+    co = config%seawater_density*config%seawater_specific_heat*config%slab_ocean_depth
+    surface_emission = 0.0_real64
     hl = 0.0_real64
     ho = 0.0_real64
     hi = 0.0_real64
@@ -127,16 +159,20 @@ contains
       if (snowing) call advance_land_snow(snow, config%surface_heat_capacity, interval, tl, snow_water, snowfall, &
                                           land_rhs, snow_tendency, melt)
       surface_upward = wl*sigma*tl**4
+      if (band_scheme) surface_emission = surface_emission + wl*band_surface_emission(config%band, sigma, tl)
     end if
     if (land < 1.0_real64) then
       ho = exchange*(to - ta)
       fo = (1.0_real64 - config%ocean_shortwave_albedo)*sw_surface + downward(levels) - sigma*to**4 - ho - ocean_latent
       surface_upward = surface_upward + wo*sigma*to**4
+      if (band_scheme) surface_emission = surface_emission + wo*band_surface_emission(config%band, sigma, to)
       if (wi > 0.0_real64) then
         call solve_ice_surface(ice, volume/area, (1.0_real64 - ice%albedo)*sw_surface + downward(levels), &
                               sigma, exchange, ta, ice_temperature, conduction, melting, surface_residual)
         hi = exchange*(ice_temperature - ta)
         surface_upward = surface_upward + wi*sigma*ice_temperature**4
+        if (band_scheme) surface_emission = surface_emission + &
+          wi*band_surface_emission(config%band, sigma, ice_temperature)
       end if
       if (ice%enabled) then
         call advance_sea_ice(ice, co, interval, to, area, volume, fo, conduction, melting, &
@@ -148,12 +184,24 @@ contains
         ocean_rhs = (fo + convergence)/co
       end if
     end if
-    call radiation_upward_column(config, pressure, transmission, emission, downward, surface_upward, air_rhs, outgoing)
+    if (band_scheme) then
+      call radiation_band_upward_column(config, pressure, column_clouds, band_transmission, band_source, downward, &
+                                        surface_emission, air_rhs, fluxes)
+      outgoing = fluxes%outgoing_longwave
+    else
+      call radiation_upward_column(config, pressure, transmission, emission, downward, surface_upward, air_rhs, &
+                                   outgoing)
+    end if
     air_rhs = air_rhs + sw_rhs
     air_rhs(levels) = air_rhs(levels) + config%gravity_acceleration/(config%dry_air_specific_heat* &
       (pressure(levels) - pressure(levels - 1)))*(wl*hl + wo*ho + wi*hi)
-    albedo = wl*land_albedo + wo*config%ocean_shortwave_albedo + wi*ice%albedo
-    reflected = cloud*config%cloud_shortwave_albedo*sw + albedo*sw_surface
+    if (band_scheme) then
+      reflected = fluxes%reflected_shortwave
+      if (present(band_fluxes)) band_fluxes = fluxes
+    else
+      albedo = wl*land_albedo + wo*config%ocean_shortwave_albedo + wi*ice%albedo
+      reflected = cloud*config%cloud_shortwave_albedo*sw + albedo*sw_surface
+    end if
     if (present(snow_rhs)) snow_rhs = snow_tendency
     if (present(snow_melt)) snow_melt = melt
   end subroutine tiled_surface_tendency

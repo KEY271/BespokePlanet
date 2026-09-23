@@ -15,7 +15,7 @@ module dry_case_initial_conditions
                                     jablonowski_williamson_topographic_initial_state
   use dry_held_suarez, only: held_suarez_initial_state
   use dry_physics_config, only: dry_model_physics_config, radiation_config, moisture_config, &
-                                radiation_planet_rotation_rate
+                                radiation_planet_rotation_rate, radiation_scheme_band
   use moist_thermodynamics, only: saturation_specific_humidity, full_level_pressures
   use planet_parameters, only: planet_config
   implicit none
@@ -75,13 +75,15 @@ contains
     call solver%set_physics(physics)
   end subroutine set_held_suarez_case_state
 
-  !> Radiation case physics: radiation with the ground budget, convective
-  !> adjustment, the Held-Suarez boundary drag and a top-level sponge.
+  !> Radiation case physics: band radiation (docs/tendency/band-radiation.md)
+  !> with the ground budget, convective adjustment, the Held-Suarez boundary drag
+  !> and a top-level sponge.  Every radiative case inherits the band scheme.
   function radiation_case_physics() result(physics)
     type(dry_model_physics_config) :: physics
 
     physics = dry_model_physics_config()
     physics%radiation%enabled = .true.
+    physics%radiation%scheme = radiation_scheme_band
     physics%convection%enabled = .true.
     physics%surface_friction%enabled = .true.
     physics%rayleigh_friction%enabled = .true.

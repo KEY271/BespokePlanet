@@ -1,6 +1,6 @@
 # 雲
 
-雲を予報変数としては持たず、各タイムステップで格子点ごとに気柱一つの実効的な雲量（気柱の面積のうち雲が占める割合）$C\in[0,1]$ を、相対湿度と降水から診断する。層ごとの雲量や雲の高さは区別しない。凝結した水は[大規模凝結](./large-scale-condensation.md)と[湿潤対流調節](./moist-convective-adjustment.md)のとおり直ちに降水として地表へ落ちるので、雲水・雲氷の量は追跡せず、雲は放射のためだけの診断量である。診断した雲量は[短波放射](./shortwave-radiation.md)で下向き短波を反射するためにだけ使い、[長波放射](./longwave-radiation.md)には影響させない。鉛直層の添字は[長波放射](./longwave-radiation.md)、full level の気圧 $p_k$ と飽和比湿 $q_s$ は[飽和比湿](./saturation-specific-humidity.md)と同じとする。
+雲を予報変数としては持たず、各タイムステップで格子点ごとに気柱一つの実効的な雲量（気柱の面積のうち雲が占める割合）$C\in[0,1]$ を、相対湿度と降水から診断する。層ごとの雲量や雲の高さは区別しない。凝結した水は[大規模凝結](./large-scale-condensation.md)と[湿潤対流調節](./moist-convective-adjustment.md)のとおり直ちに降水として地表へ落ちるので、雲水・雲氷の量は追跡せず、雲は放射のためだけの診断量である。灰色スキームでは、診断した雲量を[短波放射](./shortwave-radiation.md)で下向き短波を反射するためにだけ使い、[長波放射](./longwave-radiation.md)には影響させない。[帯域別放射](./band-radiation.md)では、雲量を大規模雲と対流雲に分けてそれぞれ高さを持たせ、長波と短波の両方に効かせる（[帯域別放射の雲](#帯域別放射の雲)）。鉛直層の添字は[長波放射](./longwave-radiation.md)、full level の気圧 $p_k$ と飽和比湿 $q_s$ は[飽和比湿](./saturation-specific-humidity.md)と同じとする。
 
 ## 診断に使う場
 
@@ -73,6 +73,23 @@ $$
 とする。$0\le C\le1$ である。[短波放射](./shortwave-radiation.md)はこの $C$ を使い、地表に達する前の下向き短波のうち $C\alpha_c$（$\alpha_c=0.43$）を一回だけ反射する。雲の高さは持たないので、反射する位置による加熱の違いは表れない。全層で $\mathrm{RH}_k\le\mathrm{RH}_c$ かつ $P_{\mathrm{conv}}=0$ の気柱では $C=0$ となり、短波のフラックスは雲を持たない式とビット単位で一致する。反射短波は雲の反射と地表の反射の和 $[C\alpha_c+(1-C\alpha_c)\alpha_s]F^{\downarrow\mathrm{SW}}$ で、$C$ について単調増加なので短波入射の $\alpha_c+(1-\alpha_c)\alpha_s$ 倍を超えない。
 
 雲は比湿と対流性降水を必要とするので、比湿を予報するケースでだけ有効にできる。比湿を予報しない[放射ケース](../cases/radiation.md)と [slab ocean ケース](../cases/slab-ocean.md)では雲を診断せず、$C=0$ として短波を計算する。
+
+## 帯域別放射の雲
+
+[帯域別放射](./band-radiation.md#6-雲の種類と副気柱)では、上の $C^{\mathrm{RH}}$ と $C^{\mathrm{conv}}$ から、気柱を晴天・大規模雲・対流雲の 3 つの副気柱に分ける。
+
+$$
+a_{\mathrm{cv}}=C^{\mathrm{conv}},\qquad
+a_{\mathrm{ls}}=\max\left(C^{\mathrm{RH}}-C^{\mathrm{conv}},\,0\right),\qquad
+a_{\mathrm{clr}}=1-a_{\mathrm{ls}}-a_{\mathrm{cv}}
+$$
+
+面積率の和 $a_{\mathrm{ls}}+a_{\mathrm{cv}}$ は実効雲量 $C$ に等しい。二つの雲が水平に重なる部分は、雲頂の高い対流雲の副気柱に含める。
+
+- 対流雲は、同じステップの[湿潤対流調節](./moist-convective-adjustment.md)の対流頂 $k_t$ の層に置く。$C^{\mathrm{conv}}>0$ は降水のある深い対流のときだけなので、そのとき $k_t$ は定まっている。
+- 大規模雲は、$\mathrm{RH}_k$ が気柱の最大値 $\mathrm{RH}_{\max}$ をとる層のうち最も上の層に置く。
+
+放射の扱いは[帯域別放射](./band-radiation.md#63-雲の放射特性)のとおりで、どちらの雲も長波では黒体、短波では雲頂で $0.43$ を反射する。雲量の出力 $C$ は変わらない。帯域別放射を使うケースでは、面積率 $a_{\mathrm{ls}}$、$a_{\mathrm{cv}}$ と雲の層の気圧も出力する（同ページの 10.5 節）。
 
 ## 評価する時刻と順序
 

@@ -176,12 +176,16 @@ contains
   end subroutine moist_convective_adjustment_tendency
 
   !> As above with the full-level pressures, thicknesses and Exner function supplied.
+  !> `precipitating_top` is the convection top k_t of a precipitating (deep)
+  !> column, the cloud top of the convective cloud (docs/tendency/band-radiation.md),
+  !> and 0 for shallow or no convection.
   pure subroutine moist_convective_adjustment_from_levels(config, full_level_pressure, delta_pressure, exner, &
                                                           temperature, humidity, temperature_tendency, &
-                                                          humidity_tendency, precipitation)
+                                                          humidity_tendency, precipitation, precipitating_top)
     type(moist_convection_config), intent(in) :: config
     real(real64), intent(in) :: full_level_pressure(:), delta_pressure(:), exner(:), temperature(:), humidity(:)
     real(real64), intent(out) :: temperature_tendency(:), humidity_tendency(:), precipitation
+    integer, intent(out), optional :: precipitating_top
     integer :: levels, k, free_convection_level, convection_top, zero_crossing
     real(real64) :: reference_temperature(size(temperature)), parcel_humidity(size(temperature))
     real(real64) :: reference_humidity(size(temperature))
@@ -195,6 +199,7 @@ contains
     temperature_tendency = 0.0_real64
     humidity_tendency = 0.0_real64
     precipitation = 0.0_real64
+    if (present(precipitating_top)) precipitating_top = 0
     if (levels < 2) return
     clipped_humidity = max(humidity, 0.0_real64)
     call moist_convection_reference_profile_from_levels(config, full_level_pressure, exner, temperature, &
@@ -242,6 +247,7 @@ contains
         temperature_change(k) = temperature_change(k) + temperature_shift
       end do
       precipitation = precipitation_from_humidity
+      if (present(precipitating_top)) precipitating_top = convection_top
     else
       ! Shallow convection: restrict the depth so that the column humidity change vanishes.
       zero_crossing = levels

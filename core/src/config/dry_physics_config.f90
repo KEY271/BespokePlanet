@@ -41,11 +41,86 @@ module dry_physics_config
     real(real64) :: rate = 1.0_real64/day_seconds
   end type rayleigh_friction_config
 
+  !> Radiation schemes: the grey longwave with UV-only ozone shortwave absorption
+  !> (docs/tendency/longwave-radiation.md, shortwave-radiation.md) and the band
+  !> scheme (docs/tendency/band-radiation.md).
+  integer, parameter, public :: radiation_scheme_gray = 1
+  integer, parameter, public :: radiation_scheme_band = 2
+
+  !> Coefficients of the band radiation (docs/tendency/band-radiation.md).  The
+  !> five longwave sub-bands are 1 window, 2 CO2 centre, 3 CO2 wings, 4 weak and
+  !> 5 strong water vapour; the four shortwave bands are 1 UV, 2 visible, 3 weak
+  !> and 4 strong near-infrared water vapour, split into twelve g points.
+  !> Mass absorption coefficients are vertical and in m^2 kg^-1.
+  type, public :: band_radiation_config
+    real(real64) :: diffusivity = 1.66_real64
+    !> Volume mixing ratio chi of CO2 and the reference chi_ref of the fitted coefficients.
+    real(real64) :: co2_volume_mixing_ratio = 400.0e-6_real64
+    real(real64) :: co2_reference_volume_mixing_ratio = 400.0e-6_real64
+    !> M_CO2/M_air, converting the volume to the mass mixing ratio.
+    real(real64) :: co2_molar_mass_ratio = 44.0095_real64/28.9647_real64
+    !> Ozone column 300 DU in kg m^-2 (1 DU = 2.1415e-5 kg m^-2).
+    real(real64) :: ozone_column = 300.0_real64*2.1415e-5_real64
+    !> epsilon of the vapour pressure e = p q/epsilon of the self continuum.
+    real(real64) :: water_vapor_molar_mass_ratio = 0.622_real64
+    !> Temperature factor exp[T_*(1/T - 1/T_ref)] of the self continuum.
+    real(real64) :: self_continuum_temperature = 1800.0_real64
+    real(real64) :: self_continuum_reference_temperature = 296.0_real64
+    real(real64) :: reference_pressure = 1.0e5_real64
+    !> Second radiation constant c_2 = h c/k_B in cm K; the band edges are in cm^-1.
+    real(real64) :: second_radiation_constant = 1.4387769_real64
+    real(real64) :: longwave_edges(8) = [350.0_real64, 500.0_real64, 630.0_real64, 700.0_real64, &
+                                         820.0_real64, 1180.0_real64, 1390.0_real64, 1800.0_real64]
+    real(real64) :: longwave_line(5) = [0.0_real64, 1.0_real64, 0.067_real64, 0.39_real64, 8.5_real64]
+    real(real64) :: longwave_line_pressure_exponent(5) = [1.0_real64, 1.0_real64, 1.0_real64, 1.0_real64, 0.0_real64]
+    real(real64) :: longwave_self_continuum(5) = [0.69_real64, 0.0_real64, 0.0_real64, 0.0_real64, 0.0_real64]
+    real(real64) :: longwave_co2(5) = [0.023_real64, 5.1_real64, 0.21_real64, 0.0_real64, 0.0_real64]
+    real(real64) :: longwave_co2_pressure_exponent(5) = [1.0_real64, 0.0_real64, 0.7_real64, 1.0_real64, 1.0_real64]
+    real(real64) :: longwave_co2_concentration_exponent(5) = [0.45_real64, 0.0_real64, 0.18_real64, 1.0_real64, &
+                                                               1.0_real64]
+    real(real64) :: longwave_ozone(5) = [7.6_real64, 0.0_real64, 0.0_real64, 0.0_real64, 0.0_real64]
+    !> Fraction phi_b of the top-of-atmosphere solar flux in each shortwave band.
+    real(real64) :: shortwave_band_fraction(4) = [0.0358_real64, 0.5074_real64, 0.2534_real64, 0.2034_real64]
+    integer :: shortwave_gpoint_band(12) = [1, 1, 1, 2, 2, 3, 3, 3, 4, 4, 4, 4]
+    real(real64) :: shortwave_gpoint_weight(12) = [0.27_real64, 0.25_real64, 0.48_real64, &
+                                                   0.945_real64, 0.055_real64, &
+                                                   0.104_real64, 0.314_real64, 0.582_real64, &
+                                                   0.117_real64, 0.218_real64, 0.278_real64, 0.387_real64]
+    real(real64) :: shortwave_gpoint_water_vapor(12) = [0.0_real64, 0.0_real64, 0.0_real64, &
+                                                        0.0_real64, 0.0092_real64, &
+                                                        0.21_real64, 0.0123_real64, 0.0_real64, &
+                                                        8.8_real64, 0.49_real64, 0.0227_real64, 0.0_real64]
+    real(real64) :: shortwave_gpoint_ozone(12) = [2300.0_real64, 170.0_real64, 6.8_real64, &
+                                                  1.84_real64, 1.84_real64, &
+                                                  0.0_real64, 0.0_real64, 0.0_real64, &
+                                                  0.0_real64, 0.0_real64, 0.0_real64, 0.0_real64]
+    real(real64) :: shortwave_water_vapor_pressure_exponent = 0.6_real64
+    !> Rayleigh layer above the surface: R(mu_0) = a/(1 + b mu_0) for the direct
+    !> beam and R* for the diffuse light from below.
+    real(real64) :: rayleigh_direct_amplitude(4) = [0.81_real64, 0.63_real64, 0.0_real64, 0.0_real64]
+    real(real64) :: rayleigh_direct_slope(4) = [1.85_real64, 8.2_real64, 0.0_real64, 0.0_real64]
+    real(real64) :: rayleigh_diffuse_reflectance(4) = [0.38_real64, 0.096_real64, 0.0_real64, 0.0_real64]
+    !> Magnification M(mu_0) = a/sqrt(b mu_0^2 + 1) of the direct-beam path (Lacis and Hansen 1974).
+    real(real64) :: magnification_numerator = 35.0_real64
+    real(real64) :: magnification_quadratic = 1224.0_real64
+    !> exp(-x) is taken as zero beyond this optical path.
+    real(real64) :: maximum_optical_path = 200.0_real64
+    !> Radiative properties of the large-scale and the convective cloud (docs/tendency/band-radiation.md, 6.3).
+    real(real64) :: large_scale_cloud_shortwave_albedo = 0.43_real64
+    real(real64) :: convective_cloud_shortwave_albedo = 0.43_real64
+    real(real64) :: large_scale_cloud_longwave_emissivity = 1.0_real64
+    real(real64) :: convective_cloud_longwave_emissivity = 1.0_real64
+  end type band_radiation_config
+
   !> Grey longwave radiation, prescribed ozone shortwave absorption, and the
   !> selectable two-layer-ground or slab-ocean surface energy budget, together
-  !> with the calendar and orbit that drive the solar forcing.
+  !> with the calendar and orbit that drive the solar forcing.  With the band
+  !> scheme the radiative transfer follows `band` instead of the grey
+  !> coefficients; the surface budget and the calendar are shared.
   type, public :: radiation_config
     logical :: enabled = .false.
+    integer :: scheme = radiation_scheme_gray
+    type(band_radiation_config) :: band
     real(real64) :: solar_day = day_seconds
     integer :: days_per_month = 30
     integer :: months_per_year = 12

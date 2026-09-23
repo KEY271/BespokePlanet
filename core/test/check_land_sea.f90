@@ -8,6 +8,7 @@ program check_land_sea
                                     jablonowski_williamson_topographic_initial_state, &
                                     topographic_surface_pressure
   use dry_physics_config, only: dry_model_physics_config, mixed_surface_properties
+  use cloud_diagnostics, only: cloud_layers
   use dry_case_initial_conditions, only: land_sea_case_physics, radiation_case_planet
   use dry_radiation, only: radiation_tendency, radiation_diagnostics
   use planet_parameters, only: earth_gravity, planet_config
@@ -151,7 +152,7 @@ contains
     call radiation_tendency(physics%radiation, pressure_half, temperature, 288.0_real64, 286.0_real64, &
       3.0_real64, 4.0_real64, 0.0_real64, 0.0_real64, 0.0_real64, atmospheric_tendency, &
       surface_tendency, deep_tendency, incoming, cloudy_reflected, outgoing, latent_heat_flux=latent_heat_flux, &
-      cloud_cover=0.5_real64, land_fraction=land)
+      clouds=cloud_layers(large_scale_fraction=0.5_real64, large_scale_level=2), land_fraction=land)
     total_energy_tendency = sum(physics%radiation%dry_air_specific_heat* &
       (pressure_half(1:4) - pressure_half(0:3))/earth_gravity*atmospheric_tendency) + &
       capacity*surface_tendency + physics%radiation%deep_ground_heat_capacity*deep_tendency + latent_heat_flux

@@ -20,7 +20,7 @@ program check_moist_atmosphere
   use cloud_diagnostics, only: relative_humidity_cloud_cover, convective_cloud_cover, diagnose_cloud_cover
   use dry_physics_config, only: dry_model_physics_config, radiation_config, convection_config, &
                                 moist_convection_config, condensation_config, cloud_config, &
-                                radiation_surface_heat_capacity
+                                radiation_surface_heat_capacity, radiation_scheme_gray
   use dry_case_initial_conditions, only: moist_case_physics, slab_ocean_case_physics, radiation_case_planet, &
                                          set_radiation_case_state
   use dry_held_suarez, only: held_suarez_initial_state
@@ -473,6 +473,9 @@ contains
 
     physics = moist_case_physics()
     ocean = physics%radiation
+    ! The grey scheme's single reflection by C alpha_c (docs/tendency/shortwave-radiation.md);
+    ! the band scheme's cloud sub-columns are checked in check_band_radiation.
+    ocean%scheme = radiation_scheme_gray
     if (abs(ocean%cloud_shortwave_albedo - 0.43_real64) > 0.0_real64 .or. &
         abs(ocean%surface_shortwave_albedo - 0.06_real64) > 0.0_real64) then
       error stop 'moist case albedos differ from docs/tendency/shortwave-radiation.md'
