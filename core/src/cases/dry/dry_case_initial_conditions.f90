@@ -7,6 +7,7 @@
 !> so it lives here instead of in the model.
 module dry_case_initial_conditions
   use iso_fortran_env, only: real64
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use harmonics, only: harmonic_transform
   use dry_vertical_coordinate, only: hybrid_sigma_coordinate
   use dry_atmosphere, only: dry_atmosphere_solver
@@ -157,7 +158,7 @@ contains
     complex(real64), allocatable :: state_zeta(:, :, :), state_delta(:, :, :)
     complex(real64), allocatable :: state_temperature(:, :, :), state_log_ps(:, :)
     complex(real64), allocatable :: humidity(:, :, :)
-    real(real64), allocatable :: lowest_temperature(:, :)
+    real(real64), allocatable :: lowest_temperature(:, :), ocean_temperature(:, :)
     type(hybrid_sigma_coordinate) :: coordinate
     integer :: number_of_levels
 
@@ -178,9 +179,15 @@ contains
                                     specific_humidity=humidity)
       call solver%get_spectral_state(state_zeta, state_delta, state_temperature, state_log_ps)
     end if
-    ! T_s = T_d = T_N on the grid (docs/cases/radiation.md).
+    ! T_s = T_d = T_N on the grid (docs/cases/radiation.md).  A tiled ocean starts
+    ! from its own analytic profile instead (docs/cases/moist.md).
     call transform%spectral_to_grid(state_temperature(:, :, number_of_levels), lowest_temperature)
-    call solver%set_surface_state(lowest_temperature, lowest_temperature)
+    if (physics%sea_ice%enabled .or. physics%radiation%land_sea_mixing_enabled) then
+      call initial_ocean_temperature(transform, physics%radiation, lowest_temperature, ocean_temperature)
+      call solver%set_surface_state(lowest_temperature, lowest_temperature, ocean_temperature=ocean_temperature)
+    else
+      call solver%set_surface_state(lowest_temperature, lowest_temperature)
+    end if
     call solver%set_physics(physics)
   end subroutine set_radiation_case_state
 
@@ -195,7 +202,7 @@ contains
     complex(real64), allocatable :: zeta(:, :, :), delta(:, :, :), temperature(:, :, :), log_ps(:, :)
     complex(real64), allocatable :: state_zeta(:, :, :), state_delta(:, :, :), state_temperature(:, :, :)
     complex(real64), allocatable :: state_log_ps(:, :), humidity(:, :, :)
-    real(real64), allocatable :: surface_water(:, :), lowest_temperature(:, :)
+    real(real64), allocatable :: surface_water(:, :), lowest_temperature(:, :), ocean_temperature(:, :)
     type(hybrid_sigma_coordinate) :: coordinate
     integer :: number_of_levels
 
@@ -214,10 +221,37 @@ contains
     allocate (surface_water, mold=land_fraction)
     surface_water = 0.0_real64
     where (land_fraction > 0.0_real64) surface_water = physics%bucket%initial_water
+    ! Land starts at T_N; the ocean at the analytic profile (docs/cases/land-sea.md).
     call transform%spectral_to_grid(state_temperature(:, :, number_of_levels), lowest_temperature)
-    call solver%set_surface_state(lowest_temperature, lowest_temperature, surface_water)
+    call initial_ocean_temperature(transform, physics%radiation, lowest_temperature, ocean_temperature)
+    call solver%set_surface_state(lowest_temperature, lowest_temperature, surface_water, &
+                                  ocean_temperature=ocean_temperature)
     call solver%set_physics(physics)
   end subroutine set_land_sea_case_state
+
+  !> Zonally uniform mixed-layer temperature T_p + (T_e - T_p) cos^2(phi), the
+  !> SpeedyWeather AquaPlanet profile, on the grid of the template field.  It is set
+  !> on every grid point; pure land ignores its ocean temperature.
+  subroutine initial_ocean_temperature(transform, radiation, template, ocean_temperature)
+    type(harmonic_transform), intent(in) :: transform
+    type(radiation_config), intent(in) :: radiation
+    real(real64), intent(in) :: template(:, :)
+    real(real64), allocatable, intent(out) :: ocean_temperature(:, :)
+    real(real64) :: equator, pole
+    integer :: j
+
+    equator = radiation%initial_ocean_equator_temperature
+    pole = radiation%initial_ocean_pole_temperature
+    if (.not. all(ieee_is_finite([equator, pole])) .or. min(equator, pole) <= 0.0_real64) then
+      error stop 'invalid initial ocean temperature profile'
+    end if
+    if (size(template, 2) /= size(transform%mu)) error stop 'initial ocean temperature grid mismatch'
+    allocate (ocean_temperature, mold=template)
+    do j = 1, size(template, 2)
+      ! cos^2(phi) = 1 - mu^2 with mu = sin(phi) of the Gaussian ring.
+      ocean_temperature(:, j) = pole + (equator - pole)*(1.0_real64 - transform%mu(j)**2)
+    end do
+  end subroutine initial_ocean_temperature
 
   !> Spectral specific humidity q = RH q_s(T_k, p_k) on the levels whose full-level
   !> pressure is at least the configured top pressure, and zero above.  The

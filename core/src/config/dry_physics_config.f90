@@ -92,6 +92,11 @@ module dry_physics_config
     real(real64) :: slab_ocean_depth = 30.0_real64
     real(real64) :: seawater_density = 1000.0_real64
     real(real64) :: seawater_specific_heat = 4186.0_real64
+    !> Initial mixed-layer temperature T_p + (T_e - T_p) cos^2(phi) of the cases that
+    !> advance the ocean as its own tile, as in the SpeedyWeather AquaPlanet ocean
+    !> (docs/cases/moist.md).  The legacy single-surface slab ocean keeps T_s = T_N.
+    real(real64) :: initial_ocean_equator_temperature = 302.0_real64
+    real(real64) :: initial_ocean_pole_temperature = 273.0_real64
     real(real64) :: surface_exchange_coefficient = 1.0e-3_real64
     real(real64) :: gustiness_speed = 1.0_real64
   end type radiation_config

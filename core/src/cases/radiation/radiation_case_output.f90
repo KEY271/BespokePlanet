@@ -563,6 +563,11 @@ contains
       write (unit, '(a)') '  "surface_tiles": {'
       write (unit, '(a)') '    "surface_temperature": "area mean of land, open water and ice skin temperatures",'
       write (unit, '(a)') '    "ocean_temperature": "mixed layer including water below ice",'
+      write (unit, '(a)') '    "initial_ocean_temperature": "T_p + (T_e - T_p) cos^2(phi); land starts at T_N",'
+      write (unit, '(a,es24.16e3,a)') '    "initial_ocean_equator_temperature_k": ', &
+        radiation%initial_ocean_equator_temperature, ','
+      write (unit, '(a,es24.16e3,a)') '    "initial_ocean_pole_temperature_k": ', &
+        radiation%initial_ocean_pole_temperature, ','
       write (unit, '(a)') '    "deep_heat_capacity_basis": "per land area",'
       write (unit, '(a)') '    "daily_deep_temperature": "land-area mean; zero when land is absent",'
       write (unit, '(a)') '    "missing_tiles": "finite dummy storage; mask land by f_L>0, ocean by f_L<1, ice by A>0",'

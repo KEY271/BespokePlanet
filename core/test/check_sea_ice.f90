@@ -240,6 +240,14 @@ contains
     physics = land_sea_case_physics()
     call solver%init(7, interval)
     call set_land_sea_case_state(solver, transform, physics, radiation_case_planet(physics), phi, land)
+    ! The ocean starts at T_p + (T_e - T_p) cos^2(phi) >= T_f, so no initial ice forms.
+    call solver%get_fields(z, d, temp, ps, u, windv, ocean_temperature=ocean, sea_ice_fraction=ai, sea_ice_volume=vi)
+    do j = 1, size(nlon)
+      call near(maxval(abs(ocean(1:nlon(j),j) - (physics%radiation%initial_ocean_pole_temperature + &
+        (physics%radiation%initial_ocean_equator_temperature - physics%radiation%initial_ocean_pole_temperature)* &
+        (1.0_real64 - transform%mu(j)**2)))), 0.0_real64, 1.0e-12_real64, 'initial ocean temperature profile')
+      if (any(ai(1:nlon(j),j) /= 0.0_real64) .or. any(vi(1:nlon(j),j) /= 0.0_real64)) error stop 'initial ice formed'
+    end do
     surface = land*0.0_real64 + 280.0_real64
     ocean = land*0.0_real64 + tf
     ai = land*0.0_real64 + 0.4_real64

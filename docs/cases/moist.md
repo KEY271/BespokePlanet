@@ -25,7 +25,17 @@
 
 ## 初期値
 
-$\zeta,\delta,T,\ln p_s$ と $\Phi_s=0$ の初期値は slab ocean ケースと同じとする。海洋温度は同じ初期値から始め、271.35 K を下回る分をエネルギー保存的に初期海氷へ変換する。比湿の初期値は、相対湿度 $\mathrm{RH}_0=0.7$ の対流圏として
+$\zeta,\delta,T,\ln p_s$ と $\Phi_s=0$ の初期値は slab ocean ケースと同じとする。海洋混合層の温度は大気から取らず、SpeedyWeather の `AquaPlanet` と同じ東西一様の解析的な分布
+
+$$
+T_o^0(\varphi)=T_p+(T_e-T_p)\cos^2\varphi,\qquad T_e=302\,\mathrm K,\quad T_p=273\,\mathrm K
+$$
+
+から始める。$T_p$ は凍結温度 $T_f=271.35\,\mathrm K$ より高いので、初期の海氷は $A=V=0$ で、海氷は積分中に大気との熱交換だけから生じる。[初期相平衡補正](../tendency/sea-ice.md#9-初期条件設定互換性)は残すが、この分布では何も変えない。$T_e,T_p$ は `radiation_config` の `initial_ocean_equator_temperature`、`initial_ocean_pole_temperature` に置き、メタデータの `surface_tiles` に記録する。
+
+以前は slab ocean ケースと同じく $T_o^0=T_N$ とし、271.35 K を下回る分を初期海氷へ変換していた。JW の最下層の温度は緯度 $50^\circ$ で約 $268\,\mathrm K$、極で約 $224\,\mathrm K$ まで下がるので、$C_o/\mathcal L\simeq0.41\,\mathrm{m\,K^{-1}}$ から緯度 $50^\circ$ 以上に最大約 $18\,\mathrm m$ の氷ができた。地球の地形のケースでは初期の海氷面積が約 $8.4\times10^{13}\,\mathrm{m^2}$、体積が約 $8.1\times10^{14}\,\mathrm{m^3}$ で、地球の 4 月の値（面積約 $2\times10^{13}\,\mathrm{m^2}$、体積約 $3\times10^{13}\,\mathrm{m^3}$）より大幅に多く、厚い氷を融かすのに数年かかるため 5 年目でも体積が減り続けていた。JW は力学のテスト用の基本場で、最下層の温度は海の状態を表さないので、海だけ別の分布に置き換える。初期の大気とこの海面水温は釣り合っていないが、大気の熱容量は混合層の約 $1/10$ なので、差は主に大気側が数十日で調整する。
+
+比湿の初期値は、相対湿度 $\mathrm{RH}_0=0.7$ の対流圏として
 
 $$
 q^0_k=
