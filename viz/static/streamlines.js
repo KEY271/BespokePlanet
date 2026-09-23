@@ -26,7 +26,8 @@ export function createWindSampler(grid, eastward, northward) {
 
   const sampleRing = (values, ring, longitude) => {
     const count = nlon[ring];
-    const gridCoordinate = ((wrapLongitude(longitude) + Math.PI) / TWO_PI) * count;
+    // Point k of a ring sits at longitude 2 pi k / count (k = 0 at 0).
+    const gridCoordinate = ((((longitude % TWO_PI) + TWO_PI) % TWO_PI) / TWO_PI) * count;
     const west = Math.floor(gridCoordinate) % count;
     const fraction = gridCoordinate - Math.floor(gridCoordinate);
     const east = (west + 1) % count;

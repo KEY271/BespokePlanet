@@ -1,6 +1,6 @@
 # BespokePlanet
 
-架空の惑星をシミュレーションすることを目的とするプロジェクトです。Fortran のソルバーの計算結果を、Three.js 製のビジュアライザで 3D 球面と 2D 地図に表示できます。
+架空の惑星をシミュレーションすることを目的とするプロジェクトです。陸海ケースの計算結果は、Three.js 製のビジュアライザで 3D 球面と 2D 地図に表示し、気候の解析（ケッペンの気候区分、雨温図、帯状平均、質量流線関数、海氷・積雪など）もビジュアライザで行えます。
 
 ## 依存
 
@@ -9,8 +9,7 @@
 | ソルバー（`core/`） | Fortran コンパイラ（gfortran など、OpenMP 対応）、[fpm](https://fpm.fortran-lang.org/)、FFTW3、LAPACK、BLAS、pkg-config |
 | ビジュアライザ（`viz/`） | Python 3（外部パッケージ不要）、Node.js / npm（Three.js の取得に使用） |
 | タスクランナー | [just](https://github.com/casey/just) |
-| `scripts/*.py`（座標・地形の確認図、地球地形の前処理） | numpy、scipy、matplotlib（スクリプトにより一部） |
-| `scripts/analyze_*.R` | R（標準パッケージのみ） |
+| `scripts/prepare_earth_topography.py`（地球地形の前処理） | numpy（ETOPO のキャッシュがないときは netCDF4 も） |
 
 macOS（Homebrew）の場合のインストール例:
 
@@ -50,28 +49,18 @@ just run land-t63
 just run land-earth
 just run land-earth-t63
 
-# ビジュアライザを起動し、http://127.0.0.1:8000 を開く
+# ビジュアライザを起動し、http://127.0.0.1:8000 を開く（陸海ケースの出力だけを表示）
 just viz
+
+# ビジュアライザのテスト
+just test-viz
 ```
 
-計算結果の解析は `scripts/` の R スクリプトで行う。いずれも第1引数にケースの出力ディレクトリ、第2引数に解析結果の出力先を取り（省略時は `output/<ケース>/analysis/`）、日平均の時系列と最終年の月平均から図と CSV を書く。陸海ケースでは雨温図・ケッペンの気候区分・帯状平均・質量流線関数などを作る。雪を含む陸海ケースでは、3 月と 9 月の月平均の陸の積雪率と海氷面積率を一枚にまとめた地図 `final_year_snow_and_sea_ice_maps.png` も書く（描画は両スクリプト共通の `scripts/snow_sea_ice_map.R`）。
-
-```sh
-# 湿潤 aquaplanet ケース（5 年の全球平均の時系列、最終年の帯状平均と質量流線関数）
-Rscript scripts/analyze_moist_slab_ocean.R
-
-# 陸海ケース（解析的な大陸）
-Rscript scripts/analyze_moist_land_sea.R
-
-# 地球地形の陸海ケース（第2引数で出力先、第3引数で比較対象のケースを変えられる）
-Rscript scripts/analyze_moist_land_sea_earth.R output/moist_land_sea_earth_t31
-```
-
-地球地形ケースの解析結果は `output/moist_land_sea_earth_t31/analysis/` に保存される。雨温図・気候区分・降水量などに加え、海氷の3月・9月の面積率分布、最終年平均の氷厚と氷表面温度、南北半球別の面積・体積の季節変化、日次診断からの全期間の推移を図示する。海氷の月別集計は `final_year_sea_ice_monthly.csv` に書く。
+計算結果の解析はビジュアライザで行う。対象は海氷と積雪を含む最新の陸海ケース（`land` / `land-t63` / `land-earth` / `land-earth-t63`）の出力だけで、それ以外のケースの出力は一覧に出ない。解析する年（既定は最後の完全な年）と、陸とみなす陸面率の閾値 $f_L\ge$（既定 0.5）を画面上部で選ぶと、地図・雨温図・要約がすぐに計算し直される。解析結果の表は CSV で、グラフと地図は PNG で保存できる。詳しくは [viz/README.md](./viz/README.md) を参照。
 
 ソルバーはスペクトル変換の鉛直層ループと物理過程の格子列ループを OpenMP で並列化している。スレッド数は既定でコア数で、`OMP_NUM_THREADS=4 just run moist` のように環境変数で変えられる。スレッド数を変えても結果はビット単位で同一である。
 
-計算結果は `output/` に保存されます。ビジュアライザについて詳しくは [viz/README.md](./viz/README.md) を参照してください。
+計算結果は `output/` に保存されます。
 
 ## ドキュメント
 

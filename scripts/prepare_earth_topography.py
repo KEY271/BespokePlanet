@@ -2,8 +2,8 @@
 
 Steps: fetch ETOPO 2022 (ice surface) at a 6 arc-minute stride through OPeNDAP
 (cached under output/etopo2022/), aggregate to 0.5 degree cells (land fraction
-and mean land height), write core/data/earth_topography_0p5deg.{bin,json}, and
-draw scripts/earth_topography_source.png for inspection.  Run with
+and mean land height), and write core/data/earth_topography_0p5deg.{bin,json}.
+The terrain the solver builds from it is shown by the visualizer (viz/).  Run with
 `uv run --project ~/.local/share/llm-python --with netCDF4 python scripts/prepare_earth_topography.py`
 (netCDF4 is only needed when the cache is missing).
 """
@@ -16,11 +16,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_URL = ("https://www.ngdc.noaa.gov/thredds/dodsC/global/ETOPO2022/60s/"
@@ -31,7 +26,6 @@ CACHE = ROOT / "output" / "etopo2022" / "ETOPO_2022_v1_surface_6min_stride.npz"
 CELL_DEGREES = 0.5
 DATA_BIN = ROOT / "core" / "data" / "earth_topography_0p5deg.bin"
 DATA_JSON = ROOT / "core" / "data" / "earth_topography_0p5deg.json"
-FIGURE = ROOT / "scripts" / "earth_topography_source.png"
 
 # (name, longitude east 0..360, latitude) used as landmarks in the docs and tests
 LANDMARKS = [("Tibet", 90.0, 33.0), ("Andes (Altiplano)", 292.0, -18.0), ("Antarctica", 90.0, -80.0),
@@ -136,68 +130,6 @@ def write_intermediate(land_fraction: np.ndarray, land_height: np.ndarray, sampl
     return info
 
 
-def draw(z: np.ndarray, sample_lon: np.ndarray, sample_lat: np.ndarray,
-         land_fraction: np.ndarray, land_height: np.ndarray, info: dict) -> None:
-    ocean = "#dfe7ee"
-    ink, muted, grid = "#0b0b0b", "#898781", "#ffffff"
-    land_cmap = LinearSegmentedColormap.from_list("land", ["#e9e2cf", "#c9a96e", "#8a5a2b", "#4a2c12"])
-    fl_cmap = LinearSegmentedColormap.from_list("fl", [ocean, "#a9c4a4", "#4f7a45"])
-    lon, lat = cell_centres()
-
-    fig, axes = plt.subplots(3, 1, figsize=(10, 13.5), constrained_layout=True)
-    fig.patch.set_facecolor("#fcfcfb")
-
-    ax = axes[0]
-    ax.set_facecolor(ocean)
-    step = 2  # 12 arc-minute drawing resolution keeps the PNG small
-    masked = np.ma.masked_less_equal(z[::step, ::step], 0.0)
-    im = ax.pcolormesh(sample_lon[::step], sample_lat[::step], masked, cmap=land_cmap, vmin=0, vmax=5000,
-                       shading="nearest", rasterized=True)
-    cb = fig.colorbar(im, ax=ax, shrink=0.85, pad=0.02, extend="max")
-    cb.set_label("surface elevation [m] (ocean: z <= 0, flat)")
-    ax.set_title(f"ETOPO 2022 ice surface, 6' point samples   land (z > 0) fraction of area = "
-                 f"{info['global_land_fraction']:.3f}", fontsize=10, loc="left")
-
-    ax = axes[1]
-    ax.set_facecolor(ocean)
-    im = ax.pcolormesh(lon, lat, land_fraction, cmap=fl_cmap, vmin=0, vmax=1, shading="nearest", rasterized=True)
-    ax.contour(lon, lat, land_fraction, levels=[0.5], colors=ink, linewidths=0.5)
-    cb = fig.colorbar(im, ax=ax, shrink=0.85, pad=0.02)
-    cb.set_label("land fraction f(0)")
-    ax.set_title(f"0.5 deg cells: land fraction ({info['samples_per_cell']} samples per cell); "
-                 "line: f(0) = 0.5", fontsize=10, loc="left")
-
-    ax = axes[2]
-    ax.set_facecolor(ocean)
-    masked = np.ma.masked_less_equal(land_height, 0.0)
-    im = ax.pcolormesh(lon, lat, masked, cmap=land_cmap, vmin=0, vmax=5000, shading="nearest", rasterized=True)
-    cb = fig.colorbar(im, ax=ax, shrink=0.85, pad=0.02, extend="max")
-    cb.set_label("mean land height h(0) [m]")
-    peak_lon, peak_lat = info["maximum_land_height_lon_lat"]
-    ax.set_title(f"0.5 deg cells: mean of max(z, 0)   max {info['maximum_land_height_m']:.0f} m at "
-                 f"({peak_lon:.1f}E, {peak_lat:.1f}N)", fontsize=10, loc="left")
-    for name, x, y in LANDMARKS:
-        ax.plot(x, y, marker="o", markersize=5, markerfacecolor="none", markeredgecolor="#2a78d6",
-                markeredgewidth=1.2)
-        ax.annotate(f"{name} {info['landmarks_m'][name]:.0f} m", (x, y), xytext=(6, 6),
-                    textcoords="offset points", fontsize=7.5, color="#0b0b0b",
-                    bbox=dict(facecolor="white", edgecolor="none", alpha=0.75, pad=1.0))
-
-    for ax in axes:
-        ax.set_xlim(0, 360)
-        ax.set_ylim(-90, 90)
-        ax.set_xticks(np.arange(0, 361, 60))
-        ax.set_yticks(np.arange(-90, 91, 30))
-        ax.set_xlabel("longitude [deg]", color=muted)
-        ax.set_ylabel("latitude [deg]", color=muted)
-        ax.tick_params(colors=muted)
-        ax.grid(True, color=grid, alpha=0.6, linewidth=0.5)
-        ax.set_aspect("equal")
-        for spine in ax.spines.values():
-            spine.set_color("#c3c2b7")
-    fig.savefig(FIGURE, dpi=130)
-
-
 def main() -> None:
     z, lat, lon = fetch_samples()
     if not np.isfinite(z).all() or (z < -20000).any():
@@ -205,11 +137,10 @@ def main() -> None:
     z, lon = to_model_longitudes(z, lon)
     land_fraction, land_height, samples_per_cell = aggregate(z, lat, lon)
     info = write_intermediate(land_fraction, land_height, samples_per_cell)
-    draw(z, lon, lat, land_fraction, land_height, info)
     print(json.dumps({k: info[k] for k in ("global_land_fraction", "maximum_land_height_m",
                                            "maximum_land_height_lon_lat", "landmarks_m", "sha256")},
                      indent=2))
-    print(f"wrote {DATA_BIN} ({DATA_BIN.stat().st_size} bytes), {DATA_JSON}, {FIGURE}")
+    print(f"wrote {DATA_BIN} ({DATA_BIN.stat().st_size} bytes), {DATA_JSON}")
 
 
 if __name__ == "__main__":

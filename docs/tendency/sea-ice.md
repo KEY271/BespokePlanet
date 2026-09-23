@@ -383,7 +383,7 @@ $$
 | `core/src/integration/dry_stepper.f90` | 新しい地表候補の更新、RAW、二状態の保存的な相平衡補正 |
 | `core/src/dry_atmosphere.f90`, `core/src/cases/dry/dry_case_initial_conditions.f90` | 表面設定・取得 API と全ケースの初期化を更新。既存の単一地表 API は呼出側の意味を明示した互換処理を持たせる |
 | `core/src/cases/radiation/` | フラックス診断、月平均、瞬時値、日次集計、メタデータ |
-| `viz/server.py`, `viz/static/app.js` と解析スクリプト | 新しい温度・海氷場、存在面積のマスク、旧出力への互換性 |
+| `viz/`（`server.py`, `static/`） | 新しい温度・海氷場、存在面積のマスク、海氷の地図・季節変化・時系列 |
 | `docs/tendency/` と `docs/cases/` | 温度を一つだけ持つ説明、海氷非対応の記述、地中熱容量、物理の順序と出力仕様を更新 |
 
 旧 `surface_temperature` を物理内部の格子平均温度と陸温度の両方の意味で使わない。名称移行は純陸・純海の旧経路を含めて行い、互換用の平均値は出力境界で生成する。

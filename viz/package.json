@@ -2,10 +2,10 @@
   "name": "bespoke-planet-viz",
   "private": true,
   "version": "1.0.0",
-  "description": "Three.js frontend for the BespokePlanet atmospheric solvers",
+  "description": "Three.js visualizer for the BespokePlanet land-sea output",
   "type": "module",
   "scripts": {
-    "test": "node --test test_streamlines.mjs"
+    "test": "node --test test_climate.mjs test_streamlines.mjs"
   },
   "dependencies": {
     "three": "0.179.1"

@@ -4,93 +4,104 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#07111d" />
-    <title>BespokePlanet — Flow Observatory</title>
+    <title>BespokePlanet — 陸海ケースビューア</title>
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="icon" href="data:," />
   </head>
   <body>
     <header class="topbar">
-      <a class="brand" href="/" aria-label="BespokePlanet home">
+      <a class="brand" href="/" aria-label="BespokePlanet トップ">
         <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-        <span><b>BespokePlanet</b><small>FLOW OBSERVATORY</small></span>
+        <span><b>BespokePlanet</b><small>陸海ケースビューア</small></span>
       </a>
-      <div class="run-picker">
-        <label for="run-select">SIMULATION</label>
+      <div class="picker">
+        <label for="run-select">ケース</label>
         <select id="run-select" aria-label="シミュレーションを選択"></select>
       </div>
-      <div class="run-picker">
-        <label for="field-select">FIELD</label>
-        <select id="field-select" aria-label="表示する場を選択"></select>
+      <div class="picker">
+        <label for="year-select">解析する年</label>
+        <select id="year-select" aria-label="解析する年"></select>
       </div>
-      <div class="run-picker level-picker" id="level-picker" hidden>
-        <label for="level-select">LEVEL · p₀ REF.</label>
-        <select id="level-select" aria-label="表示する大気層"></select>
+      <div class="picker threshold">
+        <label for="threshold-number">陸とみなす陸面率 f<sub>L</sub> ≥</label>
+        <div class="threshold-row">
+          <input id="threshold-range" type="range" min="0.01" max="1" step="0.01" aria-label="陸地とみなす陸面率の閾値" />
+          <input id="threshold-number" type="number" min="0.01" max="1" step="0.01" aria-label="陸地とみなす陸面率の閾値" />
+        </div>
       </div>
-      <div class="live-state"><span></span><b id="dataset-state">DATASET READY</b></div>
+      <div class="live-state"><span></span><b id="dataset-state">読み込み中</b></div>
     </header>
 
     <main>
       <section class="summary-row">
         <div class="hero-meta" aria-label="シミュレーション概要">
-          <div><span>ELAPSED</span><strong id="elapsed">—</strong></div>
-          <div><span>GRID POINTS</span><strong id="point-count">—</strong></div>
-          <div><span id="max-value-label">MAX VALUE</span><strong id="max-value">—</strong></div>
+          <div><span>地形・解像度</span><strong id="meta-case">—</strong></div>
+          <div><span>出力</span><strong id="meta-months">—</strong></div>
+          <div><span>陸のセル数・面積割合</span><strong id="meta-land">—</strong></div>
+          <div><span>格子点</span><strong id="meta-points">—</strong></div>
         </div>
         <div class="view-mode" role="group" aria-label="表示方法">
-          <span>VIEW</span>
-          <button type="button" data-view-mode="globe" class="active" aria-pressed="true">3D GLOBE</button>
-          <button type="button" data-view-mode="map" aria-pressed="false">2D MAP</button>
+          <span>表示</span>
+          <button type="button" data-view-mode="globe" class="active" aria-pressed="true">3D 地球</button>
+          <button type="button" data-view-mode="map" aria-pressed="false">2D 地図</button>
         </div>
       </section>
 
-      <section class="visual-grid">
-        <article class="panel globe-panel" id="globe-panel">
-          <div class="panel-heading">
-            <div><span class="index">01</span><h2>Spherical field</h2></div>
-            <p>DRAG TO ROTATE · SCROLL TO ZOOM</p>
-          </div>
-          <div id="globe" class="viewport" aria-label="流速の三次元地球表示"></div>
-          <div class="coordinate-chip" id="globe-coordinate">λ 000.0° · φ 00.0°</div>
-        </article>
-
-        <article class="panel map-panel" id="map-panel" hidden>
-          <div class="panel-heading">
-            <div><span class="index">02</span><h2>Equirectangular projection</h2></div>
-            <p id="flow-state">STREAMLINES · TRACING…</p>
-          </div>
-          <div class="map-frame">
-            <div id="map" class="viewport" aria-label="流速の二次元正距円筒図法表示"></div>
-            <span class="axis-label north">90°N</span><span class="axis-label equator">EQ</span><span class="axis-label south">90°S</span>
-            <span class="flow-key" id="flow-key"><i></i> BRIGHTER · FASTER = STRONGER WIND</span>
-          </div>
-        </article>
-      </section>
-
-      <section class="transport" aria-label="再生コントロール">
-        <button id="play" class="play" type="button" aria-label="再生"><span></span></button>
-        <div class="timeline-wrap">
-          <div class="timeline-labels"><span>FRAME <b id="frame-number">00000</b></span><span id="time-label">T + 00:00:00</span></div>
-          <input id="timeline" type="range" min="0" max="0" value="0" step="1" aria-label="時刻" />
-        </div>
-        <label class="rate">RATE<select id="rate"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select></label>
-        <label class="rate">SCALE<select id="scale-mode"><option value="auto">AUTO · P99.5</option><option value="global">GLOBAL</option><option value="lock">LOCK CURRENT</option></select></label>
-        <label class="grid-toggle"><input id="grid-points" type="checkbox" /><span>GRID POINTS</span></label>
-        <label class="grid-toggle"><input id="streamlines" type="checkbox" checked /><span>STREAMLINES</span></label>
-        <label class="rate flow-density">DENSITY<select id="streamline-density"><option value="low">LOW</option><option value="medium" selected>MEDIUM</option><option value="high">HIGH</option></select></label>
-        <div class="legend">
-          <span id="legend-min">0</span><div class="legend-gradient"></div><span id="legend-max">—</span>
-        </div>
-      </section>
-
-      <section class="panel diagnostics" id="diagnostics">
+      <section class="panel explorer">
         <div class="panel-heading">
-          <div><span class="index">03</span><h2>Conservation diagnostics</h2></div>
-          <p id="diagnostics-state">COMPUTING SPHERICAL INTEGRALS…</p>
+          <div><span class="index">01</span><h2 id="field-title">地図</h2></div>
+          <p id="field-subtitle"></p>
         </div>
-        <div class="metric-tabs" id="metric-tabs"></div>
-        <div class="chart-shell">
-          <canvas id="chart" aria-label="保存量の時系列グラフ"></canvas>
-          <div class="chart-readout"><span>CURRENT</span><strong id="metric-current">—</strong><small id="metric-drift">—</small></div>
+        <div class="toolbar">
+          <label class="picker field-picker">
+            <span>表示する場</span>
+            <select id="field-select" aria-label="表示する場"></select>
+          </label>
+          <label class="picker" id="level-picker" hidden>
+            <span>層（基準気圧）</span>
+            <select id="level-select" aria-label="表示する大気層"></select>
+          </label>
+          <div class="toggles">
+            <label class="toggle"><input id="coastline" type="checkbox" checked /><span>海岸線</span></label>
+            <label class="toggle"><input id="sites" type="checkbox" checked /><span>代表地点</span></label>
+            <label class="toggle"><input id="grid-points" type="checkbox" /><span>格子点</span></label>
+            <label class="toggle" title="年次スナップショットの風から描く"><input id="streamlines" type="checkbox" checked /><span>流線</span></label>
+            <label class="picker compact"><span>流線の本数</span>
+              <select id="streamline-density"><option value="low">少</option><option value="medium" selected>中</option><option value="high">多</option></select>
+            </label>
+            <button id="save-map" class="small-button" type="button">PNG 保存</button>
+          </div>
         </div>
+        <div class="viewport-wrap">
+          <div id="globe" class="viewport globe-viewport" aria-label="3D 地球表示"></div>
+          <div id="map" class="viewport map-viewport" aria-label="2D 正距円筒図法表示" hidden></div>
+          <div id="map-axes" class="map-axes" hidden aria-hidden="true">
+            <span style="left: 3.7%">180°</span><span style="left: 19.1%">西経120°</span><span style="left: 34.6%">西経60°</span>
+            <span style="left: 50%">0°</span><span style="left: 65.4%">東経60°</span><span style="left: 80.9%">東経120°</span>
+            <b style="top: 19.1%">北緯60°</b><b style="top: 50%">赤道</b><b style="top: 80.9%">南緯60°</b>
+          </div>
+          <div id="site-labels" class="site-labels" aria-hidden="true"></div>
+          <div class="readout" id="readout">ポインターを置くと値を表示・クリックでそのセルの雨温図を追加</div>
+        </div>
+        <div class="legend" id="legend"></div>
+        <div class="transport" id="transport">
+          <button id="play" class="play" type="button" aria-label="再生"><span></span></button>
+          <div class="timeline-wrap">
+            <div class="timeline-labels"><b id="frame-label">—</b><span id="frame-detail"></span></div>
+            <input id="timeline" type="range" min="0" max="0" value="0" step="1" aria-label="時刻" />
+          </div>
+          <label class="picker compact">再生速度<select id="rate"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
+          <label class="picker compact">色の範囲<select id="scale-mode"><option value="auto">自動（0.5–99.5%）</option><option value="global">全期間</option><option value="lock">現在の範囲で固定</option></select></label>
+        </div>
+      </section>
+
+      <section class="panel analysis">
+        <div class="panel-heading">
+          <div><span class="index">02</span><h2>気候の解析</h2></div>
+          <p id="analysis-state"></p>
+        </div>
+        <nav class="tabs" id="analysis-tabs" aria-label="解析"></nav>
+        <div id="analysis-body" class="analysis-body"></div>
       </section>
     </main>
 

@@ -1,357 +1,214 @@
 import json
-import csv
 import math
-import os
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
 from array import array
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from server import DataError, Repository, _gauss_legendre_weights
+from server import REQUIRED_MONTHLY, DataError, Repository, make_handler, parse_indices
+
+MU = [-0.5, 0.5]
+NLON = [3, 3]
+LEVELS = 2
 
 
-@unittest.skipUnless(os.environ.get("BESPOKE_SEA_ICE_OUTPUT"), "requires the check_sea_ice Fortran output fixture")
-class FortranSeaIceOutputTest(unittest.TestCase):
-    def test_generated_output(self):
-        path = Path(os.environ["BESPOKE_SEA_ICE_OUTPUT"]).resolve()
-        repository = Repository(path.parent)
-        for name in (path.name, path.name + ".yearly"):
-            run = repository.get_run(name)
-            self.assertTrue(run.metadata["sea_ice"]["enabled"])
-            for field in run.fields:
-                payload, stats = repository.field_frame(run, field, 1)
-                self.assertEqual(len(payload), 4 * run.metadata["grid"]["point_count"])
-                self.assertTrue(math.isfinite(stats["mean"]))
-            payload, _ = repository.field_frame(run, "ocean_temperature", 1)
-            self.assertTrue(math.isnan(array("f", payload)[0]))
-            self.assertGreaterEqual(min(v for v in array("f", payload) if math.isfinite(v)), 271.35 - 1e-4)
-        with (path / "daily_global.csv").open() as source:
-            row = next(csv.DictReader(source))
-        self.assertNotIn(None, row)
-        self.assertTrue(all(v is not None and math.isfinite(float(v)) for v in row.values()))
-        self.assertLess(float(row["maximum_ice_energy_residual_j_m-2"]), 2e-5)
-        self.assertLess(float(row["maximum_ice_projection_energy_residual_j_m-2"]), 2e-5)
-        self.assertGreater(int(row["ice_checked_cells"]), 0)
+def write_values(path: Path, values) -> None:
+    path.write_bytes(array("d", values).tobytes())
 
 
-class RadiationRepositoryTest(unittest.TestCase):
+def land_sea_metadata(**overrides):
+    metadata = {
+        "schema_version": 3,
+        "case_name": "tiny_land_sea",
+        "equation": "moist_hydrostatic_atmosphere",
+        "simulation": {"start_calendar_time": "0001-04-01 00:00:00", "time_step_seconds": 1200},
+        "calendar": {"solar_day_seconds": 86400, "days_per_month": 30, "months_per_year": 12, "days_per_year": 360},
+        "grid": {"type": "octahedral_gaussian", "mu": MU, "nlon": NLON},
+        "hybrid_a_half_pa": [0, 100, 0],
+        "hybrid_b_half": [0, 0.5, 1],
+        "reference_half_level_pressure_pa": [0, 50000, 100000],
+        "sea_ice": {"enabled": True},
+        "snow": {"enabled": True, "masking_water_equivalent_kg_m-2": 50},
+        "topography": {"source": "analytic"},
+        "output": {"static_land_fraction": "land_fraction.bin"},
+    }
+    metadata.update(overrides)
+    return metadata
+
+
+class LandSeaFixture(unittest.TestCase):
+    months = 13
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        self.run_path = self.root / "ice"
-        self.run_path.mkdir()
-        metadata = {
-            "equation": "moist_hydrostatic_atmosphere",
-            "simulation": {"time_step_seconds": 1200},
-            "calendar": {"solar_day_seconds": 86400, "days_per_month": 30, "months_per_year": 12},
-            "grid": {"mu": [-0.5, 0.5], "nlon": [2, 2]},
-            "output": {"monthly_surface_temperature": "monthly_surface_temperature_m{month:04d}.bin"},
-            "surface_tiles": {},
-        }
-        (self.run_path / "metadata.json").write_text(json.dumps(metadata))
-        self.write("land_fraction.bin", [1, 0.5, 0, 0])
-        for prefix, suffix in (("monthly", "m0001"), ("yearly", "y0001")):
-            for field, values in {
-                "surface_temperature": [280, 270, 270, 280],
-                "ocean_temperature": [0, 271.35, 271.35, 280],
-                "sea_ice_fraction": [0, 0.5, 1, 0],
-                "sea_ice_volume": [0, 0.25, 2, 0],
-                "sea_ice_thickness": [0, 0.5, 2, 0],
-                "sea_ice_temperature": [0, 260, 270, 0],
-            }.items():
-                self.write(f"{prefix}_{field}_{suffix}.bin", values)
+        self.run_path = self.make_run("tiny", land_sea_metadata())
         self.repository = Repository(self.root)
 
     def tearDown(self):
         self.temporary.cleanup()
 
-    def write(self, filename, values):
-        (self.run_path / filename).write_bytes(array("d", values).tobytes())
+    def make_run(self, name, metadata):
+        path = self.root / name
+        path.mkdir()
+        (path / "metadata.json").write_text(json.dumps(metadata))
+        points = sum(NLON)
+        write_values(path / "land_fraction.bin", [1, 0.5, 0, 0, 0.2, 0.9])
+        write_values(path / "surface_height.bin", [100, 50, 0, 0, 10, 2000])
+        write_values(path / "ocean_q_flux.bin", [0] * points)
+        for month in range(1, self.months + 1):
+            for field in REQUIRED_MONTHLY:
+                count = len(MU) * LEVELS if field.startswith("zonal_") else points
+                write_values(path / f"monthly_{field}_m{month:04d}.bin", [month + 0.25 * i for i in range(count)])
+        for year in (1, 2):
+            write_values(path / f"yearly_surface_temperature_y{year:04d}.bin", [280 + year] * points)
+            write_values(path / f"yearly_log_surface_pressure_spectral_y{year:04d}.bin", [0] * 4)
+            (path / f"yearly_time_y{year:04d}.json").write_text(json.dumps({"time_seconds": (year - 1) * 31104000.0}))
+            for level in range(1, LEVELS + 1):
+                write_values(path / f"yearly_u_y{year:04d}_l{level:02d}.bin", [10 * level + year] * points)
+                write_values(path / f"yearly_temperature_spectral_y{year:04d}_l{level:02d}.bin", [0] * 4)
+        (path / "daily_global.csv").write_text("time_seconds,simulation_day,mean_surface_temperature_k\n0,0,288.5\n86400,1,NaN\n")
+        return path
 
-    def test_monthly_and_yearly_discovery(self):
-        self.assertEqual([run.name for run in self.repository.discover()], ["ice", "ice.yearly"])
-        monthly = self.repository.get_run("ice")
-        self.assertEqual(monthly.steps, (1,))
-        metadata = self.repository.public_metadata(monthly)
-        self.assertFalse(metadata["supports_streamlines"])
-        self.assertFalse(any(field["uses_level"] for field in metadata["available_fields"]))
-        self.assertEqual(metadata["frame_times_seconds"]["1"], 15 * 86400)
-        yearly = self.repository.get_run("ice.yearly")
-        self.assertEqual(yearly.steps, (1,))
-        self.assertEqual(yearly.metadata["frame_times_seconds"]["1"], 0)
 
-    def test_ice_mask_and_color_statistics(self):
-        run = self.repository.get_run("ice")
-        payload, stats = self.repository.field_frame(run, "sea_ice_temperature", 1)
-        values = array("f", payload)
-        self.assertTrue(math.isnan(values[0]))
-        self.assertTrue(math.isnan(values[3]))
-        self.assertEqual(list(values[1:3]), [260, 270])
-        self.assertEqual(stats["minimum"], 260)
-        self.assertEqual(stats["mean"], 265)
-        self.assertEqual(self.repository.field_statistics(run, "sea_ice_temperature")["minimum"], 260)
+class RepositoryTest(LandSeaFixture):
+    def test_discovers_only_current_land_sea_runs(self):
+        self.make_run("old_moist", land_sea_metadata(snow={"enabled": False}))
+        self.make_run("dry", land_sea_metadata(equation="dry_hydrostatic_atmosphere"))
+        broken = self.make_run("broken", land_sea_metadata())
+        (broken / "monthly_zonal_v_m0001.bin").unlink()
+        for month in range(2, self.months + 1):
+            (broken / f"monthly_zonal_v_m{month:04d}.bin").unlink()
+        self.assertEqual([run.name for run in self.repository.discover()], ["tiny"])
 
-    def test_all_ice_missing_is_renderable(self):
-        self.write("monthly_sea_ice_fraction_m0001.bin", [0, 0, 0, 0])
-        run = self.repository.get_run("ice")
-        payload, stats = self.repository.field_frame(run, "sea_ice_thickness", 1)
-        self.assertTrue(all(math.isnan(value) for value in array("f", payload)))
-        self.assertEqual(stats["maximum"], 0)
-        self.assertEqual(self.repository.field_statistics(run, "sea_ice_thickness")["maximum"], 0)
-
-    def test_corrupt_source_is_not_hidden_by_mask(self):
-        self.write("monthly_sea_ice_temperature_m0001.bin", [math.nan, 260, 270, 0])
+    def test_requires_one_complete_year(self):
+        short = self.make_run("short", land_sea_metadata())
+        for month in range(12, self.months + 1):
+            (short / f"monthly_precipitation_m{month:04d}.bin").unlink()
         with self.assertRaises(DataError):
-            self.repository.field_frame(self.repository.get_run("ice"), "sea_ice_temperature", 1)
+            self.repository.get_run("short")
 
-    def test_ocean_temperature_masks_only_land(self):
-        payload, stats = self.repository.field_frame(self.repository.get_run("ice.yearly"), "ocean_temperature", 1)
-        values = array("f", payload)
-        self.assertTrue(math.isnan(values[0]))
-        self.assertTrue(all(math.isfinite(value) for value in values[1:]))
-        self.assertAlmostEqual(stats["minimum"], 271.35, places=4)
-
-    def test_snow_fields_mask_pure_ocean(self):
-        for prefix, suffix in (("monthly", "m0001"), ("yearly", "y0001")):
-            self.write(f"{prefix}_snow_water_{suffix}.bin", [80, 20, 0, 0])
-            self.write(f"{prefix}_snow_fraction_{suffix}.bin", [80 / 130, 20 / 70, 0, 0])
-        self.write("monthly_snowfall_m0001.bin", [1, 2, 3, 0])
-        repository = Repository(self.root)
-        payload, stats = repository.field_frame(repository.get_run("ice.yearly"), "snow_water", 1)
-        values = array("f", payload)
-        self.assertEqual(list(values[:2]), [80, 20])
-        self.assertTrue(all(math.isnan(value) for value in values[2:]))
-        self.assertEqual(stats["maximum"], 80)
-        payload, _ = repository.field_frame(repository.get_run("ice"), "snowfall", 1)
-        self.assertEqual(list(array("f", payload)), [1, 2, 3, 0])
-
-    def test_legacy_ground_temperature_without_land_mask(self):
-        metadata_path = self.run_path / "metadata.json"
-        metadata = json.loads(metadata_path.read_text())
-        metadata.pop("surface_tiles")
-        metadata["ground"] = {}
-        metadata_path.write_text(json.dumps(metadata))
-        (self.run_path / "land_fraction.bin").unlink()
-        self.write("monthly_deep_temperature_m0001.bin", [280, 275, 270, 265])
-        payload, stats = self.repository.field_frame(self.repository.get_run("ice"), "deep_temperature", 1)
-        self.assertEqual(list(array("f", payload)), [280, 275, 270, 265])
-        self.assertEqual(stats["minimum"], 265)
-
-
-class RepositoryTest(unittest.TestCase):
-    def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        root = Path(self.temporary.name)
-        self.root = root
-        run = root / "tiny"
-        run.mkdir()
-        mu = [-1 / math.sqrt(3), 1 / math.sqrt(3)]
-        metadata = {
-            "case_name": "tiny",
-            "simulation": {
-                "time_step_seconds": 10.0,
-                "number_of_steps": 4,
-                "snapshot_interval_steps": 2,
-            },
-            "physical_constants": {"earth_radius_m": 2.0, "rotation_rate_rad_s": 0.25},
-            "grid": {"mu": mu, "nlon": [2, 2], "ring_offsets": [0, 2, 4], "point_count": 4},
-        }
-        (run / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-        for step in (0, 1, 2, 4):
-            for field, values in {
-                "zeta": [0.0, 0.0, 0.0, 0.0],
-                "delta": [-2.0, -1.0, 1.0, 2.0],
-                "eta": [10.0, 20.0, 30.0, 40.0],
-                "u": [3.0, 3.0, 3.0, 3.0],
-                "v": [4.0, 4.0, 4.0, 4.0],
-            }.items():
-                (run / f"{field}_{step:05d}.bin").write_bytes(array("d", values).tobytes())
-        self.repository = Repository(root)
-
-    def tearDown(self):
-        self.temporary.cleanup()
-
-    def test_quadrature_weights_integrate_constant(self):
-        nodes = [-1 / math.sqrt(3), 1 / math.sqrt(3)]
-        self.assertAlmostEqual(sum(_gauss_legendre_weights(nodes)), 2.0)
-
-    def test_discovers_complete_frames_and_encodes_speed(self):
+    def test_public_metadata_lists_fields(self):
         run = self.repository.get_run("tiny")
-        self.assertEqual(run.steps, (0, 2, 4))
-        payload, stats = self.repository.speed_frame(run, 0)
-        self.assertEqual(len(payload), 4 * 4)
-        self.assertAlmostEqual(stats["maximum"], 5.0)
+        public = Repository.public_metadata(run)
+        self.assertEqual(public["months"], list(range(1, self.months + 1)))
+        self.assertEqual(public["grid"]["ring_offsets"], [0, 3, 6])
+        self.assertEqual(public["grid"]["point_count"], 6)
+        self.assertIn("precipitation", public["monthly_fields"])
+        self.assertNotIn("zonal_v", public["monthly_fields"])
+        self.assertEqual(public["zonal_fields"], ["zonal_v"])
+        self.assertEqual(public["yearly_level_fields"], {"u": [1, 2]})
+        self.assertEqual(sorted(public["yearly_surface_fields"]), ["surface_temperature"])
+        self.assertEqual(public["years"], [{"index": 1, "time_seconds": 0.0}, {"index": 2, "time_seconds": 31104000.0}])
+        self.assertEqual(public["terrain"], "analytic")
 
-    def test_wind_frame_packs_u_then_v(self):
+    def test_grid_values_concatenate_months(self):
         run = self.repository.get_run("tiny")
-        payload, maximum_speed = self.repository.wind_frame(run, 0)
-        values = list(array("f", payload))
-        self.assertEqual(values[:4], [3.0] * 4)
-        self.assertEqual(values[4:], [4.0] * 4)
-        self.assertAlmostEqual(maximum_speed, 5.0)
+        values = array("d")
+        values.frombytes(self.repository.grid_values(run, "monthly", "precipitation", [2, 3], None))
+        self.assertEqual(list(values), [2 + 0.25 * i for i in range(6)] + [3 + 0.25 * i for i in range(6)])
 
-    def test_exposes_and_encodes_all_supported_fields(self):
+    def test_level_fields_require_a_level(self):
         run = self.repository.get_run("tiny")
-        self.assertEqual(run.fields, ("zeta", "delta", "eta", "speed"))
-        metadata = self.repository.public_metadata(run)
-        self.assertIsInstance(metadata["data_generation"], int)
-        self.assertEqual(
-            [field["id"] for field in metadata["available_fields"]],
-            ["zeta", "delta", "eta", "speed"],
-        )
-        payload, stats = self.repository.field_frame(run, "delta", 0)
-        self.assertEqual(list(array("f", payload)), [-2.0, -1.0, 1.0, 2.0])
-        self.assertEqual(stats["minimum"], -2.0)
-        self.assertEqual(stats["maximum_absolute"], 2.0)
-        self.assertEqual(stats["p995_absolute"], 2.0)
+        with self.assertRaises(DataError):
+            self.repository.grid_values(run, "yearly", "u", [1], None)
+        values = array("d")
+        values.frombytes(self.repository.grid_values(run, "yearly", "u", [2], 2))
+        self.assertEqual(list(values), [22.0] * 6)
+        with self.assertRaises(DataError):
+            self.repository.grid_values(run, "yearly", "surface_temperature", [1], 1)
 
-    def test_field_statistics_use_the_whole_run(self):
-        run = self.repository.get_run("tiny")
-        stats = self.repository.field_statistics(run, "eta")
-        self.assertEqual(stats, {"minimum": 10.0, "maximum": 40.0, "maximum_absolute": 40.0})
-
-    def test_rejects_unavailable_field(self):
+    def test_rejects_unknown_fields_and_indices(self):
         run = self.repository.get_run("tiny")
         with self.assertRaises(KeyError):
-            self.repository.field_frame(run, "temperature", 0)
+            self.repository.grid_values(run, "monthly", "precipitation", [99], None)
+        with self.assertRaises(KeyError):
+            self.repository.grid_values(run, "monthly", "../metadata", [1], None)
+        with self.assertRaises(KeyError):
+            self.repository.grid_values(run, "yearly", "temperature_spectral", [1], 1)
+        with self.assertRaises(KeyError):
+            self.repository.grid_values(run, "monthly", "zonal_v", [1], None)
+        with self.assertRaises(KeyError):
+            self.repository.get_run("..")
 
-    def test_barotropic_run_only_exposes_zeta_and_speed(self):
-        run_path = self.root / "barotropic"
-        run_path.mkdir()
-        metadata = json.loads((self.root / "tiny" / "metadata.json").read_text())
-        (run_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-        for field in ("zeta", "u", "v"):
-            source = self.root / "tiny" / f"{field}_00000.bin"
-            (run_path / source.name).write_bytes(source.read_bytes())
-        run = self.repository.get_run("barotropic")
-        self.assertEqual(run.fields, ("zeta", "speed"))
-
-    def test_conservation_for_uniform_flow(self):
+    def test_zonal_values_have_level_latitude_layout(self):
         run = self.repository.get_run("tiny")
-        data = self.repository.conservation(run)
-        metrics = {item["id"]: item["values"] for item in data["metrics"]}
-        self.assertEqual(data["times_seconds"], [0.0, 20.0, 40.0])
-        self.assertAlmostEqual(metrics["mean_kinetic_energy"][0], 12.5)
-        self.assertAlmostEqual(metrics["mean_relative_vorticity"][0], 0.0)
-        self.assertEqual(metrics["mean_kinetic_energy"][0], metrics["mean_kinetic_energy"][1])
+        values = array("d")
+        values.frombytes(self.repository.zonal_values(run, "zonal_v", [1]))
+        self.assertEqual(len(values), len(MU) * LEVELS)
 
-    def test_dry_run_exposes_level_fields_and_normalizes_legacy_grid(self):
-        run_path = self._write_dry_run()
-        run = self.repository.get_run(run_path.name)
-        self.assertTrue(run.is_dry)
-        self.assertEqual(run.steps, (0, 2))
-        self.assertEqual(
-            run.fields,
-            ("surface_pressure", "temperature", "zeta", "delta", "u", "v", "speed"),
-        )
-        metadata = self.repository.public_metadata(run)
-        self.assertEqual(metadata["grid"]["ring_offsets"], [0, 2, 4])
-        self.assertEqual(metadata["grid"]["point_count"], 4)
-        self.assertEqual(metadata["simulation"]["time_step_seconds"], 10.0)
-        self.assertFalse(metadata["supports_conservation_diagnostics"])
-        fields = {field["id"]: field for field in metadata["available_fields"]}
-        self.assertTrue(fields["temperature"]["uses_level"])
-        self.assertFalse(fields["surface_pressure"]["uses_level"])
-        vertical = metadata["vertical_coordinate"]
-        self.assertEqual(vertical["default_level"], 2)
-        self.assertEqual(len(vertical["reference_full_level_pressure_pa"]), 3)
-        self.assertNotIn("interpolation", vertical)
+    def test_non_finite_and_truncated_files_are_rejected(self):
+        write_values(self.run_path / "monthly_precipitation_m0002.bin", [math.nan] * 6)
+        write_values(self.run_path / "monthly_precipitation_m0003.bin", [1.0] * 5)
+        run = self.repository.get_run("tiny")
+        with self.assertRaises(DataError):
+            self.repository.grid_values(run, "monthly", "precipitation", [2], None)
+        with self.assertRaises(DataError):
+            self.repository.grid_values(run, "monthly", "precipitation", [3], None)
 
-    def test_dry_field_is_read_from_requested_layer(self):
-        run = self.repository.get_run(self._write_dry_run().name)
-        payload, _ = self.repository.field_frame(run, "zeta", 0, 2)
-        self.assertEqual(list(array("f", payload)), [1.0] * 4)
+    def test_daily_columns_turn_non_finite_values_into_null(self):
+        daily = Repository.daily(self.repository.get_run("tiny"))
+        self.assertEqual(daily["row_count"], 2)
+        self.assertEqual(daily["data"]["mean_surface_temperature_k"], [288.5, None])
 
-        speed_payload, _ = self.repository.field_frame(run, "speed", 0, 2)
-        for value in array("f", speed_payload):
-            self.assertAlmostEqual(value, 5.0, places=5)
+    def test_parse_indices(self):
+        self.assertEqual(parse_indices("1,3-5,2"), [1, 3, 4, 5, 2])
+        for text in ("", "0", "3-1", "a", "1,,2"):
+            with self.assertRaises(DataError):
+                parse_indices(text)
 
-        wind_payload, maximum_speed = self.repository.wind_frame(run, 0, 2)
-        wind = list(array("f", wind_payload))
-        self.assertEqual(wind[:4], [3.0] * 4)
-        self.assertEqual(wind[4:], [4.0] * 4)
-        self.assertAlmostEqual(maximum_speed, 5.0)
 
-    def test_dry_field_rejects_layer_outside_run(self):
-        run = self.repository.get_run(self._write_dry_run().name)
-        with self.assertRaisesRegex(DataError, "Level must be between 1 and 3"):
-            self.repository.field_frame(run, "temperature", 0, 0)
+class HttpTest(LandSeaFixture):
+    def setUp(self):
+        super().setUp()
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.root))
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
 
-    def test_dry_field_statistics_are_computed_per_layer(self):
-        run = self.repository.get_run(self._write_dry_run().name)
-        self.assertEqual(
-            self.repository.field_statistics(run, "zeta", 1)["maximum"], 0.0
-        )
-        self.assertEqual(
-            self.repository.field_statistics(run, "zeta", 3)["maximum"], 2.0
-        )
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        super().tearDown()
 
-    def test_surface_pressure_does_not_require_a_layer(self):
-        run = self.repository.get_run(self._write_dry_run().name)
-        payload, _ = self.repository.field_frame(run, "surface_pressure", 0)
-        self.assertEqual(list(array("f", payload)), [100000.0, 80000.0, 100000.0, 80000.0])
+    def get(self, path):
+        with urllib.request.urlopen(self.base + path) as response:
+            return response.status, response.headers, response.read()
 
-    def _write_dry_run(self) -> Path:
-        run_path = self.root / "dry"
-        if run_path.exists():
-            return run_path
-        run_path.mkdir()
-        surface_pressure = [100000.0, 80000.0, 100000.0, 80000.0]
-        a_half = [10000.0, 0.0, 0.0, 0.0]
-        b_half = [0.0, 0.4, 0.7, 1.0]
-        reference_half = [
-            a + b * 100000.0 for a, b in zip(a_half, b_half)
-        ]
-        metadata = {
-            "equation": "dry_hydrostatic_atmosphere",
-            "time_step_seconds": 10.0,
-            "number_of_steps": 2,
-            "snapshot_interval_steps": 2,
-            "number_of_levels": 3,
-            "reference_half_level_pressure_pa": reference_half,
-            "hybrid_a_half_pa": a_half,
-            "hybrid_b_half": b_half,
-            "grid": {
-                "mu": [-1 / math.sqrt(3), 1 / math.sqrt(3)],
-                "nlon": [2, 2],
-            },
-        }
-        (run_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-        for step in (0, 2):
-            (run_path / f"surface_pressure_{step:05d}.bin").write_bytes(
-                array("d", surface_pressure).tobytes()
-            )
-            full_pressure_by_point = []
-            for ps in surface_pressure:
-                half = [a + b * ps for a, b in zip(a_half, b_half)]
-                full_pressure_by_point.append(
-                    [
-                        self._full_pressure(half[level], half[level + 1])
-                        for level in range(3)
-                    ]
-                )
-            for level in range(3):
-                temperature = [
-                    math.log(full_pressure_by_point[point][level])
-                    for point in range(4)
-                ]
-                values_by_field = {
-                    "temperature": temperature,
-                    "zeta": [float(level)] * 4,
-                    "delta": [-float(level)] * 4,
-                    "u": [3.0] * 4,
-                    "v": [4.0] * 4,
-                }
-                for field, values in values_by_field.items():
-                    (run_path / f"{field}_l{level + 1:02d}_{step:05d}.bin").write_bytes(
-                        array("d", values).tobytes()
-                    )
-        return run_path
+    def test_routes(self):
+        _, _, body = self.get("/api/runs")
+        self.assertEqual([run["name"] for run in json.loads(body)["runs"]], ["tiny"])
+        _, _, body = self.get("/api/runs/tiny/metadata")
+        self.assertEqual(json.loads(body)["level_count"], LEVELS)
+        _, headers, body = self.get("/api/runs/tiny/grid/monthly/precipitation?index=1-12")
+        self.assertEqual(len(body), 12 * 6 * 8)
+        self.assertEqual(headers["X-Values-Per-Record"], "6")
+        _, _, body = self.get("/api/runs/tiny/grid/static/land_fraction")
+        self.assertEqual(len(body), 6 * 8)
+        _, _, body = self.get("/api/runs/tiny/zonal/zonal_v?index=1,2")
+        self.assertEqual(len(body), 2 * len(MU) * LEVELS * 8)
+        _, _, body = self.get("/api/runs/tiny/daily")
+        self.assertEqual(json.loads(body)["columns"][0], "time_seconds")
+        status, _, body = self.get("/")
+        self.assertEqual(status, 200)
+        self.assertIn(b"app.js", body)
 
-    @staticmethod
-    def _full_pressure(top: float, bottom: float) -> float:
-        alpha = 1.0 - top * math.log(bottom / top) / (bottom - top)
-        return bottom * math.exp(-alpha)
+    def test_errors(self):
+        for path, status in (
+            ("/api/runs/missing/metadata", 404),
+            ("/api/runs/tiny/grid/monthly/precipitation?index=0", 422),
+            ("/api/runs/tiny/grid/yearly/u?index=1", 422),
+            ("/api/runs/tiny/grid/monthly/nope?index=1", 404),
+            ("/../server.py", 404),
+        ):
+            with self.subTest(path=path):
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    self.get(path)
+                self.assertEqual(caught.exception.code, status)
 
 
 if __name__ == "__main__":

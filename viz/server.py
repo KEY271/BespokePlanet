@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""Dependency-free API server for BespokePlanet simulation output."""
+"""Dependency-free data server for the BespokePlanet land-sea visualizer.
+
+Only the current land-sea output (moist atmosphere with land/sea tiles, sea
+ice and snow) is served. The server validates and forwards the raw float64
+grids; every climate diagnostic is computed in the browser (static/climate.js)
+so that the land threshold can be changed interactively.
+"""
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import mimetypes
@@ -11,7 +18,7 @@ import re
 import sys
 import threading
 from array import array
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,703 +26,341 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 
-FRAME_RE = re.compile(r"^(zeta|delta|eta|u|v)_(\d{5})\.bin$")
-DRY_LEVEL_FRAME_RE = re.compile(
-    r"^(zeta|delta|temperature|u|v)_l(\d{2})_(\d{5})\.bin$"
-)
-DRY_SURFACE_FRAME_RE = re.compile(r"^surface_pressure_(\d{5})\.bin$")
 RUN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-FIELD_DEFINITIONS: dict[str, dict[str, Any]] = {
-    "zeta": {"label": "zeta", "symbol": "ζ", "unit": "s⁻¹", "signed": True},
-    "delta": {"label": "delta", "symbol": "δ", "unit": "s⁻¹", "signed": True},
-    "eta": {"label": "eta", "symbol": "η", "unit": "m", "signed": True},
-    "temperature": {
-        "label": "temperature",
-        "symbol": "T",
-        "unit": "K",
-        "signed": False,
-    },
-    "surface_pressure": {
-        "label": "surface pressure",
-        "symbol": "pₛ",
-        "unit": "Pa",
-        "signed": False,
-    },
-    "u": {
-        "label": "eastward wind u",
-        "symbol": "u",
-        "unit": "m s⁻¹",
-        "signed": True,
-    },
-    "v": {
-        "label": "northward wind v",
-        "symbol": "v",
-        "unit": "m s⁻¹",
-        "signed": True,
-    },
-    "speed": {
-        "label": "sqrt(u² + v²)",
-        "symbol": "|u|",
-        "unit": "m s⁻¹",
-        "signed": False,
-        "zero_based": True,
-    },
-}
+FIELD_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+MONTHLY_RE = re.compile(r"^monthly_([a-z0-9_]+)_m(\d{4})\.bin$")
+YEARLY_SURFACE_RE = re.compile(r"^yearly_([a-z0-9_]+)_y(\d{4})\.bin$")
+YEARLY_LEVEL_RE = re.compile(r"^yearly_([a-z0-9_]+)_y(\d{4})_l(\d{2})\.bin$")
+YEARLY_TIME_RE = re.compile(r"^yearly_time_y(\d{4})\.json$")
+ZONAL_PREFIXES = ("zonal_", "eddy_")
+STATIC_FIELDS = ("land_fraction", "surface_height", "ocean_q_flux")
+REQUIRED_STATIC = ("land_fraction", "surface_height")
+# Monthly fields read by the final-year analysis; a run without all of them is
+# not the current land-sea output and is not offered.
+REQUIRED_MONTHLY = (
+    "surface_temperature", "land_temperature", "ocean_temperature",
+    "precipitation", "evaporation", "cloud_cover", "surface_pressure",
+    "surface_water", "sea_ice_fraction", "sea_ice_volume",
+    "sea_ice_thickness", "sea_ice_temperature", "snow_fraction",
+    "snow_water", "zonal_v",
+)
+MAXIMUM_INDICES = 1000
 
-
-FIELD_DEFINITIONS["surface_temperature"] = {"label": "surface temperature", "symbol": "Tₛ", "unit": "K", "signed": False}
-FIELD_DEFINITIONS["deep_temperature"] = {"label": "deep land temperature", "symbol": "T_d", "unit": "K", "signed": False}
-FIELD_DEFINITIONS["land_temperature"] = {"label": "land temperature", "symbol": "T_L", "unit": "K", "signed": False}
-FIELD_DEFINITIONS["ocean_temperature"] = {"label": "ocean temperature", "symbol": "T_o", "unit": "K", "signed": False}
-FIELD_DEFINITIONS["sea_ice_fraction"] = {"label": "sea ice concentration", "symbol": "A", "unit": "1", "signed": False, "zero_based": True}
-FIELD_DEFINITIONS["sea_ice_volume"] = {"label": "sea ice volume / ocean area", "symbol": "V", "unit": "m", "signed": False, "zero_based": True}
-FIELD_DEFINITIONS["sea_ice_thickness"] = {"label": "sea ice thickness", "symbol": "h", "unit": "m", "signed": False, "zero_based": True}
-FIELD_DEFINITIONS["sea_ice_temperature"] = {"label": "sea ice surface temperature", "symbol": "Tᵢ", "unit": "K", "signed": False}
-FIELD_DEFINITIONS["snow_water"] = {"label": "land snowpack (water equivalent)", "symbol": "S", "unit": "kg m⁻²", "signed": False, "zero_based": True}
-FIELD_DEFINITIONS["snow_fraction"] = {"label": "land snow cover", "symbol": "f", "unit": "1", "signed": False, "zero_based": True}
-FIELD_DEFINITIONS["snowfall"] = {"label": "large-scale snowfall", "symbol": "Pₛₙ", "unit": "mm day⁻¹", "signed": False, "zero_based": True}
-LAND_TILE_FIELDS = {"land_temperature", "deep_temperature", "snow_water", "snow_fraction"}
-MASKED_TILE_FIELDS = {"land_temperature", "ocean_temperature", "deep_temperature", "sea_ice_temperature", "sea_ice_thickness", "snow_water", "snow_fraction"}
 
 class DataError(RuntimeError):
     """Raised when a run contains malformed or incomplete data."""
 
 
-@dataclass(frozen=True)
+@dataclass
 class Run:
     name: str
     path: Path
     metadata: dict[str, Any]
-    steps: tuple[int, ...]
-    fields: tuple[str, ...]
-    data_generation: int
-    is_dry: bool = False
-    level_count: int = 0
-    radiation_period: str = ""
+    point_count: int
+    nlat: int
+    level_count: int
+    months: tuple[int, ...]
+    monthly: dict[str, set[int]]
+    yearly_surface: dict[str, set[int]]
+    yearly_level: dict[str, set[int]]
+    years: tuple[int, ...]
+    static: tuple[str, ...]
+    generation: int
+    year_times: dict[int, float] = field(default_factory=dict)
+
+    @property
+    def terrain(self) -> str:
+        source = str(self.metadata.get("topography", {}).get("source", ""))
+        return "earth" if "ETOPO" in source else "analytic"
 
 
-def _full_level_pressure(top: float, bottom: float) -> float:
-    """Pressure represented by a layer-centred prognostic value."""
-    if not (math.isfinite(top) and math.isfinite(bottom) and 0.0 < top < bottom):
-        raise DataError("Dry-atmosphere half-level pressures must increase downward")
-    thickness = bottom - top
-    alpha = 1.0 - top * math.log(bottom / top) / thickness
-    return bottom * math.exp(-alpha)
-
-
-def _normalized_metadata(raw: dict[str, Any]) -> dict[str, Any]:
-    """Normalize legacy dry metadata to the schema used by the visualizer."""
-    metadata = dict(raw)
-    grid = dict(metadata["grid"])
+def _grid_shape(metadata: dict[str, Any]) -> tuple[int, int]:
+    grid = metadata["grid"]
+    mu = [float(value) for value in grid["mu"]]
     nlon = [int(value) for value in grid["nlon"]]
-    offsets = [0]
-    for ring_size in nlon:
-        offsets.append(offsets[-1] + ring_size)
-    grid.setdefault("ring_offsets", offsets)
-    grid.setdefault("point_count", offsets[-1])
-    metadata["grid"] = grid
+    if not mu or len(mu) != len(nlon) or any(n <= 0 for n in nlon):
+        raise DataError("格子の配列の長さが合いません")
+    if any(not -1.0 < value < 1.0 for value in mu) or any(b <= a for a, b in zip(mu, mu[1:])):
+        raise DataError("格子の mu が南から北へ増加していません")
+    offsets = grid.get("ring_offsets")
+    if offsets is not None:
+        expected = [0]
+        for n in nlon:
+            expected.append(expected[-1] + n)
+        if [int(value) for value in offsets] != expected:
+            raise DataError("緯度リングのオフセットが不正です")
+    return sum(nlon), len(nlon)
 
-    if "monthly_surface_temperature" in metadata.get("output", {}):
-        metadata["supports_conservation_diagnostics"] = False
-        return metadata
-    equation = metadata.get("equation", "barotropic_vorticity")
-    if equation != "dry_hydrostatic_atmosphere":
-        metadata.setdefault("supports_conservation_diagnostics", True)
-        return metadata
 
-    metadata.setdefault(
-        "simulation",
-        {
-            "duration_seconds": metadata.get("duration_seconds"),
-            "time_step_seconds": metadata.get("time_step_seconds"),
-            "number_of_steps": metadata.get("number_of_steps"),
-            "snapshot_interval_steps": metadata.get("snapshot_interval_steps"),
-            "number_of_snapshots": metadata.get("number_of_snapshots"),
-        },
+def _is_land_sea(metadata: dict[str, Any]) -> bool:
+    return (
+        int(metadata.get("schema_version", 0)) >= 3
+        and metadata.get("equation") == "moist_hydrostatic_atmosphere"
+        and bool(metadata.get("sea_ice", {}).get("enabled"))
+        and bool(metadata.get("snow", {}).get("enabled"))
+        and "static_land_fraction" in metadata.get("output", {})
     )
-    metadata.setdefault(
-        "numerics",
-        {
-            "spectral_truncation": metadata.get("spectral_truncation"),
-            "maximum_cfl": metadata.get("maximum_advective_cfl"),
-        },
-    )
-    half_levels = [float(value) for value in metadata["reference_half_level_pressure_pa"]]
-    level_count = int(metadata.get("number_of_levels", len(half_levels) - 1))
-    if len(half_levels) != level_count + 1:
-        raise DataError("Dry-atmosphere metadata has an invalid vertical level count")
-    full_levels = [
-        _full_level_pressure(half_levels[k], half_levels[k + 1])
-        for k in range(level_count)
-    ]
-    default_level = min(
-        range(1, level_count + 1),
-        key=lambda level: abs(math.log(full_levels[level - 1] / 50000.0)),
-    )
-    vertical = dict(metadata.get("vertical_coordinate", {}))
-    for obsolete_key in (
-        "minimum_pressure_pa",
-        "maximum_pressure_pa",
-        "default_pressure_pa",
-        "interpolation",
-    ):
-        vertical.pop(obsolete_key, None)
-    vertical.update(
-        {
-            "type": "hybrid_sigma_pressure",
-            "number_of_levels": level_count,
-            "reference_half_level_pressure_pa": half_levels,
-            "reference_full_level_pressure_pa": full_levels,
-            "default_level": default_level,
-            "level_order": "top_to_bottom",
-        }
-    )
-    a_half = metadata.get("hybrid_a_half_pa")
-    b_half = metadata.get("hybrid_b_half")
-    if a_half is not None or b_half is not None:
-        if a_half is None or b_half is None:
-            raise DataError("Dry-atmosphere metadata must contain both hybrid A and B")
-        vertical["a_half_pa"] = [float(value) for value in a_half]
-        vertical["b_half"] = [float(value) for value in b_half]
-        if len(vertical["a_half_pa"]) != level_count + 1 or len(vertical["b_half"]) != level_count + 1:
-            raise DataError("Dry-atmosphere hybrid coefficients have an invalid length")
-        vertical["pressure_is_column_dependent"] = True
-    else:
-        vertical["pressure_is_column_dependent"] = False
-    metadata["vertical_coordinate"] = vertical
-    metadata["supports_conservation_diagnostics"] = False
-    return metadata
 
 
 def _read_float64(path: Path, expected_count: int) -> array:
-    expected_bytes = expected_count * 8
     try:
         raw = path.read_bytes()
     except OSError as exc:
-        raise DataError(f"Could not read {path.name}: {exc}") from exc
-    if len(raw) != expected_bytes:
-        raise DataError(
-            f"{path.name} is {len(raw)} bytes; expected {expected_bytes} bytes"
-        )
+        raise DataError(f"{path.name} を読めません: {exc}") from exc
+    if len(raw) != expected_count * 8:
+        raise DataError(f"{path.name} は {len(raw)} バイトですが、{expected_count * 8} バイトのはずです")
     values = array("d")
     values.frombytes(raw)
     if sys.byteorder != "little":
         values.byteswap()
+    if not all(map(math.isfinite, values)):
+        raise DataError(f"{path.name} に有限でない値があります")
     return values
 
 
-def _gauss_legendre_weights(nodes: list[float]) -> list[float]:
-    """Recover Gaussian quadrature weights from the roots stored in metadata."""
-    degree = len(nodes)
-    weights: list[float] = []
-    for x in nodes:
-        p_nm2 = 1.0
-        p_nm1 = x
-        if degree == 1:
-            p_n = p_nm1
-            p_before = p_nm2
+def parse_indices(text: str) -> list[int]:
+    """Parse "1,2,5-8" into a list of positive integers, keeping the order."""
+    indices: list[int] = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            raise DataError("index が空です")
+        if "-" in part:
+            first, _, last = part.partition("-")
+            if not (first.isdigit() and last.isdigit()) or int(last) < int(first):
+                raise DataError(f"index の範囲が不正です: {part}")
+            indices.extend(range(int(first), int(last) + 1))
+        elif part.isdigit():
+            indices.append(int(part))
         else:
-            for n in range(2, degree + 1):
-                p_n = ((2 * n - 1) * x * p_nm1 - (n - 1) * p_nm2) / n
-                p_nm2, p_nm1 = p_nm1, p_n
-            p_before = p_nm2
-        derivative = degree * (p_before - x * p_n) / (1.0 - x * x)
-        weights.append(2.0 / ((1.0 - x * x) * derivative * derivative))
-    return weights
+            raise DataError(f"index が不正です: {part}")
+        if len(indices) > MAXIMUM_INDICES:
+            raise DataError("index が多すぎます")
+    if any(index <= 0 for index in indices):
+        raise DataError("index は 1 から始まります")
+    return indices
 
 
 class Repository:
     def __init__(self, output_root: Path) -> None:
         self.output_root = output_root.resolve()
-        self._conservation_cache: dict[tuple[str, int], dict[str, Any]] = {}
-        self._field_statistics_cache: dict[
-            tuple[str, int, str, int | None], dict[str, float]
-        ] = {}
-        self._cache_lock = threading.Lock()
+        self._cache: dict[str, tuple[tuple[int, int], Run]] = {}
+        self._lock = threading.Lock()
 
     def discover(self) -> list[Run]:
         if not self.output_root.is_dir():
-            raise DataError(f"Output directory does not exist: {self.output_root}")
-        runs: list[Run] = []
+            raise DataError(f"出力ディレクトリがありません: {self.output_root}")
+        runs = []
         for metadata_path in sorted(self.output_root.glob("*/metadata.json")):
             try:
-                runs.append(self._load_run(metadata_path.parent.name))
-                if any(metadata_path.parent.glob("yearly_surface_temperature_y*.bin")):
-                    runs.append(self._load_run(metadata_path.parent.name + ".yearly"))
-            except (DataError, OSError, ValueError, KeyError, json.JSONDecodeError):
+                runs.append(self.get_run(metadata_path.parent.name))
+            except (DataError, KeyError, OSError, ValueError, TypeError, json.JSONDecodeError):
                 continue
         return runs
 
     def get_run(self, name: str) -> Run:
         if not RUN_RE.fullmatch(name):
             raise KeyError(name)
-        run = self._load_run(name)
+        path = (self.output_root / name).resolve()
+        if path.parent != self.output_root or not (path / "metadata.json").is_file():
+            raise KeyError(name)
+        stamp = ((path / "metadata.json").stat().st_mtime_ns, path.stat().st_mtime_ns)
+        with self._lock:
+            cached = self._cache.get(name)
+        if cached and cached[0] == stamp:
+            return cached[1]
+        run = self._load_run(name, path)
+        with self._lock:
+            self._cache[name] = (stamp, run)
         return run
 
-    def _load_run(self, name: str) -> Run:
-        radiation_period = "monthly"
-        directory_name = name
-        if name.endswith(".yearly") and not (self.output_root / name).is_dir():
-            directory_name = name.removesuffix(".yearly")
-            radiation_period = "yearly"
-        run_path = (self.output_root / directory_name).resolve()
-        if run_path.parent != self.output_root or not run_path.is_dir():
-            raise KeyError(name)
-        metadata_path = run_path / "metadata.json"
-        metadata = _normalized_metadata(
-            json.loads(metadata_path.read_text(encoding="utf-8"))
-        )
-        grid = metadata["grid"]
-        mu = grid["mu"]
-        nlon = grid["nlon"]
-        offsets = grid["ring_offsets"]
-        if len(mu) != len(nlon) or len(offsets) != len(nlon) + 1:
-            raise DataError(f"Grid arrays disagree in {metadata_path}")
-        if offsets[0] != 0 or offsets[-1] != sum(nlon):
-            raise DataError(f"Invalid ring offsets in {metadata_path}")
-        if int(grid["point_count"]) != offsets[-1]:
-            raise DataError(f"Invalid point count in {metadata_path}")
-
-        if "monthly_surface_temperature" in metadata.get("output", {}):
-            return self._load_radiation_run(name, run_path, metadata_path, metadata, radiation_period)
-        is_dry = metadata.get("equation") == "dry_hydrostatic_atmosphere"
-        level_count = int(metadata.get("vertical_coordinate", {}).get("number_of_levels", 0))
-        if is_dry:
-            return self._load_dry_run(
-                name, run_path, metadata_path, metadata, level_count
-            )
-
-        step_sets = {field: set() for field in ("zeta", "delta", "eta", "u", "v")}
-        for path in run_path.iterdir():
-            match = FRAME_RE.match(path.name)
-            if match:
-                step_sets[match.group(1)].add(int(match.group(2)))
-
-        fields: list[str] = []
-        required_components: list[str] = []
-        for field in ("zeta", "delta", "eta"):
-            if step_sets[field]:
-                fields.append(field)
-                required_components.append(field)
-        if step_sets["u"] and step_sets["v"]:
-            fields.append("speed")
-            required_components.extend(("u", "v"))
-        if not fields:
-            raise DataError(f"No supported fields found in {run_path}")
-
-        steps = tuple(
-            sorted(set.intersection(*(step_sets[field] for field in required_components)))
-        )
-        simulation = metadata.get("simulation", {})
-        if "snapshot_interval_steps" in simulation:
-            interval = int(simulation["snapshot_interval_steps"])
-            final_step = int(simulation["number_of_steps"])
-            if interval <= 0:
-                raise DataError(f"Invalid snapshot interval in {metadata_path}")
-            steps = tuple(
-                step
-                for step in steps
-                if 0 <= step <= final_step
-                and (step % interval == 0 or step == final_step)
-            )
-        if not steps:
-            raise DataError(f"No complete frames found in {run_path}")
-        return Run(
-            name=name,
-            path=run_path,
-            metadata=metadata,
-            steps=steps,
-            fields=tuple(fields),
-            data_generation=metadata_path.stat().st_mtime_ns,
-        )
-
     @staticmethod
-    def _load_radiation_run(name, run_path, metadata_path, metadata, period):
-        suffix = "m" if period == "monthly" else "y"
-        pattern = re.compile(rf"^{period}_([a-z_]+)_{suffix}(\d{{4}})\.bin$")
-        steps_by_field = {}
+    def _load_run(name: str, path: Path) -> Run:
+        metadata_path = path / "metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if not _is_land_sea(metadata):
+            raise DataError(f"{name} は最新形式の陸海ケースではありません")
+        point_count, nlat = _grid_shape(metadata)
+        a_half = metadata.get("hybrid_a_half_pa")
+        b_half = metadata.get("hybrid_b_half")
+        half_pressure = metadata.get("reference_half_level_pressure_pa")
+        if not a_half or not b_half or not half_pressure or not len(a_half) == len(b_half) == len(half_pressure):
+            raise DataError("hybrid 座標の係数がありません")
+        level_count = len(a_half) - 1
+        for key in ("days_per_month", "months_per_year"):
+            if int(metadata["calendar"][key]) <= 0:
+                raise DataError("暦の設定が不正です")
+
+        monthly: dict[str, set[int]] = {}
+        yearly_surface: dict[str, set[int]] = {}
+        yearly_level_steps: dict[str, dict[int, set[int]]] = {}
+        year_times: dict[int, float] = {}
         generation = metadata_path.stat().st_mtime_ns
-        for path in run_path.iterdir():
-            match = pattern.fullmatch(path.name)
-            if match and match[1] in FIELD_DEFINITIONS:
-                steps_by_field.setdefault(match[1], set()).add(int(match[2]))
-                generation = max(generation, path.stat().st_mtime_ns)
-        if not steps_by_field:
-            raise DataError(f"No {period} surface frames found in {run_path}")
-        steps = tuple(sorted(set.intersection(*steps_by_field.values())))
-        if not steps:
-            raise DataError(f"No complete {period} surface frames found in {run_path}")
-        calendar = metadata["calendar"]
-        duration = float(calendar["solar_day_seconds"]) * int(calendar["days_per_month"])
-        if period == "yearly":
-            duration *= int(calendar["months_per_year"])
-        metadata = dict(metadata)
-        metadata["surface_sampling"] = period
-        metadata["frame_times_seconds"] = {str(n): (n - 0.5) * duration if period == "monthly" else (n - 1) * duration for n in steps}
-        if period == "yearly":
-            for n in steps:
-                time_path = run_path / f"yearly_time_y{n:04d}.json"
-                if time_path.exists():
-                    timestamp = float(json.loads(time_path.read_text())["time_seconds"])
-                    if not math.isfinite(timestamp) or timestamp < 0:
-                        raise DataError("Invalid yearly snapshot time")
-                    metadata["frame_times_seconds"][str(n)] = timestamp
-        metadata.pop("vertical_coordinate", None)
-        return Run(name, run_path, metadata, steps, tuple(steps_by_field), generation, radiation_period=period)
-
-    @staticmethod
-    def _load_dry_run(
-        name: str,
-        run_path: Path,
-        metadata_path: Path,
-        metadata: dict[str, Any],
-        level_count: int,
-    ) -> Run:
-        if level_count <= 0 or level_count > 99:
-            raise DataError(f"Invalid dry-atmosphere level count in {metadata_path}")
-        level_steps = {
-            field: {level: set() for level in range(1, level_count + 1)}
-            for field in ("zeta", "delta", "temperature", "u", "v")
+        for entry in path.iterdir():
+            filename = entry.name
+            if match := MONTHLY_RE.fullmatch(filename):
+                monthly.setdefault(match[1], set()).add(int(match[2]))
+            elif match := YEARLY_LEVEL_RE.fullmatch(filename):
+                if not match[1].endswith("_spectral") and 1 <= int(match[3]) <= level_count:
+                    yearly_level_steps.setdefault(match[1], {}).setdefault(int(match[2]), set()).add(int(match[3]))
+            elif match := YEARLY_SURFACE_RE.fullmatch(filename):
+                if not match[1].endswith("_spectral"):
+                    yearly_surface.setdefault(match[1], set()).add(int(match[2]))
+            elif match := YEARLY_TIME_RE.fullmatch(filename):
+                try:
+                    timestamp = float(json.loads(entry.read_text(encoding="utf-8"))["time_seconds"])
+                except (OSError, ValueError, KeyError, TypeError):
+                    continue
+                if math.isfinite(timestamp) and timestamp >= 0:
+                    year_times[int(match[1])] = timestamp
+        static = tuple(field for field in STATIC_FIELDS if (path / f"{field}.bin").is_file())
+        if any(field not in static for field in REQUIRED_STATIC):
+            raise DataError("陸面率または地表高度のファイルがありません")
+        if not (path / "daily_global.csv").is_file():
+            raise DataError("daily_global.csv がありません")
+        if any(field not in monthly for field in REQUIRED_MONTHLY):
+            raise DataError("解析に使う月平均の場がそろっていません")
+        months = tuple(sorted(set.intersection(*(monthly[field] for field in REQUIRED_MONTHLY))))
+        if len(months) < int(metadata["calendar"]["months_per_year"]):
+            raise DataError("月平均の出力が1年分に足りません")
+        yearly_level = {
+            field: {year for year, levels in steps.items() if len(levels) == level_count}
+            for field, steps in yearly_level_steps.items()
         }
-        surface_steps: set[int] = set()
-        for path in run_path.iterdir():
-            level_match = DRY_LEVEL_FRAME_RE.match(path.name)
-            if level_match:
-                field, level_text, step_text = level_match.groups()
-                level = int(level_text)
-                if 1 <= level <= level_count:
-                    level_steps[field][level].add(int(step_text))
-                continue
-            surface_match = DRY_SURFACE_FRAME_RE.match(path.name)
-            if surface_match:
-                surface_steps.add(int(surface_match.group(1)))
-
-        def complete_level_steps(field: str) -> set[int]:
-            return set.intersection(
-                *(level_steps[field][level] for level in range(1, level_count + 1))
-            )
-
-        complete = {
-            field: complete_level_steps(field)
-            for field in ("zeta", "delta", "temperature", "u", "v")
-        }
-        fields: list[str] = []
-        required_step_sets: list[set[int]] = []
-        if surface_steps:
-            fields.append("surface_pressure")
-            required_step_sets.append(surface_steps)
-        for field in ("temperature", "zeta", "delta", "u", "v"):
-            if complete[field]:
-                fields.append(field)
-                required_step_sets.append(complete[field])
-        if complete["u"] and complete["v"]:
-            fields.append("speed")
-        if not fields or not required_step_sets:
-            raise DataError(f"No supported dry-atmosphere fields found in {run_path}")
-
-        steps = tuple(sorted(set.intersection(*required_step_sets)))
-        simulation = metadata["simulation"]
-        interval = int(simulation["snapshot_interval_steps"])
-        final_step = int(simulation["number_of_steps"])
-        if interval <= 0:
-            raise DataError(f"Invalid snapshot interval in {metadata_path}")
-        steps = tuple(
-            step
-            for step in steps
-            if 0 <= step <= final_step
-            and (step % interval == 0 or step == final_step)
-        )
-        if not steps:
-            raise DataError(f"No complete dry-atmosphere frames found in {run_path}")
+        yearly_level = {field: years for field, years in yearly_level.items() if years}
+        year_sets = [years for years in list(yearly_surface.values()) + list(yearly_level.values())]
+        years = tuple(sorted(set.union(*year_sets))) if year_sets else ()
+        generation = max(generation, path.stat().st_mtime_ns)
         return Run(
-            name=name,
-            path=run_path,
-            metadata=metadata,
-            steps=steps,
-            fields=tuple(fields),
-            data_generation=metadata_path.stat().st_mtime_ns,
-            is_dry=True,
-            level_count=level_count,
+            name=name, path=path, metadata=metadata, point_count=point_count, nlat=nlat,
+            level_count=level_count, months=months, monthly=monthly,
+            yearly_surface=yearly_surface, yearly_level=yearly_level, years=years,
+            static=static, generation=generation, year_times=year_times,
         )
 
     @staticmethod
-    def public_metadata(run: Run) -> dict[str, Any]:
-        metadata = dict(run.metadata)
-        metadata["available_steps"] = list(run.steps)
-        metadata["available_frame_count"] = len(run.steps)
-        metadata["data_generation"] = run.data_generation
-        metadata["supports_streamlines"] = "speed" in run.fields
-        metadata["available_fields"] = [
-            {
-                "id": field,
-                **FIELD_DEFINITIONS[field],
-                "uses_level": run.is_dry and field != "surface_pressure",
-            }
-            for field in run.fields
-        ]
-        return metadata
-
-    def field_frame(
-        self, run: Run, field: str, step: int, level: int | None = None
-    ) -> tuple[bytes, dict[str, float]]:
-        if step not in run.steps:
-            raise KeyError(step)
-        if field not in run.fields:
-            raise KeyError(field)
-        values = self._field_values(run, field, step, level)
-        count = int(run.metadata["grid"]["point_count"])
-        finite = [value for value in values if math.isfinite(value)]
-        if len(finite) != count and not (run.radiation_period and field in MASKED_TILE_FIELDS):
-            raise DataError(f"Frame {step} contains non-finite values in {field}")
-        # Missing tiles are encoded as NaN for rendering, excluded from color statistics.
-        ordered = sorted(finite) or [0.0]
-        count = len(ordered)
-        finite = ordered
-        p005 = ordered[min(count - 1, max(0, math.floor(0.005 * count)))]
-        p98 = ordered[min(count - 1, int(0.98 * (count - 1)))]
-        p995 = ordered[min(count - 1, max(0, math.ceil(0.995 * count) - 1))]
-        absolute_ordered = sorted(abs(value) for value in finite)
-        p98_absolute = absolute_ordered[min(count - 1, int(0.98 * (count - 1)))]
-        p995_absolute = absolute_ordered[
-            min(count - 1, max(0, math.ceil(0.995 * count) - 1))
-        ]
-        stats = {
-            "minimum": ordered[0],
-            "maximum": ordered[-1],
-            "p005": p005,
-            "p98": p98,
-            "p995": p995,
-            "maximum_absolute": max(abs(ordered[0]), abs(ordered[-1])),
-            "p98_absolute": p98_absolute,
-            "p995_absolute": p995_absolute,
-            "mean": math.fsum(ordered) / count,
+    def summary(run: Run) -> dict[str, Any]:
+        return {
+            "name": run.name,
+            "case_name": run.metadata.get("case_name", run.name),
+            "terrain": run.terrain,
+            "truncation": run.metadata.get("numerics", {}).get("spectral_truncation"),
+            "point_count": run.point_count,
+            "month_count": len(run.months),
+            "year_count": len(run.years),
         }
-        if sys.byteorder != "little":
-            values.byteswap()
-        return values.tobytes(), stats
+
+    @classmethod
+    def public_metadata(cls, run: Run) -> dict[str, Any]:
+        grid = dict(run.metadata["grid"])
+        offsets = [0]
+        for n in grid["nlon"]:
+            offsets.append(offsets[-1] + int(n))
+        grid["ring_offsets"] = offsets
+        grid["point_count"] = run.point_count
+        grid_fields = sorted(name for name in run.monthly if not name.startswith(ZONAL_PREFIXES))
+        return {
+            **cls.summary(run),
+            "metadata": run.metadata,
+            "grid": grid,
+            "level_count": run.level_count,
+            "months": list(run.months),
+            "monthly_fields": {name: sorted(run.monthly[name]) for name in grid_fields},
+            "zonal_fields": sorted(name for name in run.monthly if name.startswith(ZONAL_PREFIXES)),
+            "years": [
+                {"index": year, "time_seconds": run.year_times.get(year)} for year in run.years
+            ],
+            "yearly_surface_fields": {name: sorted(years) for name, years in sorted(run.yearly_surface.items())},
+            "yearly_level_fields": {name: sorted(years) for name, years in sorted(run.yearly_level.items())},
+            "static_fields": list(run.static),
+            "generation": run.generation,
+        }
+
+    def grid_values(
+        self, run: Run, sampling: str, field: str, indices: list[int] | None, level: int | None
+    ) -> bytes:
+        if not FIELD_RE.fullmatch(field):
+            raise KeyError(field)
+        paths: list[Path] = []
+        if sampling == "static":
+            if field not in run.static or indices or level is not None:
+                raise KeyError(field)
+            paths.append(run.path / f"{field}.bin")
+        elif sampling == "monthly":
+            if field.startswith(ZONAL_PREFIXES) or field not in run.monthly or level is not None:
+                raise KeyError(field)
+            if not indices:
+                raise DataError("index を指定してください")
+            for index in indices:
+                if index not in run.monthly[field]:
+                    raise KeyError(index)
+                paths.append(run.path / f"monthly_{field}_m{index:04d}.bin")
+        elif sampling == "yearly":
+            if not indices:
+                raise DataError("index を指定してください")
+            if field in run.yearly_level:
+                if level is None or not 1 <= level <= run.level_count:
+                    raise DataError(f"level は 1 から {run.level_count} の範囲で指定してください")
+                available = run.yearly_level[field]
+                suffix = f"_l{level:02d}"
+            elif field in run.yearly_surface:
+                if level is not None:
+                    raise DataError(f"{field} には層がありません")
+                available = run.yearly_surface[field]
+                suffix = ""
+            else:
+                raise KeyError(field)
+            for index in indices:
+                if index not in available:
+                    raise KeyError(index)
+                paths.append(run.path / f"yearly_{field}_y{index:04d}{suffix}.bin")
+        else:
+            raise KeyError(sampling)
+        return self._concatenate(paths, run.point_count)
+
+    def zonal_values(self, run: Run, field: str, indices: list[int] | None) -> bytes:
+        if not FIELD_RE.fullmatch(field) or not field.startswith(ZONAL_PREFIXES) or field not in run.monthly:
+            raise KeyError(field)
+        if not indices:
+            raise DataError("index を指定してください")
+        paths = []
+        for index in indices:
+            if index not in run.monthly[field]:
+                raise KeyError(index)
+            paths.append(run.path / f"monthly_{field}_m{index:04d}.bin")
+        return self._concatenate(paths, run.nlat * run.level_count)
 
     @staticmethod
-    def _field_values(
-        run: Run, field: str, step: int, level: int | None = None
-    ) -> array:
-        count = int(run.metadata["grid"]["point_count"])
-        if run.radiation_period:
-            suffix = "m" if run.radiation_period == "monthly" else "y"
-            source = _read_float64(run.path / f"{run.radiation_period}_{field}_{suffix}{step:04d}.bin", count)
-            if not all(math.isfinite(value) for value in source):
-                raise DataError(f"Non-finite source data in {field}")
-            if field in MASKED_TILE_FIELDS:
-                land_path = run.path / "land_fraction.bin"
-                land = _read_float64(land_path, count) if land_path.exists() else [0.0] * count
-                if not all(math.isfinite(f) and 0 <= f <= 1 for f in land):
-                    raise DataError("Invalid land-fraction mask")
-                if field.startswith("sea_ice_"):
-                    coverage = _read_float64(run.path / f"{run.radiation_period}_sea_ice_fraction_{suffix}{step:04d}.bin", count)
-                    if not all(math.isfinite(a) and 0 <= a <= 1 for a in coverage):
-                        raise DataError("Invalid sea-ice mask")
-                    present = [a > 0.0 and f < 1.0 for a, f in zip(coverage, land)]
-                elif field in LAND_TILE_FIELDS:
-                    # Legacy ground-only radiation has no land-fraction file.
-                    ground_only = "ground" in run.metadata and not run.metadata.get("surface_tiles")
-                    present = [ground_only or f > 0.0 for f in land]
-                else:
-                    present = [f < 1.0 for f in land]
-                source = [value if valid else math.nan for value, valid in zip(source, present)]
-            return array("f", source)
-        if run.is_dry:
-            if field == "surface_pressure":
-                return array(
-                    "f",
-                    _read_float64(
-                        run.path / f"surface_pressure_{step:05d}.bin", count
-                    ),
-                )
-            selected_level = int(
-                run.metadata["vertical_coordinate"]["default_level"]
-                if level is None
-                else level
-            )
-            if not 1 <= selected_level <= run.level_count:
-                raise DataError(
-                    f"Level must be between 1 and {run.level_count} for this run"
-                )
-            if field == "speed":
-                east = _read_float64(
-                    run.path / f"u_l{selected_level:02d}_{step:05d}.bin", count
-                )
-                north = _read_float64(
-                    run.path / f"v_l{selected_level:02d}_{step:05d}.bin", count
-                )
-                return array(
-                    "f", (math.hypot(u_value, v_value) for u_value, v_value in zip(east, north))
-                )
-            source = _read_float64(
-                run.path / f"{field}_l{selected_level:02d}_{step:05d}.bin", count
-            )
-            return array("f", source)
-        if field == "speed":
-            u = _read_float64(run.path / f"u_{step:05d}.bin", count)
-            v = _read_float64(run.path / f"v_{step:05d}.bin", count)
-            return array("f", (math.hypot(east, north) for east, north in zip(u, v)))
-        source = _read_float64(run.path / f"{field}_{step:05d}.bin", count)
-        return array("f", source)
-
-    def speed_frame(self, run: Run, step: int) -> tuple[bytes, dict[str, float]]:
-        """Backward-compatible alias for clients using the original speed API."""
-        return self.field_frame(run, "speed", step)
-
-    def wind_frame(
-        self, run: Run, step: int, level: int | None = None
-    ) -> tuple[bytes, float]:
-        """Return u followed by v as two contiguous float32 grid arrays."""
-        if step not in run.steps:
-            raise KeyError(step)
-        if "speed" not in run.fields:
-            raise KeyError("wind")
-        eastward = self._field_values(run, "u", step, level)
-        northward = self._field_values(run, "v", step, level)
-        maximum_speed = 0.0
-        for east, north in zip(eastward, northward):
-            speed = math.hypot(east, north)
-            if not math.isfinite(speed):
-                raise DataError(f"Frame {step} contains non-finite wind values")
-            maximum_speed = max(maximum_speed, speed)
+    def _concatenate(paths: list[Path], count: int) -> bytes:
+        payload = array("d")
+        for path in paths:
+            payload.extend(_read_float64(path, count))
         if sys.byteorder != "little":
-            eastward.byteswap()
-            northward.byteswap()
-        return eastward.tobytes() + northward.tobytes(), maximum_speed
+            payload.byteswap()
+        return payload.tobytes()
 
-    def field_statistics(
-        self, run: Run, field: str, level: int | None = None
-    ) -> dict[str, float]:
-        if field not in run.fields:
-            raise KeyError(field)
-        level_key = None if level is None else int(level)
-        key = (run.name, run.data_generation, field, level_key)
-        with self._cache_lock:
-            cached = self._field_statistics_cache.get(key)
-        if cached is not None:
-            return cached
-
-        minimum = math.inf
-        maximum = -math.inf
-        for step in run.steps:
-            for value in self._field_values(run, field, step, level):
-                if not math.isfinite(value):
-                    if run.radiation_period and field in MASKED_TILE_FIELDS:
-                        continue
-                    raise DataError(f"Frame {step} contains non-finite values in {field}")
-                minimum = min(minimum, value)
-                maximum = max(maximum, value)
-        if minimum == math.inf:
-            minimum = maximum = 0.0
-        result = {
-            "minimum": minimum,
-            "maximum": maximum,
-            "maximum_absolute": max(abs(minimum), abs(maximum)),
-        }
-        with self._cache_lock:
-            for stale_key in list(self._field_statistics_cache):
-                if stale_key[0] == run.name and stale_key[1] != run.data_generation:
-                    del self._field_statistics_cache[stale_key]
-            self._field_statistics_cache[key] = result
-        return result
-
-    def conservation(self, run: Run) -> dict[str, Any]:
-        if run.is_dry or run.radiation_period:
-            raise DataError(
-                "Conservation diagnostics are not yet defined for dry-atmosphere output"
-            )
-        cache_key = (run.name, run.data_generation)
-        with self._cache_lock:
-            cached = self._conservation_cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        metadata = run.metadata
-        grid = metadata["grid"]
-        nlon = [int(value) for value in grid["nlon"]]
-        mu = [float(value) for value in grid["mu"]]
-        offsets = [int(value) for value in grid["ring_offsets"]]
-        weights = _gauss_legendre_weights(mu)
-        point_count = int(grid["point_count"])
-        radius = float(metadata["physical_constants"]["earth_radius_m"])
-        omega = float(metadata["physical_constants"]["rotation_rate_rad_s"])
-        dt = float(metadata["simulation"]["time_step_seconds"])
-
-        series = {
-            "mean_relative_vorticity": [],
-            "mean_kinetic_energy": [],
-            "mean_absolute_enstrophy": [],
-            "mean_relative_axial_angular_momentum": [],
-        }
-        times: list[float] = []
-        for step in run.steps:
-            zeta = _read_float64(run.path / f"zeta_{step:05d}.bin", point_count)
-            u = _read_float64(run.path / f"u_{step:05d}.bin", point_count)
-            v = _read_float64(run.path / f"v_{step:05d}.bin", point_count)
-            circulation = energy = enstrophy = angular_momentum = 0.0
-            for j, ring_size in enumerate(nlon):
-                start, end = offsets[j], offsets[j + 1]
-                point_weight = weights[j] / (2.0 * ring_size)
-                coriolis = 2.0 * omega * mu[j]
-                cos_latitude = math.sqrt(max(0.0, 1.0 - mu[j] * mu[j]))
-                zeta_sum = energy_sum = enstrophy_sum = momentum_sum = 0.0
-                for index in range(start, end):
-                    z = zeta[index]
-                    east = u[index]
-                    north = v[index]
-                    zeta_sum += z
-                    energy_sum += 0.5 * (east * east + north * north)
-                    enstrophy_sum += 0.5 * (z + coriolis) ** 2
-                    momentum_sum += east * radius * cos_latitude
-                circulation += point_weight * zeta_sum
-                energy += point_weight * energy_sum
-                enstrophy += point_weight * enstrophy_sum
-                angular_momentum += point_weight * momentum_sum
-            times.append(step * dt)
-            series["mean_relative_vorticity"].append(circulation)
-            series["mean_kinetic_energy"].append(energy)
-            series["mean_absolute_enstrophy"].append(enstrophy)
-            series["mean_relative_axial_angular_momentum"].append(angular_momentum)
-
-        result = {
-            "times_seconds": times,
-            "steps": list(run.steps),
-            "metrics": [
-                {
-                    "id": "mean_kinetic_energy",
-                    "label": "平均運動エネルギー",
-                    "unit": "m² s⁻²",
-                    "values": series["mean_kinetic_energy"],
-                },
-                {
-                    "id": "mean_absolute_enstrophy",
-                    "label": "平均絶対エンストロフィー",
-                    "unit": "s⁻²",
-                    "values": series["mean_absolute_enstrophy"],
-                },
-                {
-                    "id": "mean_relative_vorticity",
-                    "label": "平均相対渦度",
-                    "unit": "s⁻¹",
-                    "values": series["mean_relative_vorticity"],
-                },
-                {
-                    "id": "mean_relative_axial_angular_momentum",
-                    "label": "平均相対軸角運動量",
-                    "unit": "m² s⁻¹",
-                    "values": series["mean_relative_axial_angular_momentum"],
-                },
-            ],
-            "normalization": "global spherical mean",
-        }
-        with self._cache_lock:
-            for stale_key in list(self._conservation_cache):
-                if stale_key[0] == run.name and stale_key != cache_key:
-                    del self._conservation_cache[stale_key]
-            self._conservation_cache[cache_key] = result
-        return result
+    @staticmethod
+    def daily(run: Run) -> dict[str, Any]:
+        path = run.path / "daily_global.csv"
+        with path.open(encoding="utf-8", newline="") as source:
+            reader = csv.reader(source)
+            try:
+                header = [name.strip() for name in next(reader)]
+            except StopIteration as exc:
+                raise DataError("daily_global.csv が空です") from exc
+            columns: list[list[float | None]] = [[] for _ in header]
+            for row in reader:
+                if not row:
+                    continue
+                if len(row) != len(header):
+                    raise DataError("daily_global.csv に列数の合わない行があります")
+                for column, text in zip(columns, row):
+                    try:
+                        value = float(text)
+                    except ValueError:
+                        value = math.nan
+                    column.append(value if math.isfinite(value) else None)
+        return {"columns": header, "data": dict(zip(header, columns)), "row_count": len(columns[0]) if columns else 0}
 
 
 class AppHandler(BaseHTTPRequestHandler):
@@ -730,83 +375,45 @@ class AppHandler(BaseHTTPRequestHandler):
         try:
             self._route_get()
         except KeyError:
-            self._json_error(HTTPStatus.NOT_FOUND, "Requested run or frame was not found")
+            self._send_json({"error": "指定したケース・場・index が見つかりません"}, HTTPStatus.NOT_FOUND)
         except DataError as exc:
-            self._json_error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc))
+            self._send_json({"error": str(exc)}, HTTPStatus.UNPROCESSABLE_ENTITY)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            self._json_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+            self._send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _route_get(self) -> None:
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         query = parse_qs(parsed.query)
-        level: int | None = None
+        indices = parse_indices(query["index"][0]) if "index" in query else None
+        level = None
         if "level" in query:
-            try:
-                if len(query["level"]) != 1:
-                    raise ValueError
-                level = int(query["level"][0])
-            except ValueError as exc:
-                raise DataError("level must be one integer") from exc
+            text = query["level"][0]
+            if len(query["level"]) != 1 or not text.isdigit():
+                raise DataError("level は整数を1つ指定してください")
+            level = int(text)
+
         if path == "/api/runs":
-            runs = self.repository.discover()
-            self._send_json(
-                {
-                    "runs": [
-                        {
-                            "name": run.name,
-                            "case_name": run.metadata.get("case_name", run.name),
-                            "frame_count": len(run.steps),
-                            "point_count": run.metadata["grid"]["point_count"],
-                            "equation": run.metadata.get("equation", "barotropic_vorticity"),
-                            "available_fields": list(run.fields),
-                        }
-                        for run in runs
-                    ]
-                }
-            )
+            self._send_json({"runs": [Repository.summary(run) for run in self.repository.discover()]})
             return
         parts = [part for part in path.split("/") if part]
-        if len(parts) >= 3 and parts[:2] == ["api", "runs"]:
+        if len(parts) >= 4 and parts[:2] == ["api", "runs"]:
             run = self.repository.get_run(parts[2])
-            if len(parts) == 4 and parts[3] == "metadata":
-                self._send_json(self.repository.public_metadata(run))
+            if parts[3:] == ["metadata"]:
+                self._send_json(Repository.public_metadata(run))
                 return
-            if len(parts) == 4 and parts[3] == "conservation":
-                self._send_json(self.repository.conservation(run))
+            if parts[3:] == ["daily"]:
+                self._send_json(Repository.daily(run))
                 return
-            if len(parts) == 6 and parts[3] == "fields" and parts[5] == "statistics":
-                self._send_json(
-                    self.repository.field_statistics(run, parts[4], level)
-                )
+            if len(parts) == 6 and parts[3] == "grid":
+                payload = self.repository.grid_values(run, parts[4], parts[5], indices, level)
+                self._send_binary(payload, run.point_count)
                 return
-            if len(parts) == 6 and parts[3] == "fields":
-                field = parts[4]
-                try:
-                    step = int(parts[5])
-                except ValueError as exc:
-                    raise KeyError(parts[5]) from exc
-                payload, stats = self.repository.field_frame(
-                    run, field, step, level
-                )
-                self._send_field(payload, stats, level=level)
+            if len(parts) == 5 and parts[3] == "zonal":
+                payload = self.repository.zonal_values(run, parts[4], indices)
+                self._send_binary(payload, run.nlat * run.level_count)
                 return
-            if len(parts) == 5 and parts[3] == "frame":
-                try:
-                    step = int(parts[4])
-                except ValueError as exc:
-                    raise KeyError(parts[4]) from exc
-                payload, stats = self.repository.speed_frame(run, step)
-                self._send_field(payload, stats, legacy_speed_headers=True)
-                return
-            if len(parts) == 5 and parts[3] == "wind":
-                try:
-                    step = int(parts[4])
-                except ValueError as exc:
-                    raise KeyError(parts[4]) from exc
-                payload, maximum_speed = self.repository.wind_frame(run, step, level)
-                self._send_wind(payload, maximum_speed, level)
-                return
+            raise KeyError(path)
         if path.startswith("/vendor/"):
             vendor_name = path.removeprefix("/vendor/")
             vendor_path = (self.three_build_root / vendor_name).resolve()
@@ -817,80 +424,63 @@ class AppHandler(BaseHTTPRequestHandler):
             ):
                 raise KeyError(vendor_name)
             if not vendor_path.is_file():
-                raise DataError("Three.js is not installed. Run: cd viz && npm install")
+                raise DataError("Three.js がインストールされていません。cd viz && npm install を実行してください")
             self._send_file(vendor_path, "text/javascript")
             return
         relative = "index.html" if path == "/" else path.lstrip("/")
         candidate = (self.static_root / relative).resolve()
-        if candidate != self.static_root and self.static_root not in candidate.parents:
-            raise KeyError(relative)
-        if not candidate.is_file():
+        if self.static_root.resolve() not in candidate.parents or not candidate.is_file():
             raise KeyError(relative)
         self._send_file(candidate)
 
     def _send_file(self, path: Path, content_type: str | None = None) -> None:
         payload = path.read_bytes()
         mime = content_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        if path.suffix in {".js", ".mjs"}:
+            mime = "text/javascript"
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", f"{mime}; charset=utf-8" if mime.startswith("text/") else mime)
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
-
-    def _send_field(
-        self,
-        payload: bytes,
-        stats: dict[str, float],
-        legacy_speed_headers: bool = False,
-        level: int | None = None,
-    ) -> None:
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Cache-Control", "no-store")
-        for name, value in stats.items():
-            header = "-".join(part.capitalize() for part in name.split("_"))
-            self.send_header(f"X-Field-{header}", f"{value:.9g}")
-        if level is not None:
-            self.send_header("X-Field-Level", str(level))
-        if legacy_speed_headers:
-            self.send_header("X-Speed-Min", f"{stats['minimum']:.9g}")
-            self.send_header("X-Speed-Max", f"{stats['maximum']:.9g}")
-            self.send_header("X-Speed-P98", f"{stats['p98']:.9g}")
-            self.send_header("X-Speed-Mean", f"{stats['mean']:.9g}")
-        self.end_headers()
-        self.wfile.write(payload)
-
-    def _send_wind(
-        self, payload: bytes, maximum_speed: float, level: int | None
-    ) -> None:
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Wind-Layout", "u-then-v-float32-le")
-        self.send_header("X-Wind-Maximum-Speed", f"{maximum_speed:.9g}")
-        if level is not None:
-            self.send_header("X-Field-Level", str(level))
-        self.end_headers()
-        self.wfile.write(payload)
-
-    def _send_json(self, value: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
-        payload = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(payload)
 
-    def _json_error(self, status: HTTPStatus, message: str) -> None:
-        self._send_json({"error": message}, status)
+    def _send_binary(self, payload: bytes, values_per_record: int) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Layout", "float64-le")
+        self.send_header("X-Values-Per-Record", str(values_per_record))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _send_json(self, value: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
+        payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+def make_handler(output: Path) -> type[AppHandler]:
+    script_root = Path(__file__).resolve().parent
+    return type(
+        "ConfiguredAppHandler",
+        (AppHandler,),
+        {
+            "repository": Repository(output),
+            "static_root": script_root / "static",
+            "three_build_root": script_root / "node_modules" / "three" / "build",
+        },
+    )
 
 
 def parse_args() -> argparse.Namespace:
     script_root = Path(__file__).resolve().parent
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--output", type=Path, default=script_root.parent / "output")
@@ -899,17 +489,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    script_root = Path(__file__).resolve().parent
-    handler = type(
-        "ConfiguredAppHandler",
-        (AppHandler,),
-        {
-            "repository": Repository(args.output),
-            "static_root": script_root / "static",
-            "three_build_root": script_root / "node_modules" / "three" / "build",
-        },
-    )
-    server = ThreadingHTTPServer((args.host, args.port), handler)
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(args.output))
     print(f"BespokePlanet visualizer: http://{args.host}:{args.port}")
     print(f"Reading output from: {args.output.resolve()}")
     try:
