@@ -49,6 +49,8 @@ module dry_radiation
     real(real64), allocatable :: sea_ice_volume(:, :)
     real(real64), allocatable :: sea_ice_temperature(:, :)
     real(real64), allocatable :: sea_ice_thickness(:, :)
+    !> Near-surface air temperature T_N (p_s/p_N)^kappa (K), allocated with the surface tiles.
+    real(real64), allocatable :: surface_air_temperature(:, :)
     real(real64) :: sea_ice_area = 0.0_real64
     real(real64) :: sea_ice_total_volume = 0.0_real64
     real(real64) :: mean_sea_ice_thickness = 0.0_real64
@@ -159,6 +161,8 @@ contains
     if (allocated(source%sea_ice_volume)) call move_alloc(source%sea_ice_volume, destination%sea_ice_volume)
     if (allocated(source%sea_ice_temperature)) call move_alloc(source%sea_ice_temperature, destination%sea_ice_temperature)
     if (allocated(source%sea_ice_thickness)) call move_alloc(source%sea_ice_thickness, destination%sea_ice_thickness)
+    if (allocated(source%surface_air_temperature)) &
+      call move_alloc(source%surface_air_temperature, destination%surface_air_temperature)
     destination%mean_surface_water = source%mean_surface_water
     destination%mean_surface_wetness = source%mean_surface_wetness
     destination%mean_runoff = source%mean_runoff

@@ -20,6 +20,8 @@ module radiation_diagnostics_collector
     real(real64), allocatable :: sea_ice_volume(:, :)
     real(real64), allocatable :: sea_ice_temperature(:, :)
     real(real64), allocatable :: sea_ice_thickness(:, :)
+    !> Near-surface air temperature T_N (p_s/p_N)^kappa; allocated with the surface tiles.
+    real(real64), allocatable :: surface_air_temperature(:, :)
     real(real64), allocatable :: surface_temperature(:, :), deep_temperature(:, :), surface_pressure(:, :)
     real(real64), allocatable :: zonal_temperature(:, :), zonal_u(:, :), zonal_v(:, :)
     real(real64), allocatable :: eddy_uv(:, :), eddy_vt(:, :)
@@ -50,6 +52,7 @@ module radiation_diagnostics_collector
     real(real64), allocatable :: sea_ice_fraction_sum(:, :)
     real(real64), allocatable :: sea_ice_volume_sum(:, :)
     real(real64), allocatable :: sea_ice_temperature_sum(:, :)
+    real(real64), allocatable :: surface_air_temperature_sum(:, :)
     real(real64), allocatable :: surface_temperature_sum(:, :)
     real(real64), allocatable :: deep_temperature_sum(:, :)
     real(real64), allocatable :: surface_pressure_sum(:, :)
@@ -201,6 +204,8 @@ contains
         allocate (this%sea_ice_fraction_sum, mold=sample%sea_ice_fraction)
         allocate (this%sea_ice_volume_sum, mold=sample%sea_ice_volume)
         allocate (this%sea_ice_temperature_sum, mold=sample%sea_ice_temperature)
+        if (.not. allocated(sample%surface_air_temperature)) error stop 'missing surface air temperature sample'
+        allocate (this%surface_air_temperature_sum, mold=sample%surface_air_temperature)
       end if
       this%moist = allocated(sample%precipitation)
       if (this%moist) then
@@ -262,6 +267,7 @@ contains
       this%sea_ice_fraction_sum = this%sea_ice_fraction_sum + sample%sea_ice_fraction
       this%sea_ice_volume_sum = this%sea_ice_volume_sum + sample%sea_ice_volume
       this%sea_ice_temperature_sum = this%sea_ice_temperature_sum + sample%sea_ice_fraction*sample%sea_ice_temperature
+      this%surface_air_temperature_sum = this%surface_air_temperature_sum + sample%surface_air_temperature
     end if
     this%surface_temperature_sum = this%surface_temperature_sum + sample%surface_temperature
     this%deep_temperature_sum = this%deep_temperature_sum + sample%deep_temperature
@@ -297,6 +303,7 @@ contains
       means%ocean_temperature = this%ocean_temperature_sum*inverse_count
       means%sea_ice_fraction = this%sea_ice_fraction_sum*inverse_count
       means%sea_ice_volume = this%sea_ice_volume_sum*inverse_count
+      means%surface_air_temperature = this%surface_air_temperature_sum*inverse_count
       allocate (means%sea_ice_temperature, mold=this%sea_ice_fraction_sum)
       allocate (means%sea_ice_thickness, mold=this%sea_ice_fraction_sum)
       means%sea_ice_temperature = 0.0_real64
@@ -361,6 +368,7 @@ contains
     if (allocated(this%sea_ice_fraction_sum)) this%sea_ice_fraction_sum = 0.0_real64
     if (allocated(this%sea_ice_volume_sum)) this%sea_ice_volume_sum = 0.0_real64
     if (allocated(this%sea_ice_temperature_sum)) this%sea_ice_temperature_sum = 0.0_real64
+    if (allocated(this%surface_air_temperature_sum)) this%surface_air_temperature_sum = 0.0_real64
     if (allocated(this%surface_temperature_sum)) this%surface_temperature_sum = 0.0_real64
     if (allocated(this%deep_temperature_sum)) this%deep_temperature_sum = 0.0_real64
     if (allocated(this%surface_pressure_sum)) this%surface_pressure_sum = 0.0_real64

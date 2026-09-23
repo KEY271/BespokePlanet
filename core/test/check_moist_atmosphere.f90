@@ -12,7 +12,8 @@ program check_moist_atmosphere
                                   saturation_specific_humidity, saturation_specific_humidity_derivative, &
                                   equivalent_potential_temperature, lifting_condensation_level, &
                                   full_level_pressures, virtual_temperature
-  use surface_exchange, only: surface_sensible_heat_flux, surface_evaporation_flux, lowest_full_level_pressure
+  use surface_exchange, only: surface_sensible_heat_flux, surface_evaporation_flux, lowest_full_level_pressure, &
+                              surface_air_temperature
   use large_scale_condensation, only: large_scale_condensation_tendency
   use moist_convection, only: moist_convective_adjustment_tendency, moist_convection_reference_profile
   use dry_convection, only: dry_convective_adjustment_tendency
@@ -133,6 +134,9 @@ contains
     flux = surface_sensible_heat_flux(surface, pressure_half, lowest_temperature, surface_temperature, &
                                       3.0_real64, 4.0_real64)
     if (abs(flux) > 1.0e-9_real64) error stop 'neutral column has a non-zero sensible heat flux'
+    ! The near-surface air temperature of a neutral column is the surface temperature.
+    if (abs(surface_air_temperature(pressure_half, lowest_temperature) - surface_temperature) > 1.0e-10_real64) &
+      error stop 'surface air temperature is not the dry-adiabatic extrapolation to p_s'
     warm_flux = surface_sensible_heat_flux(surface, pressure_half, lowest_temperature, surface_temperature + 1.0_real64, &
                                            3.0_real64, 4.0_real64)
     if (abs(warm_flux - lowest_pressure/(dry_air_gas_constant*lowest_temperature)*surface%dry_air_specific_heat* &

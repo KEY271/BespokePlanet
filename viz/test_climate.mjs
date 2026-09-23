@@ -70,7 +70,7 @@ test("site snapping uses great-circle distance to land cells", () => {
   assert.ok(site.snapDistance > 0);
 });
 
-function uniformInput({ temperatureC, precipitation }) {
+function uniformInput({ temperatureC, precipitation, landSkinExcess }) {
   const n = grid.pointCount;
   const months = 12;
   const constant = (value) => Array.from({ length: months }, (_, m) => new Float64Array(n).fill(typeof value === "function" ? value(m) : value));
@@ -79,7 +79,8 @@ function uniformInput({ temperatureC, precipitation }) {
     surfaceHeight: new Float64Array(n),
     monthly: {
       surface_temperature: constant((m) => temperatureC(m) + 273.15),
-      land_temperature: constant((m) => temperatureC(m) + 273.15),
+      land_temperature: constant((m) => temperatureC(m) + 273.15 + (landSkinExcess ?? 0)),
+      surface_air_temperature: constant((m) => temperatureC(m) + 273.15),
       ocean_temperature: constant(290),
       precipitation: constant(precipitation),
       evaporation: constant(1),
@@ -115,10 +116,24 @@ test("Köppen groups: wet tropics, dry desert, polar", () => {
   assert.equal(C.KOPPEN_TYPES[desert.koppenType[0]], "BWh");
   const polar = C.computeClimate(grid, uniformInput({ temperatureC: () => -20, precipitation: 1 }), options());
   assert.equal(C.KOPPEN_TYPES[polar.koppenType[0]], "EF");
-  // A cold month of -2 degC is C with the -3 degC boundary and D with the 0 degC one.
-  const boundary = C.computeClimate(grid, uniformInput({ temperatureC: (m) => (m === 9 ? -2 : 15), precipitation: 3 }), options());
-  assert.equal(C.KOPPEN_GROUPS[boundary.koppenGroup[0]], "C");
-  assert.equal(C.KOPPEN_GROUPS[boundary.koppenGroupZero[0]], "D");
+  // The groups and the types share the -3 degC C/D boundary.
+  const mild = C.computeClimate(grid, uniformInput({ temperatureC: (m) => (m === 9 ? -2 : 15), precipitation: 3 }), options());
+  assert.equal(C.KOPPEN_GROUPS[mild.koppenGroup[0]], "C");
+  assert.equal(C.KOPPEN_TYPES[mild.koppenType[0]], "Cfb");
+  const cold = C.computeClimate(grid, uniformInput({ temperatureC: (m) => (m === 9 ? -4 : 15), precipitation: 3 }), options());
+  assert.equal(C.KOPPEN_GROUPS[cold.koppenGroup[0]], "D");
+  assert.equal(C.KOPPEN_TYPES[cold.koppenType[0]], "Dfb");
+});
+
+test("Köppen and climographs use the near-surface air temperature, not the land skin", () => {
+  // Air below 10 degC in every month, land skin 8 K warmer: still polar tundra.
+  const input = uniformInput({ temperatureC: (m) => (m === 3 ? 6 : -15), precipitation: 1, landSkinExcess: 8 });
+  const climate = C.computeClimate(grid, input, options());
+  assert.equal(C.KOPPEN_GROUPS[climate.koppenGroup[0]], "E");
+  assert.equal(C.KOPPEN_TYPES[climate.koppenType[0]], "ET");
+  const record = C.climographOf(climate, 0);
+  close(Math.max(...record.temperature), 6);
+  close(record.annualTemperature, climate.airTemperatureC[0]);
 });
 
 test("land threshold decides which cells count as land", () => {

@@ -63,6 +63,7 @@ $T=31$ と $T=63$ はそれぞれコマンドライン引数 `land` と `land-t6
 30 日ごとの月平均量には次を加える。
 
 - 各格子点の地中温度の月平均 $T_d(\lambda,\varphi)$
+- 各格子点の地上気温 $T_a=T_N(p_s/p_N)^\kappa$ の月平均（`monthly_surface_air_temperature_m{month:04d}.bin`、K、[地面](../tendency/ground.md)の顕熱が使う外挿温度）
 - 各格子点の陸面貯水量 $W(\lambda,\varphi)$、蒸発効率 $\beta_L(\lambda,\varphi)$、流出 $R(\lambda,\varphi)$ の月平均
 - 各格子点の積雪 $S$、積雪率 $f$、降雪 $S_{\rm ls}$、融雪 $M_s$ の月平均
 

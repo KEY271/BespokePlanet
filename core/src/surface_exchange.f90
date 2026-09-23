@@ -13,7 +13,7 @@ module surface_exchange
   use moist_thermodynamics, only: saturation_specific_humidity
   implicit none
   private
-  public :: lowest_full_level_pressure, surface_transfer_mass_flux
+  public :: lowest_full_level_pressure, surface_transfer_mass_flux, surface_air_temperature
   public :: surface_sensible_heat_flux, surface_evaporation_flux
 
 contains
@@ -30,6 +30,16 @@ contains
     pressure = pressure_half(levels)*exp(-alpha)
   end function lowest_full_level_pressure
 
+  !> T_a = T_N (p_s/p_N)^kappa: the lowest-level temperature carried dry-adiabatically to the
+  !> surface pressure.  It is the air temperature the sensible heat compares with T_s, and the
+  !> near-surface air temperature of the output (docs/tendency/ground.md).
+  pure real(real64) function surface_air_temperature(pressure_half, lowest_temperature) result(temperature)
+    real(real64), intent(in) :: pressure_half(0:), lowest_temperature
+
+    temperature = lowest_temperature*(pressure_half(ubound(pressure_half, 1))/ &
+      lowest_full_level_pressure(pressure_half))**dry_air_kappa
+  end function surface_air_temperature
+
   !> rho_N C_H sqrt(u^2 + v^2 + U_g^2) in kg m^-2 s^-1, shared by both fluxes.
   pure real(real64) function surface_transfer_mass_flux(config, lowest_pressure, lowest_temperature, &
                                                         lowest_u, lowest_v) result(mass_flux)
@@ -45,13 +55,11 @@ contains
                                                         surface_temperature, lowest_u, lowest_v) result(flux)
     type(radiation_config), intent(in) :: config
     real(real64), intent(in) :: pressure_half(0:), lowest_temperature, surface_temperature, lowest_u, lowest_v
-    real(real64) :: lowest_pressure, surface_pressure
+    real(real64) :: lowest_pressure
 
     lowest_pressure = lowest_full_level_pressure(pressure_half)
-    surface_pressure = pressure_half(ubound(pressure_half, 1))
     flux = surface_transfer_mass_flux(config, lowest_pressure, lowest_temperature, lowest_u, lowest_v)* &
-      config%dry_air_specific_heat* &
-      (surface_temperature - lowest_temperature*(surface_pressure/lowest_pressure)**dry_air_kappa)
+      config%dry_air_specific_heat*(surface_temperature - surface_air_temperature(pressure_half, lowest_temperature))
   end function surface_sensible_heat_flux
 
   !> Upward water vapour flux E = beta rho_N C_E |U| [q_s(T_s, p_s) - max(q_N, 0)] in kg m^-2 s^-1.

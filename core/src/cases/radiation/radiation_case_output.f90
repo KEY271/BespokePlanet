@@ -180,8 +180,13 @@ contains
     call check_rectangular_finite('monthly_eddy_uv', means%eddy_uv)
     call check_rectangular_finite('monthly_eddy_vt', means%eddy_vt)
     write (month_text, '(i4.4)') month
-    if (options%include_surface_tiles) &
+    if (options%include_surface_tiles) then
       call write_tile_fields(case_directory, 'monthly_', '_m'//month_text, nlon, means)
+      if (.not. allocated(means%surface_air_temperature)) error stop 'missing surface_air_temperature'
+      call check_finite('monthly_surface_air_temperature', nlon, means%surface_air_temperature)
+      call write_field(trim(case_directory)//'/monthly_surface_air_temperature_m'//month_text//'.bin', &
+                       nlon, means%surface_air_temperature)
+    end if
     call write_field(trim(case_directory)//'/monthly_surface_temperature_m'//month_text//'.bin', &
                      nlon, means%surface_temperature)
     call write_field(trim(case_directory)//'/monthly_surface_pressure_m'//month_text//'.bin', &
@@ -650,6 +655,8 @@ contains
       write (unit, '(a)') '  "surface_tiles": {'
       write (unit, '(a)') '    "surface_temperature": "area mean of land, open water and ice skin temperatures",'
       write (unit, '(a)') '    "ocean_temperature": "mixed layer including water below ice",'
+      write (unit, '(a)') '    "surface_air_temperature": "lowest-level temperature carried dry-adiabatically '// &
+        'to the surface pressure, T_N (p_s/p_N)^kappa; grid value shared by all tiles",'
       write (unit, '(a)') '    "initial_ocean_temperature": "T_p + (T_e - T_p) cos^2(phi); land starts at T_N",'
       write (unit, '(a,es24.16e3,a)') '    "initial_ocean_equator_temperature_k": ', &
         radiation%initial_ocean_equator_temperature, ','
@@ -883,6 +890,7 @@ contains
     write (unit, '(a)') '    "monthly_surface_pressure": "monthly_surface_pressure_m{month:04d}.bin",'
     if (options%include_surface_tiles) then
       write (unit, '(a)') '    "monthly_land_temperature": "monthly_land_temperature_m{month:04d}.bin",'
+      write (unit, '(a)') '    "monthly_surface_air_temperature": "monthly_surface_air_temperature_m{month:04d}.bin",'
       write (unit, '(a)') '    "yearly_land_temperature": "yearly_land_temperature_y{year:04d}.bin",'
       write (unit, '(a)') '    "monthly_ocean_temperature": "monthly_ocean_temperature_m{month:04d}.bin",'
       write (unit, '(a)') '    "yearly_ocean_temperature": "yearly_ocean_temperature_y{year:04d}.bin",'
@@ -951,6 +959,7 @@ contains
     write (unit, '(a)') '    "units": {'
     if (options%include_surface_tiles) then
       write (unit, '(a)') '      "land_temperature": "K", "ocean_temperature": "K", "sea_ice_temperature": "K",'
+      write (unit, '(a)') '      "surface_air_temperature": "K",'
       write (unit, '(a)') '      "sea_ice_fraction": "1", "sea_ice_volume": "m", "sea_ice_thickness": "m",'
     end if
     if (options%include_snow) then

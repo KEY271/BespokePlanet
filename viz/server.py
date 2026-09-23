@@ -38,7 +38,7 @@ REQUIRED_STATIC = ("land_fraction", "surface_height")
 # Monthly fields read by the final-year analysis; a run without all of them is
 # not the current land-sea output and is not offered.
 REQUIRED_MONTHLY = (
-    "surface_temperature", "land_temperature", "ocean_temperature",
+    "surface_temperature", "land_temperature", "surface_air_temperature", "ocean_temperature",
     "precipitation", "evaporation", "cloud_cover", "surface_pressure",
     "surface_water", "sea_ice_fraction", "sea_ice_volume",
     "sea_ice_thickness", "sea_ice_temperature", "snow_fraction",

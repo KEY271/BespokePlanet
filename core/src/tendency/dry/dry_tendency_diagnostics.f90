@@ -9,6 +9,7 @@ module dry_tendency_diagnostics
   use planet_parameters, only: earth_gravity, earth_radius
   use dry_radiation, only: radiation_diagnostics
   use dry_tendency_workspace, only: dry_workspace_type
+  use surface_exchange, only: surface_air_temperature
   implicit none
   private
   public :: collect_dry_diagnostics
@@ -35,6 +36,14 @@ contains
       diagnostics%sea_ice_volume = workspace%sea_ice_volume
       diagnostics%sea_ice_temperature = workspace%sea_ice_temperature
       diagnostics%sea_ice_thickness = workspace%sea_ice_thickness
+      allocate (diagnostics%surface_air_temperature(workspace%nx, workspace%ny))
+      diagnostics%surface_air_temperature = 0.0_real64
+      do j = 1, workspace%ny
+        do i = 1, workspace%ring_nlon(j)
+          diagnostics%surface_air_temperature(i, j) = &
+            surface_air_temperature(workspace%pressure_half(i, j, :), workspace%temperature_grid(i, j, levels))
+        end do
+      end do
     end if
     diagnostics%surface_temperature = workspace%surface_temperature_grid
     diagnostics%deep_temperature = workspace%deep_temperature_grid

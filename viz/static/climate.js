@@ -13,6 +13,8 @@ export const MONTH_NAMES = ["January", "February", "March", "April", "May", "Jun
 export const KOPPEN_GROUP_NAMES = { A: "熱帯", B: "乾燥帯", C: "温帯", D: "冷帯", E: "寒帯" };
 
 export const KOPPEN_GROUPS = ["A", "B", "C", "D", "E"];
+// C/D boundary on the coldest-month temperature, used by both the groups and the types.
+export const KOPPEN_COLD_BOUNDARY_C = -3;
 export const KOPPEN_TYPES = [
   "Af", "Am", "Aw", "BWh", "BWk", "BSh", "BSk",
   "Csa", "Csb", "Csc", "Cwa", "Cwb", "Cwc", "Cfa", "Cfb", "Cfc",
@@ -279,8 +281,11 @@ function wrapSegment([x0, y0, x1, y1]) {
   return [[left, y0, 180, y1], [-180, y0, right - 360, y1]].filter(([a, , b]) => b - a > 1e-9);
 }
 
-/** Köppen inputs shared by the group and type classifications. */
-function koppenInputs(grid, landTemperatureK, precipitationMmDay, calendarMonths, daysPerMonth) {
+/**
+ * Köppen inputs shared by the group and type classifications. The temperature is
+ * the monthly near-surface air temperature (K), not the land skin temperature.
+ */
+function koppenInputs(grid, airTemperatureK, precipitationMmDay, calendarMonths, daysPerMonth) {
   const n = grid.pointCount;
   const months = calendarMonths.length;
   const out = {
@@ -296,7 +301,7 @@ function koppenInputs(grid, landTemperatureK, precipitationMmDay, calendarMonths
     let driestSummer = Infinity; let wettestSummer = -Infinity; let driestWinter = Infinity; let wettestWinter = -Infinity;
     const north = grid.lat[i] >= 0;
     for (let m = 0; m < months; m += 1) {
-      const t = landTemperatureK[m][i] - 273.15;
+      const t = airTemperatureK[m][i] - 273.15;
       const p = precipitationMmDay[m][i] * daysPerMonth;
       sumT += t;
       warmest = Math.max(warmest, t);
@@ -332,17 +337,17 @@ function koppenInputs(grid, landTemperatureK, precipitationMmDay, calendarMonths
   return out;
 }
 
-function koppenGroupAt(inputs, i, coldBoundary) {
+function koppenGroupAt(inputs, i) {
   if (inputs.annualPrecipitation[i] < inputs.dryness[i]) return 1; // B
   if (inputs.coldest[i] >= 18) return 0; // A
   if (inputs.warmest[i] < 10) return 4; // E
-  if (inputs.coldest[i] > coldBoundary && inputs.warmest[i] >= 10) return 2; // C
+  if (inputs.coldest[i] > KOPPEN_COLD_BOUNDARY_C) return 2; // C
   return 3; // D
 }
 
-/** Full Köppen-Geiger type of Peel et al. (2007) with the 0 degC C/D boundary. */
-function koppenTypeAt(inputs, i) {
-  const group = KOPPEN_GROUPS[koppenGroupAt(inputs, i, 0)];
+/** Full Köppen-Geiger type of Peel et al. (2007), with the -3 degC C/D boundary of the groups. */
+function koppenTypeAt(inputs, i, groupIndex) {
+  const group = KOPPEN_GROUPS[groupIndex];
   const annualP = inputs.annualPrecipitation[i];
   let code = group;
   if (group === "B") {
@@ -413,6 +418,7 @@ export function computeClimate(grid, input, options) {
 
   const surfaceTemperatureC = toCelsius(mean("surface_temperature"));
   const landTemperatureC = toCelsius(mean("land_temperature"));
+  const airTemperatureC = toCelsius(mean("surface_air_temperature"));
   const oceanTemperatureC = toCelsius(mean("ocean_temperature"));
   const precipitation = sumTimes("precipitation", dpm);
   const evaporation = sumTimes("evaporation", dpm);
@@ -421,14 +427,12 @@ export function computeClimate(grid, input, options) {
   const surfaceWater = mean("surface_water");
   const pMinusE = precipitation.map((value, i) => value - evaporation[i]);
 
-  const inputs = koppenInputs(grid, monthly.land_temperature, monthly.precipitation, options.calendarMonths, dpm);
+  const inputs = koppenInputs(grid, monthly.surface_air_temperature, monthly.precipitation, options.calendarMonths, dpm);
   const koppenGroup = new Int8Array(n);
-  const koppenGroupZero = new Int8Array(n);
   const koppenType = new Int8Array(n);
   for (let i = 0; i < n; i += 1) {
-    koppenGroup[i] = koppenGroupAt(inputs, i, -3);
-    koppenGroupZero[i] = koppenGroupAt(inputs, i, 0);
-    koppenType[i] = koppenTypeAt(inputs, i);
+    koppenGroup[i] = koppenGroupAt(inputs, i);
+    koppenType[i] = koppenTypeAt(inputs, i, koppenGroup[i]);
   }
 
   // Seasonal contrast (JJA minus DJF).
@@ -524,14 +528,13 @@ export function computeClimate(grid, input, options) {
   const climate = {
     land, threshold: options.threshold, calendarMonths: options.calendarMonths,
     outputMonths: options.outputMonths ?? [],
-    surfaceTemperatureC, landTemperatureC, oceanTemperatureC, precipitation, evaporation, pMinusE,
-    cloudCover, surfacePressureHpa, surfaceWater, koppenGroup, koppenGroupZero, koppenType,
+    surfaceTemperatureC, landTemperatureC, airTemperatureC, oceanTemperatureC, precipitation, evaporation, pMinusE,
+    cloudCover, surfacePressureHpa, surfaceWater, koppenGroup, koppenType,
     koppenInputs: inputs, precipitationSeason, pressureSeason, openOcean, oceanPressureAnomaly,
     gridScalePressure, iceFraction, iceVolume, iceThickness, iceTemperatureC, oceanWeight,
     seaIceMonthly, zonal, streamfunction, referencePressureHpa,
     surfaceHeight: input.surfaceHeight, landFraction,
-    monthlyLandTemperature: monthly.land_temperature, monthlyPrecipitation: monthly.precipitation,
-    monthlySurfaceTemperature: monthly.surface_temperature,
+    monthlyAirTemperature: monthly.surface_air_temperature, monthlyPrecipitation: monthly.precipitation,
     snowFraction: monthly.snow_fraction, seaIceFractionMonthly: monthly.sea_ice_fraction,
   };
   climate.sites = snapSites(grid, options.terrain === "earth" ? EARTH_SITES : ANALYTIC_SITES, land);
@@ -571,6 +574,7 @@ function summarize(grid, climate, options) {
   add("ocean_area_mean_cloud_cover", weightedMean(climate.cloudCover, oceanWeight), "雲量（海面積平均）");
   add("global_area_mean_surface_temperature_c", weightedMean(climate.surfaceTemperatureC, w), "地表温度（全球、°C）");
   add("land_area_mean_surface_temperature_c", weightedMean(climate.landTemperatureC, landWeight), "陸温度（陸面積平均、°C）");
+  add("land_area_mean_surface_air_temperature_c", weightedMean(climate.airTemperatureC, landWeight), "地上気温（陸面積平均、°C）");
   add("ocean_area_mean_surface_temperature_c", weightedMean(climate.oceanTemperatureC, oceanWeight), "海水温（海面積平均、°C）");
   add("land_area_mean_surface_water_kg_m-2", weightedMean(climate.surfaceWater, landWeight), "陸のバケツの水（kg/m²）");
   add("land_precipitation_minus_evaporation_mm_yr", weightedMean(climate.pMinusE, landWeight), "P − E（陸面積平均、mm/年）");
@@ -581,6 +585,9 @@ function summarize(grid, climate, options) {
   const polar = (test) => weightedMean(climate.landTemperatureC, w, land.map((value, i) => value && test(grid.lat[i])));
   add("antarctic_land_annual_temperature_c", polar((lat) => lat < -65), "南緯65°以南の陸（°C）");
   add("arctic_land_annual_temperature_c", polar((lat) => lat > 65), "北緯65°以北の陸（°C）");
+  const polarAir = (test) => weightedMean(climate.airTemperatureC, w, land.map((value, i) => value && test(grid.lat[i])));
+  add("antarctic_land_annual_surface_air_temperature_c", polarAir((lat) => lat < -65), "南緯65°以南の陸の地上気温（°C）");
+  add("arctic_land_annual_surface_air_temperature_c", polarAir((lat) => lat > 65), "北緯65°以北の陸の地上気温（°C）");
   const anomaly = [];
   const anomalyWeight = [];
   const ripple = [];
@@ -617,14 +624,6 @@ function summarize(grid, climate, options) {
     add("andes_west_annual_precipitation_mm_yr", boxPrecipitation(boxes.andes_west, null), "アンデス西側の降水量（mm/年）");
     add("andes_east_annual_precipitation_mm_yr", boxPrecipitation(boxes.andes_east, null), "アンデス東側の降水量（mm/年）");
   }
-  let changed = 0;
-  let landTotal = 0;
-  for (const i of landIndices) {
-    landTotal += w[i];
-    if (climate.koppenGroup[i] !== climate.koppenGroupZero[i]) changed += w[i];
-  }
-  add("land_fraction_changing_group_with_0c_boundary", landTotal > 0 ? changed / landTotal : Number.NaN,
-    "C/D 境界を 0 °C にすると気候群が変わる陸の割合");
   KOPPEN_GROUPS.forEach((group, g) => {
     let area = 0;
     for (const i of landIndices) if (climate.koppenGroup[i] === g) area += landWeight[i];
@@ -645,23 +644,20 @@ function summarize(grid, climate, options) {
 }
 
 /**
- * Site record for a climograph: January-December monthly temperature and
- * precipitation. The land temperature is used where a land tile exists
- * (f_L > 0); elsewhere the grid-mean surface temperature.
+ * Site record for a climograph: January-December monthly near-surface air
+ * temperature and precipitation, the same inputs as the Köppen classification.
  */
 export function climographOf(climate, index) {
   const order = [];
   for (let month = 1; month <= 12; month += 1) order.push(climate.calendarMonths.indexOf(month));
-  const hasLand = climate.landFraction[index] > 0;
-  const source = hasLand ? climate.monthlyLandTemperature : climate.monthlySurfaceTemperature;
+  const source = climate.monthlyAirTemperature;
   const temperature = order.map((m) => (m < 0 ? Number.NaN : source[m][index] - 273.15));
   const precipitation = order.map((m) => (m < 0 ? Number.NaN : climate.monthlyPrecipitation[m][index] * 30));
   return {
     index,
     temperature,
     precipitation,
-    temperatureSource: hasLand ? "land" : "surface",
-    annualTemperature: hasLand ? climate.landTemperatureC[index] : climate.surfaceTemperatureC[index],
+    annualTemperature: climate.airTemperatureC[index],
     annualPrecipitation: climate.precipitation[index],
     koppenGroup: KOPPEN_GROUPS[climate.koppenGroup[index]],
     koppenType: KOPPEN_TYPES[climate.koppenType[index]] ?? "—",

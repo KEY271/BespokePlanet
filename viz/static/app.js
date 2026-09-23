@@ -25,8 +25,8 @@ const ui = {
 };
 
 const CLIMATE_FIELDS = [
-  "surface_temperature", "land_temperature", "ocean_temperature", "precipitation", "evaporation",
-  "cloud_cover", "surface_pressure", "surface_water", "sea_ice_fraction", "sea_ice_volume",
+  "surface_temperature", "land_temperature", "surface_air_temperature", "ocean_temperature", "precipitation",
+  "evaporation", "cloud_cover", "surface_pressure", "surface_water", "sea_ice_fraction", "sea_ice_volume",
   "sea_ice_temperature", "snow_fraction",
 ];
 const ANALYSIS_TABS = [
@@ -1053,7 +1053,6 @@ function renderClimographs() {
       `${formatLonLat(grid.lon[site.index], grid.lat[site.index])}・${Math.round(height)} m・f_L ${state.staticFields.land_fraction[site.index].toFixed(2)}`,
       `${formatNumber(record.annualTemperature, 3)} °C・${Math.round(record.annualPrecipitation)} mm/年`,
     ];
-    if (record.temperatureSource === "surface") details.push("陸タイルがないので格子平均の地表温度");
     if (site.earth) details.push(`地球での観測 ${site.earth}`);
     if (Number.isFinite(site.snapDistance)) details.push(`吸着距離 ${site.snapDistance.toFixed(1)}°`);
     const isLand = climate.land[site.index];
@@ -1069,7 +1068,7 @@ function renderClimographs() {
     return c.element;
   });
   ui.analysisBody.append(
-    note("1〜12月の月平均の気温（折れ線、左軸、°C）と降水量（棒、右軸、mm/月）。気温は陸温度で、陸タイルのないセルだけ格子平均の地表温度を使う。代表地点は両軸を共有し、陸面率が閾値以上のセルのうち最も近いセルに吸着する。地図をクリックすると任意のセルを加えられる。"),
+    note("1〜12月の月平均の気温（折れ線、左軸、°C）と降水量（棒、右軸、mm/月）。気温はケッペン区分と同じ地上気温（最下層の気温を地表気圧まで乾燥断熱で外挿した値）。代表地点は両軸を共有し、陸面率が閾値以上のセルのうち最も近いセルに吸着する。地図をクリックすると任意のセルを加えられる。"),
     grid(...cards),
   );
 }
@@ -1311,7 +1310,7 @@ function renderSummary() {
     const cells = i < 0 ? [n + 1, site.name ?? site.site, "—", "—", "—", "—", site.earth ?? "", "—", "—"] : [
       n + 1, site.name ?? site.site, formatLonLat(state.grid.lon[i], state.grid.lat[i]), `${site.snapDistance.toFixed(1)}°`,
       C.KOPPEN_GROUPS[climate.koppenGroup[i]], C.KOPPEN_TYPES[climate.koppenType[i]], site.earth ?? "",
-      formatNumber(climate.landTemperatureC[i], 3), Math.round(climate.precipitation[i]),
+      formatNumber(climate.airTemperatureC[i], 3), Math.round(climate.precipitation[i]),
     ];
     for (const text of cells) {
       const td = document.createElement("td");
@@ -1339,14 +1338,16 @@ function downloadCellsCsv() {
   for (let i = 0; i < g.pointCount; i += 1) {
     rows.push([
       g.lon[i], g.lat[i], f[i], state.staticFields.surface_height[i], c.land[i] ? 1 : 0,
-      c.surfaceTemperatureC[i], f[i] > 0 ? c.landTemperatureC[i] : null, f[i] < 1 ? c.oceanTemperatureC[i] : null,
+      c.surfaceTemperatureC[i], f[i] > 0 ? c.landTemperatureC[i] : null, c.airTemperatureC[i],
+      f[i] < 1 ? c.oceanTemperatureC[i] : null,
       c.precipitation[i], c.evaporation[i], c.cloudCover[i], c.surfaceWater[i],
       c.land[i] ? C.KOPPEN_GROUPS[c.koppenGroup[i]] : null, c.land[i] ? C.KOPPEN_TYPES[c.koppenType[i]] : null,
     ]);
   }
   downloadCsv("final_year_koppen_groups.csv", [
     "longitude_deg", "latitude_deg", "land_fraction", "surface_height_m", "is_land",
-    "annual_mean_surface_temperature_c", "annual_mean_land_temperature_c", "annual_mean_ocean_temperature_c",
+    "annual_mean_surface_temperature_c", "annual_mean_land_temperature_c", "annual_mean_surface_air_temperature_c",
+    "annual_mean_ocean_temperature_c",
     "annual_precipitation_mm", "annual_evaporation_mm", "annual_mean_cloud_cover", "annual_mean_surface_water_kg_m2",
     "koppen_group", "koppen_type",
   ], rows);
@@ -1358,13 +1359,13 @@ function downloadSitesCsv() {
   downloadCsv("representative_land_sites.csv", [
     "site", "target_longitude_deg", "target_latitude_deg", "longitude_deg", "latitude_deg", "snap_distance_deg",
     "land_fraction", "surface_height_m", "koppen_group", "koppen_type", "earth_reference_koppen",
-    "annual_mean_temperature_c", "annual_precipitation_mm", "annual_mean_surface_water_kg_m2",
+    "annual_mean_surface_air_temperature_c", "annual_precipitation_mm", "annual_mean_surface_water_kg_m2",
   ], c.sites.map((site) => {
     const i = site.index;
     if (i < 0) return [site.site, site.lon, site.lat];
     return [site.site, site.lon, site.lat, g.lon[i], g.lat[i], site.snapDistance, state.staticFields.land_fraction[i],
       state.staticFields.surface_height[i], C.KOPPEN_GROUPS[c.koppenGroup[i]], C.KOPPEN_TYPES[c.koppenType[i]],
-      site.earth ?? null, c.landTemperatureC[i], c.precipitation[i], c.surfaceWater[i]];
+      site.earth ?? null, c.airTemperatureC[i], c.precipitation[i], c.surfaceWater[i]];
   }));
 }
 

@@ -24,6 +24,7 @@ const K = (value) => value - 273.15;
 export const RAW_FIELDS = {
   surface_temperature: { label: "地表温度", unit: "°C", kind: "thermal", convert: K },
   land_temperature: { label: "陸温度", unit: "°C", kind: "thermal", convert: K, mask: "land" },
+  surface_air_temperature: { label: "地上気温", unit: "°C", kind: "thermal", convert: K },
   ocean_temperature: { label: "海洋混合層の水温", unit: "°C", kind: "thermal", convert: K, mask: "ocean" },
   deep_temperature: { label: "陸の深層温度", unit: "°C", kind: "thermal", convert: K, mask: "land" },
   surface_pressure: { label: "地表気圧", unit: "hPa", kind: "sequential", convert: (v) => v / 100 },
@@ -56,7 +57,7 @@ export const RAW_FIELDS = {
 };
 
 export const MONTHLY_ORDER = [
-  "surface_temperature", "land_temperature", "ocean_temperature", "deep_temperature", "surface_pressure",
+  "surface_temperature", "surface_air_temperature", "land_temperature", "ocean_temperature", "deep_temperature", "surface_pressure",
   "precipitation", "evaporation", "precipitable_water", "cloud_cover", "surface_water", "surface_wetness", "runoff",
   "snowfall", "snow_water", "snow_fraction", "snow_melt",
   "sea_ice_fraction", "sea_ice_volume", "sea_ice_thickness", "sea_ice_temperature",
@@ -158,14 +159,14 @@ export function climatologyFields(context) {
 
   return {
     koppen_type: landOnly({
-      label: "ケッペン–ガイガーの気候型（Peel et al. 2007、C/D 境界 0 °C）",
+      label: "ケッペン–ガイガーの気候型（Peel et al. 2007、C/D 境界 −3 °C、地上気温）",
       legend: KOPPEN_TYPES.map((code) => ({ color: KOPPEN_TYPE_COLORS[code], label: code })),
       legendFilter: (c) => new Set([...presentTypes(c), "海"]),
       classify: (c, i) => c.koppenType[i],
       value: (c, i) => KOPPEN_TYPES[c.koppenType[i]],
     }),
     koppen_group: landOnly({
-      label: "ケッペンの気候群（C/D 境界 −3 °C）",
+      label: "ケッペンの気候群（C/D 境界 −3 °C、地上気温）",
       legend: KOPPEN_GROUPS.map((g) => ({ color: KOPPEN_GROUP_COLORS[g], label: KOPPEN_GROUP_LABELS[g] })),
       classify: (c, i) => c.koppenGroup[i],
       value: (c, i) => KOPPEN_GROUPS[c.koppenGroup[i]],
@@ -185,6 +186,14 @@ export function climatologyFields(context) {
         ["−30 °C 未満", "−30〜−20 °C", "−20〜−10 °C", "−10〜0 °C", "0〜10 °C", "10〜20 °C", "20〜30 °C", "30 °C 以上"]),
       classify: (c, i) => binned(c.landTemperatureC[i], [-Infinity, -30, -20, -10, 0, 10, 20, 30, Infinity], false),
       value: (c, i) => c.landTemperatureC[i],
+    }),
+    air_temperature_annual: landOnly({
+      label: "陸の年平均地上気温",
+      unit: "°C",
+      legend: entries(["#002F70", "#3C6FC4", "#9BAEE2", "#DFE5F7", "#F9DFDF", "#E39D9D", "#B74F4F", "#5F1415"],
+        ["−30 °C 未満", "−30〜−20 °C", "−20〜−10 °C", "−10〜0 °C", "0〜10 °C", "10〜20 °C", "20〜30 °C", "30 °C 以上"]),
+      classify: (c, i) => binned(c.airTemperatureC[i], [-Infinity, -30, -20, -10, 0, 10, 20, 30, Infinity], false),
+      value: (c, i) => c.airTemperatureC[i],
     }),
     precipitation_annual: landOnly({
       label: "陸の年降水量",
@@ -278,7 +287,7 @@ export function climatologyFields(context) {
 }
 
 export const CLIMATOLOGY_ORDER = [
-  "koppen_type", "koppen_group", "terrain", "land_temperature_annual", "precipitation_annual",
+  "koppen_type", "koppen_group", "terrain", "air_temperature_annual", "land_temperature_annual", "precipitation_annual",
   "surface_water_annual", "p_minus_e_annual", "cloud_cover_annual", "precipitation_season", "pressure_season",
   "ocean_pressure_anomaly", "snow_ice_march", "snow_ice_september", "sea_ice_march", "sea_ice_september",
   "sea_ice_thickness_annual", "sea_ice_temperature_annual",

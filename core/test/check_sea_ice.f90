@@ -185,16 +185,21 @@ contains
     sample%sea_ice_fraction = 0.25_real64*sample%surface_wetness + 0.25_real64
     sample%sea_ice_volume = sample%sea_ice_fraction*2.0_real64
     sample%sea_ice_temperature = sample%surface_temperature - 20.0_real64
+    sample%surface_air_temperature = sample%surface_temperature - 4.0_real64
     call accumulator%add(sample)
     sample%sea_ice_fraction = 0.75_real64
     sample%sea_ice_volume = 0.75_real64
     sample%sea_ice_temperature = tf
+    sample%surface_air_temperature = sample%surface_temperature - 2.0_real64
     call accumulator%add(sample)
     call accumulator%take(means)
+    call near(means%surface_air_temperature(1,1), tf - 3.0_real64, 1.0e-12_real64, 'monthly surface air temperature')
     call near(means%sea_ice_thickness(1,1), 1.25_real64, 1.0e-14_real64, 'monthly thickness weighting')
     call near(means%sea_ice_temperature(1,1), tf - 5.0_real64, 1.0e-12_real64, 'monthly ice temperature weighting')
     sample%ice_checks = checks
     call move_radiation_diagnostics(sample, moved)
+    if (.not. allocated(moved%surface_air_temperature) .or. allocated(sample%surface_air_temperature)) &
+      error stop 'surface air temperature was not moved'
     call daily%add(moved)
     call daily%add(moved)
     call daily%take(day)
