@@ -12,7 +12,8 @@ program check_band_radiation
   use band_radiation, only: band_column_fluxes, band_longwave_subbands, band_planck_fractions, &
                             band_planck_fractions_series, prepare_band_planck_table, &
                             band_surface_emission, band_longwave_optics, band_longwave_downward, &
-                            band_longwave_upward, band_shortwave, validate_band_radiation_config
+                            band_longwave_upward, band_shortwave, validate_band_radiation_config, &
+                            cloud_shortwave_optics
   use dry_radiation, only: ozone_layer_fraction, ozone_layer_fractions, radiation_band_downward_column, radiation_band_upward_column, &
                            radiation_tendency, solar_zenith_cosine
   use moist_thermodynamics, only: saturation_specific_humidity
@@ -50,6 +51,7 @@ program check_band_radiation
   end do
 
   call check_planck_fractions()
+  call check_cloud_optics()
   call check_reference_columns()
   call check_budgets()
   call check_isothermal_column()
@@ -174,6 +176,54 @@ contains
     end do
   end subroutine check_planck_fractions
 
+  !> The delta-Eddington cloud (docs/tendency/band-radiation.md, 6.3): values of
+  !> the ISCCP cloud against the Python reference, conservation, the diffuse
+  !> reflectance against a direct quadrature of 2 int_0^1 R(mu) mu dmu on both
+  !> branches of the exponential integral, and a cloud of zero optical depth.
+  subroutine check_cloud_optics()
+    real(real64), parameter :: depths(3) = [1.0_real64, 3.9_real64, 23.0_real64]
+    real(real64) :: reflectance, direct, scattered, diffuse, r, t_direct, t_scattered, unused, mu, quadrature
+    integer :: n, i
+    integer, parameter :: points = 20000
+
+    call cloud_shortwave_optics(3.9_real64, 0.85_real64, 1.0_real64, 200.0_real64, reflectance, direct, scattered, &
+                                diffuse)
+    call near(reflectance, 0.19006642826569498_real64, 1.0e-13_real64, 'cloud reflectance at mu = 1')
+    call near(direct, 0.3388322946690738_real64, 1.0e-13_real64, 'cloud direct transmittance at mu = 1')
+    call near(scattered, 0.47110127706523125_real64, 1.0e-13_real64, 'cloud scattered transmittance at mu = 1')
+    call near(diffuse, 0.3175304336362027_real64, 1.0e-13_real64, 'cloud diffuse reflectance')
+    call cloud_shortwave_optics(3.9_real64, 0.85_real64, 0.5_real64, 200.0_real64, reflectance, direct, scattered, &
+                                diffuse)
+    call near(reflectance, 0.3818586165151425_real64, 1.0e-13_real64, 'cloud reflectance at mu = 0.5')
+    call near(scattered, 0.5033340595741475_real64, 1.0e-13_real64, 'cloud scattered transmittance at mu = 0.5')
+    do i = 1, 3
+      ! Simpson's rule on the flux-weighted reflectance; the integrand vanishes at mu = 0.
+      quadrature = 0.0_real64
+      do n = 1, points
+        mu = real(n, real64)/real(points, real64)
+        call cloud_shortwave_optics(depths(i), 0.85_real64, mu, 200.0_real64, r, t_direct, t_scattered, unused)
+        call near(r + t_direct + t_scattered, 1.0_real64, 1.0e-14_real64, 'cloud conserves the beam')
+        if (r < 0.0_real64 .or. t_direct < 0.0_real64 .or. t_scattered < 0.0_real64) error stop 'negative cloud flux'
+        if (n == points) then
+          quadrature = quadrature + r*mu
+        else if (mod(n, 2) == 1) then
+          quadrature = quadrature + 4.0_real64*r*mu
+        else
+          quadrature = quadrature + 2.0_real64*r*mu
+        end if
+      end do
+      quadrature = 2.0_real64*quadrature/(3.0_real64*real(points, real64))
+      call cloud_shortwave_optics(depths(i), 0.85_real64, 0.5_real64, 200.0_real64, r, t_direct, t_scattered, diffuse)
+      call near(diffuse, quadrature, 1.0e-9_real64, 'cloud diffuse reflectance against quadrature')
+    end do
+    call cloud_shortwave_optics(0.0_real64, 0.85_real64, 0.3_real64, 200.0_real64, reflectance, direct, scattered, &
+                                diffuse)
+    call near(reflectance, 0.0_real64, 1.0e-15_real64, 'transparent cloud reflectance')
+    call near(direct, 1.0_real64, 0.0_real64, 'transparent cloud direct transmittance')
+    call near(scattered, 0.0_real64, 1.0e-15_real64, 'transparent cloud scattered transmittance')
+    call near(diffuse, 0.0_real64, 1.0e-15_real64, 'transparent cloud diffuse reflectance')
+  end subroutine check_cloud_optics
+
   subroutine check_reference_columns()
     type(band_column_fluxes) :: fluxes
     real(real64) :: longwave(levels), shortwave(levels)
@@ -200,11 +250,11 @@ contains
     call near(fluxes%clear_outgoing_longwave, 271.9718239461179_real64, tolerance, 'cloudy global clear OLR')
     call near(fluxes%window_outgoing_longwave, 61.412770026770374_real64, tolerance, 'cloudy global window OLR')
     call near(fluxes%surface_downward_longwave, 324.0679448897703_real64, tolerance, 'cloudy global downward')
-    call near(fluxes%reflected_shortwave, 300.4367636834485_real64, tolerance, 'cloudy global reflected')
+    call near(fluxes%reflected_shortwave, 268.198079143159_real64, tolerance, 'cloudy global reflected')
     call near(fluxes%clear_reflected_shortwave, 181.67935150074848_real64, tolerance, 'cloudy clear reflected')
-    call near(fluxes%surface_incident_shortwave, 372.39237435747305_real64, tolerance, 'cloudy surface shortwave')
+    call near(fluxes%surface_incident_shortwave, 417.3003366065004_real64, tolerance, 'cloudy surface shortwave')
     call near(fluxes%clear_surface_incident_shortwave, 516.8527055620722_real64, tolerance, 'cloudy clear surface')
-    call near(fluxes%atmospheric_shortwave_absorption, 119.38857426632043_real64, tolerance, 'cloudy atmosphere')
+    call near(fluxes%atmospheric_shortwave_absorption, 120.19168523229075_real64, tolerance, 'cloudy atmosphere')
 
     clouds = cloud_layers()
     call solve(config%band, tropical_temperature, tropical_humidity, 300.0_real64, 0.5_real64, 0.3_real64, clouds, &
@@ -221,8 +271,8 @@ contains
                fluxes, longwave, shortwave)
     call near(fluxes%outgoing_longwave, 254.34239555603608_real64, tolerance, 'cloudy tropical OLR')
     call near(fluxes%surface_downward_longwave, 403.42746358317606_real64, tolerance, 'cloudy tropical downward')
-    call near(fluxes%reflected_shortwave, 290.79268333080773_real64, tolerance, 'cloudy tropical reflected')
-    call near(fluxes%atmospheric_shortwave_absorption, 142.99431506081203_real64, tolerance, 'cloudy tropical atm')
+    call near(fluxes%reflected_shortwave, 259.5750487033396_real64, tolerance, 'cloudy tropical reflected')
+    call near(fluxes%atmospheric_shortwave_absorption, 143.84855812392072_real64, tolerance, 'cloudy tropical atm')
   end subroutine check_reference_columns
 
   !> The longwave and shortwave column budgets close with and without clouds,
@@ -330,7 +380,8 @@ contains
   !> two clouds of equal properties in the same layer act as one cloud of their
   !> summed cover.
   subroutine check_subcolumns()
-    type(band_column_fluxes) :: clear, empty, split, single
+    type(band_column_fluxes) :: clear, empty, split, single, transparent
+    type(band_radiation_config) :: thin
     real(real64) :: lw_clear(levels), sw_clear(levels), lw_empty(levels), sw_empty(levels)
     real(real64) :: lw_split(levels), sw_split(levels), lw_single(levels), sw_single(levels)
 
@@ -353,6 +404,17 @@ contains
     call near(split%surface_downward_longwave, single%surface_downward_longwave, 1.0e-10_real64, 'split cloud DLR')
     call near(maxval(abs(lw_split - lw_single)), 0.0_real64, 1.0e-12_real64, 'split cloud longwave heating')
     call near(maxval(abs(sw_split - sw_single)), 0.0_real64, 1.0e-12_real64, 'split cloud shortwave heating')
+    ! A shortwave-transparent cloud leaves the shortwave of the clear column.
+    thin = config%band
+    thin%large_scale_cloud_optical_depth = 0.0_real64
+    call solve(thin, tropical_temperature, tropical_humidity, 300.0_real64, 0.6_real64, 0.2_real64, &
+               cloud_layers(large_scale_fraction=0.5_real64, large_scale_level=8), transparent, lw_single, sw_split)
+    call near(transparent%reflected_shortwave, clear%reflected_shortwave, 1.0e-10_real64, 'transparent cloud reflection')
+    call near(transparent%surface_incident_shortwave, clear%surface_incident_shortwave, 1.0e-10_real64, &
+              'transparent cloud surface shortwave')
+    call near(maxval(abs(sw_split - sw_clear)), 0.0_real64, 1.0e-12_real64, 'transparent cloud shortwave heating')
+    call solve(config%band, tropical_temperature, tropical_humidity, 300.0_real64, 0.6_real64, 0.2_real64, &
+               cloud_layers(large_scale_fraction=0.5_real64, large_scale_level=8), single, lw_single, sw_single)
     ! A cloud raises the downward longwave at the surface and the reflection, and lowers the OLR.
     if (.not. (single%outgoing_longwave < clear%outgoing_longwave .and. &
                single%reflected_shortwave > clear%reflected_shortwave .and. &

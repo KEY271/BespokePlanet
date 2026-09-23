@@ -506,7 +506,8 @@ contains
     if (physics%cloud%enabled .and. radiation%scheme == radiation_scheme_band) then
       write (unit, '(a)') '    "surface_albedo_meaning": "surface without clouds; cloud reflection is diagnosed",'
       write (unit, '(a)') '    "clouds": "clear, large-scale and convective sub-columns; one cloud per cloudy '// &
-        'sub-column, black in the longwave and reflecting at its top in the shortwave",'
+        'sub-column, black in the longwave and a conservative delta-Eddington layer at its top in the '// &
+        'shortwave, with multiple reflection against the atmosphere and surface below",'
     else if (physics%cloud%enabled) then
       write (unit, '(a)') '    "surface_albedo_meaning": "surface without clouds; cloud reflection is diagnosed",'
       write (unit, '(a,es24.16e3,a)') '    "cloud_shortwave_albedo": ', radiation%cloud_shortwave_albedo, ','
@@ -1006,10 +1007,11 @@ contains
       call write_real_array(unit, 'rayleigh_direct_amplitude', band%rayleigh_direct_amplitude, .true.)
       call write_real_array(unit, 'rayleigh_direct_slope', band%rayleigh_direct_slope, .true.)
       call write_real_array(unit, 'rayleigh_diffuse_reflectance', band%rayleigh_diffuse_reflectance, .true.)
-      write (unit, '(a,es24.16e3,a)') '      "large_scale_cloud_shortwave_albedo": ', &
-        band%large_scale_cloud_shortwave_albedo, ','
-      write (unit, '(a,es24.16e3,a)') '      "convective_cloud_shortwave_albedo": ', &
-        band%convective_cloud_shortwave_albedo, ','
+      write (unit, '(a,es24.16e3,a)') '      "large_scale_cloud_optical_depth": ', &
+        band%large_scale_cloud_optical_depth, ','
+      write (unit, '(a,es24.16e3,a)') '      "convective_cloud_optical_depth": ', &
+        band%convective_cloud_optical_depth, ','
+      write (unit, '(a,es24.16e3,a)') '      "cloud_asymmetry_factor": ', band%cloud_asymmetry_factor, ','
       write (unit, '(a,es24.16e3,a)') '      "large_scale_cloud_longwave_emissivity": ', &
         band%large_scale_cloud_longwave_emissivity, ','
       write (unit, '(a,es24.16e3)') '      "convective_cloud_longwave_emissivity": ', &

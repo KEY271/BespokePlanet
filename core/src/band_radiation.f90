@@ -12,7 +12,10 @@
 !> convective-cloud sub-column weighted by their area fractions
 !> (cloud_diagnostics).  A cloud sub-column holds one cloud: in the longwave the
 !> transmittance of its layer is multiplied by 1 - epsilon, in the shortwave the
-!> cloud reflects alpha of the direct beam at the top of its layer.  The clear
+!> cloud is a conservative delta-Eddington layer of optical depth tau at the top
+!> of its layer.  It reflects R(mu) of the direct beam and R-bar of the diffuse
+!> light, and the light between the cloud base and the atmosphere and surface
+!> below is reflected back and forth (adding of the two).  The clear
 !> sub-column is always solved, so the clear-sky fluxes come without extra
 !> passes.  With no cloud the clear sub-column has weight one and the result is
 !> the cloud-free result bit for bit.
@@ -82,7 +85,7 @@ module band_radiation
 
   public :: band_planck_fractions, band_planck_fractions_series, band_surface_emission
   public :: prepare_band_planck_table
-  public :: band_longwave_optics, band_longwave_downward, band_longwave_upward, band_shortwave
+  public :: band_longwave_optics, band_longwave_downward, band_longwave_upward, band_shortwave, cloud_shortwave_optics
   public :: validate_band_radiation_config, validate_cloud_layers
 
 contains
@@ -350,26 +353,27 @@ contains
 
   !> Sub-columns to solve: the clear one always, the cloud ones when their
   !> fraction is positive.  `weight` is the area fraction, `level` the cloud
-  !> level (0 for clear), `emissivity` and `albedo` the cloud properties.
-  pure subroutine band_subcolumns(band, clouds, count, kind, weight, level, emissivity, albedo)
+  !> level (0 for clear), `emissivity` the longwave emissivity and
+  !> `optical_depth` the shortwave optical depth of the cloud.
+  pure subroutine band_subcolumns(band, clouds, count, kind, weight, level, emissivity, optical_depth)
     type(band_radiation_config), intent(in) :: band
     type(cloud_layers), intent(in) :: clouds
     integer, intent(out) :: count, kind(3), level(3)
-    real(real64), intent(out) :: weight(3), emissivity(3), albedo(3)
+    real(real64), intent(out) :: weight(3), emissivity(3), optical_depth(3)
 
     count = 1
     kind(1) = clear_subcolumn
     weight(1) = max(1.0_real64 - clouds%large_scale_fraction - clouds%convective_fraction, 0.0_real64)
     level(1) = 0
     emissivity(1) = 0.0_real64
-    albedo(1) = 0.0_real64
+    optical_depth(1) = 0.0_real64
     if (clouds%large_scale_fraction > 0.0_real64) then
       count = count + 1
       kind(count) = large_scale_subcolumn
       weight(count) = clouds%large_scale_fraction
       level(count) = clouds%large_scale_level
       emissivity(count) = band%large_scale_cloud_longwave_emissivity
-      albedo(count) = band%large_scale_cloud_shortwave_albedo
+      optical_depth(count) = band%large_scale_cloud_optical_depth
     end if
     if (clouds%convective_fraction > 0.0_real64) then
       count = count + 1
@@ -377,7 +381,7 @@ contains
       weight(count) = clouds%convective_fraction
       level(count) = clouds%convective_level
       emissivity(count) = band%convective_cloud_longwave_emissivity
-      albedo(count) = band%convective_cloud_shortwave_albedo
+      optical_depth(count) = band%convective_cloud_optical_depth
     end if
   end subroutine band_subcolumns
 
@@ -388,11 +392,11 @@ contains
     type(cloud_layers), intent(in) :: clouds
     real(real64), intent(in) :: transmission(:, :), source(:, :)
     real(real64), intent(out) :: downward(0:)
-    real(real64) :: subcolumn_downward(0:size(source, 2)), weight(3), emissivity(3), albedo(3), flux, layer
+    real(real64) :: subcolumn_downward(0:size(source, 2)), weight(3), emissivity(3), optical_depth(3), flux, layer
     integer :: count, kind(3), level(3), m, b, k, levels
 
     levels = size(source, 2)
-    call band_subcolumns(band, clouds, count, kind, weight, level, emissivity, albedo)
+    call band_subcolumns(band, clouds, count, kind, weight, level, emissivity, optical_depth)
     downward = 0.0_real64
     do m = 1, count
       if (weight(m) <= 0.0_real64) cycle
@@ -423,11 +427,11 @@ contains
     real(real64), intent(out) :: heating(:)
     type(band_column_fluxes), intent(inout) :: fluxes
     real(real64) :: upward(0:size(source, 2)), subcolumn_upward(0:size(source, 2)), net(0:size(source, 2))
-    real(real64) :: weight(3), emissivity(3), albedo(3), flux, layer, window
+    real(real64) :: weight(3), emissivity(3), optical_depth(3), flux, layer, window
     integer :: count, kind(3), level(3), m, b, k, levels
 
     levels = size(source, 2)
-    call band_subcolumns(band, clouds, count, kind, weight, level, emissivity, albedo)
+    call band_subcolumns(band, clouds, count, kind, weight, level, emissivity, optical_depth)
     upward = 0.0_real64
     fluxes%window_outgoing_longwave = 0.0_real64
     do m = 1, count
@@ -458,11 +462,130 @@ contains
     fluxes%surface_downward_longwave = downward(levels)
   end subroutine band_longwave_upward
 
+  !> Exponential integral E_n(x) = int_1^inf e^{-x t} t^{-n} dt for n >= 2 and
+  !> x >= 0: the power series for x <= 1 and the continued fraction (modified
+  !> Lentz) above, as in Press et al., Numerical Recipes, 6.3.
+  pure real(real64) function exponential_integral(n, x) result(value)
+    integer, intent(in) :: n
+    real(real64), intent(in) :: x
+    integer, parameter :: maximum_iterations = 200
+    real(real64), parameter :: euler = 0.5772156649015328606_real64
+    real(real64), parameter :: smallest = 1.0e-300_real64
+    real(real64) :: a, b, c, d, h, delta, factor, psi
+    integer :: i, l, previous
+
+    previous = n - 1
+    if (x <= 0.0_real64) then
+      value = 1.0_real64/real(previous, real64)
+    else if (x > 1.0_real64) then
+      b = x + real(n, real64)
+      c = 1.0_real64/smallest
+      d = 1.0_real64/b
+      h = d
+      do i = 1, maximum_iterations
+        a = -real(i, real64)*real(previous + i, real64)
+        b = b + 2.0_real64
+        d = 1.0_real64/(a*d + b)
+        c = b + a/c
+        delta = c*d
+        h = h*delta
+        if (abs(delta - 1.0_real64) <= epsilon(1.0_real64)) exit
+      end do
+      value = h*exp(-x)
+    else
+      value = 1.0_real64/real(previous, real64)
+      factor = 1.0_real64
+      do i = 1, maximum_iterations
+        factor = -factor*x/real(i, real64)
+        if (i /= previous) then
+          delta = -factor/real(i - previous, real64)
+        else
+          psi = -euler
+          do l = 1, previous
+            psi = psi + 1.0_real64/real(l, real64)
+          end do
+          delta = factor*(psi - log(x))
+        end if
+        value = value + delta
+        if (abs(delta) <= abs(value)*epsilon(1.0_real64)) exit
+      end do
+    end if
+  end function exponential_integral
+
+  !> Shortwave properties of a cloud of visible optical depth `optical_depth`
+  !> and asymmetry factor `asymmetry`, as a conservative delta-Eddington layer
+  !> (Joseph, Wiscombe and Weinman 1976): with tau' = (1 - g^2) tau and
+  !> g' = g/(1 + g), the total transmittance of a beam of direction cosine mu is
+  !> T(mu) = [(2/3 + mu) + (2/3 - mu) e^{-tau'/mu}]/[4/3 + (1 - g') tau'] and its
+  !> reflectance 1 - T(mu), of which e^{-tau'/mu} goes on as the direct beam.
+  !> The diffuse reflectance is the flux-weighted mean 2 int_0^1 R(mu) mu dmu,
+  !> 1 - [4/3 + (4/3) E_3(tau') - 2 E_4(tau')]/[4/3 + (1 - g') tau'].
+  pure subroutine cloud_shortwave_optics(optical_depth, asymmetry, cos_path, maximum_path, direct_reflectance, &
+                                         direct_transmittance, scattered_transmittance, diffuse_reflectance)
+    real(real64), intent(in) :: optical_depth, asymmetry, cos_path, maximum_path
+    real(real64), intent(out) :: direct_reflectance, direct_transmittance, scattered_transmittance
+    real(real64), intent(out) :: diffuse_reflectance
+    real(real64) :: scaled_depth, scaled_asymmetry, denominator, total
+
+    scaled_depth = (1.0_real64 - asymmetry*asymmetry)*optical_depth
+    scaled_asymmetry = asymmetry/(1.0_real64 + asymmetry)
+    denominator = 4.0_real64/3.0_real64 + (1.0_real64 - scaled_asymmetry)*scaled_depth
+    direct_transmittance = path_transmission(scaled_depth/cos_path, maximum_path)
+    total = ((2.0_real64/3.0_real64 + cos_path) + (2.0_real64/3.0_real64 - cos_path)*direct_transmittance)/denominator
+    direct_reflectance = 1.0_real64 - total
+    scattered_transmittance = total - direct_transmittance
+    diffuse_reflectance = 1.0_real64 - (4.0_real64/3.0_real64 + 4.0_real64/3.0_real64* &
+      exponential_integral(3, scaled_depth) - 2.0_real64*exponential_integral(4, scaled_depth))/denominator
+  end subroutine cloud_shortwave_optics
+
+  !> Response of the layers first..N, the Rayleigh layer and the surface to a
+  !> unit downward flux entering at the top of layer `first`: the flux passes
+  !> the layers with `downward_transmission`, the Rayleigh layer reflects
+  !> `top_reflectance` of it and R* of the light from the surface, and the
+  !> reflected light goes up with `upward_transmission`.  Returns the layer
+  !> absorption, the flux incident on the surface and the upward flux leaving
+  !> the top of layer `first`.
+  pure subroutine below_cloud_response(downward_transmission, upward_transmission, first, top_reflectance, &
+                                       diffuse_reflectance, surface_albedo, absorbed, incident, upward)
+    real(real64), intent(in) :: downward_transmission(:), upward_transmission(:)
+    integer, intent(in) :: first
+    real(real64), intent(in) :: top_reflectance, diffuse_reflectance, surface_albedo
+    real(real64), intent(out) :: absorbed(:), incident, upward
+    real(real64) :: flux, next_flux
+    integer :: k
+
+    flux = 1.0_real64
+    do k = first, size(absorbed)
+      next_flux = flux*downward_transmission(k)
+      absorbed(k) = flux - next_flux
+      flux = next_flux
+    end do
+    incident = (1.0_real64 - top_reflectance)*flux/(1.0_real64 - diffuse_reflectance*surface_albedo)
+    flux = top_reflectance*flux + (1.0_real64 - diffuse_reflectance)*surface_albedo*incident
+    do k = size(absorbed), first, -1
+      next_flux = flux*upward_transmission(k)
+      absorbed(k) = absorbed(k) + (flux - next_flux)
+      flux = next_flux
+    end do
+    upward = flux
+  end subroutine below_cloud_response
+
   !> Shortwave of the twelve g points in every sub-column.  `incoming` is
   !> S_0 max(0, mu_0); nothing is computed on the night side.  The surface is
   !> one reflector of area-mean albedo `surface_albedo` under a non-absorbing
   !> Rayleigh layer; the returned surface incident flux is the area mean over
   !> the sub-columns.
+  !>
+  !> In a cloud sub-column the direct beam reaches the cloud top at the top of
+  !> the cloud layer c.  The cloud reflects R(mu) of it with mu = 1/M(mu_0), the
+  !> cosine of the magnified path, and passes a direct part e^{-tau'/mu} and a
+  !> scattered part.  Below it, the direct part follows M(mu_0) and the Rayleigh
+  !> reflectance R_b(mu_0), the scattered part and everything reflected follow D
+  !> and R*_b.  With U_dir and U_dif the upward flux at the cloud base for a unit
+  !> direct and a unit diffuse input, the diffuse flux going down from the cloud
+  !> base is X = (F T_sca + R-bar S U_dir)/(1 - R-bar U_dif), S = F e^{-tau'/mu}, the
+  !> upward flux reaching the cloud base U = S U_dir + X U_dif, and the cloud
+  !> sends F R(mu) + (1 - R-bar) U up from its top.
   pure subroutine band_shortwave(band, gravity, specific_heat, pressure_half, humidity, ozone_fraction, incoming, &
                                  cos_zenith, surface_albedo, clouds, heating, fluxes)
     type(band_radiation_config), intent(in) :: band
@@ -473,12 +596,15 @@ contains
     real(real64), intent(out) :: heating(:)
     type(band_column_fluxes), intent(inout) :: fluxes
     real(real64), dimension(size(humidity)) :: water_path, ozone_path, optical_depth, direct, diffuse, absorbed
-    real(real64) :: weight(3), emissivity(3), albedo(3)
+    real(real64), dimension(size(humidity)) :: direct_absorbed, diffuse_absorbed
+    real(real64) :: weight(3), emissivity(3), cloud_depth(3)
+    real(real64), dimension(3) :: cloud_reflectance, cloud_direct, cloud_scattered, cloud_diffuse_reflectance
     real(real64) :: magnification, normalization, top_flux, reflectance, diffuse_reflectance
-    real(real64) :: flux, next_flux, cloud_reflected, incident, pressure_thickness, mean_pressure
+    real(real64) :: flux, next_flux, incident, pressure_thickness, mean_pressure
     real(real64) :: relative_pressure, log_relative_pressure
+    real(real64) :: direct_incident, diffuse_incident, direct_upward, diffuse_upward, beam, scattered, upward
     logical :: needs_log
-    integer :: count, kind(3), level(3), m, j, b, k, levels
+    integer :: count, kind(3), level(3), m, j, b, k, levels, c
 
     levels = size(humidity)
     heating = 0.0_real64
@@ -489,8 +615,13 @@ contains
     fluxes%clear_surface_incident_shortwave = 0.0_real64
     fluxes%atmospheric_shortwave_absorption = 0.0_real64
     if (incoming <= 0.0_real64) return
-    call band_subcolumns(band, clouds, count, kind, weight, level, emissivity, albedo)
+    call band_subcolumns(band, clouds, count, kind, weight, level, emissivity, cloud_depth)
     magnification = band%magnification_numerator/sqrt(band%magnification_quadratic*cos_zenith**2 + 1.0_real64)
+    do m = 1, count
+      if (level(m) > 0) call cloud_shortwave_optics(cloud_depth(m), band%cloud_asymmetry_factor, &
+        1.0_real64/magnification, band%maximum_optical_path, cloud_reflectance(m), cloud_direct(m), &
+        cloud_scattered(m), cloud_diffuse_reflectance(m))
+    end do
     normalization = 0.0_real64
     do j = 1, band_shortwave_gpoints
       normalization = normalization + &
@@ -528,25 +659,48 @@ contains
       diffuse_reflectance = band%rayleigh_diffuse_reflectance(b)
       do m = 1, count
         flux = top_flux
-        cloud_reflected = 0.0_real64
-        do k = 1, levels
-          if (k == level(m)) then
-            cloud_reflected = albedo(m)*flux
-            flux = flux - cloud_reflected
-          end if
-          next_flux = flux*direct(k)
-          absorbed(k) = absorbed(k) + weight(m)*(flux - next_flux)
-          flux = next_flux
-        end do
-        ! Rayleigh layer and surface with their multiple reflection.
-        incident = (1.0_real64 - reflectance)*flux/(1.0_real64 - diffuse_reflectance*surface_albedo)
-        flux = reflectance*flux + (1.0_real64 - diffuse_reflectance)*surface_albedo*incident
-        do k = levels, 1, -1
-          next_flux = flux*diffuse(k)
-          absorbed(k) = absorbed(k) + weight(m)*(flux - next_flux)
-          flux = next_flux
-          if (k == level(m)) flux = flux + cloud_reflected
-        end do
+        c = level(m)
+        if (c == 0) then
+          do k = 1, levels
+            next_flux = flux*direct(k)
+            absorbed(k) = absorbed(k) + weight(m)*(flux - next_flux)
+            flux = next_flux
+          end do
+          ! Rayleigh layer and surface with their multiple reflection.
+          incident = (1.0_real64 - reflectance)*flux/(1.0_real64 - diffuse_reflectance*surface_albedo)
+          flux = reflectance*flux + (1.0_real64 - diffuse_reflectance)*surface_albedo*incident
+          do k = levels, 1, -1
+            next_flux = flux*diffuse(k)
+            absorbed(k) = absorbed(k) + weight(m)*(flux - next_flux)
+            flux = next_flux
+          end do
+        else
+          do k = 1, c - 1
+            next_flux = flux*direct(k)
+            absorbed(k) = absorbed(k) + weight(m)*(flux - next_flux)
+            flux = next_flux
+          end do
+          ! Unit responses of the atmosphere, Rayleigh layer and surface below the cloud.
+          call below_cloud_response(direct, diffuse, c, reflectance, diffuse_reflectance, surface_albedo, &
+                                    direct_absorbed, direct_incident, direct_upward)
+          call below_cloud_response(diffuse, diffuse, c, diffuse_reflectance, diffuse_reflectance, surface_albedo, &
+                                    diffuse_absorbed, diffuse_incident, diffuse_upward)
+          ! Multiple reflection between the cloud base and what lies below.
+          beam = flux*cloud_direct(m)
+          scattered = (flux*cloud_scattered(m) + cloud_diffuse_reflectance(m)*beam*direct_upward)/ &
+                      (1.0_real64 - cloud_diffuse_reflectance(m)*diffuse_upward)
+          upward = beam*direct_upward + scattered*diffuse_upward
+          do k = c, levels
+            absorbed(k) = absorbed(k) + weight(m)*(beam*direct_absorbed(k) + scattered*diffuse_absorbed(k))
+          end do
+          incident = beam*direct_incident + scattered*diffuse_incident
+          flux = cloud_reflectance(m)*flux + (1.0_real64 - cloud_diffuse_reflectance(m))*upward
+          do k = c - 1, 1, -1
+            next_flux = flux*diffuse(k)
+            absorbed(k) = absorbed(k) + weight(m)*(flux - next_flux)
+            flux = next_flux
+          end do
+        end if
         if (kind(m) == clear_subcolumn) then
           fluxes%clear_reflected_shortwave = fluxes%clear_reflected_shortwave + flux
           fluxes%clear_surface_incident_shortwave = fluxes%clear_surface_incident_shortwave + incident
@@ -594,11 +748,13 @@ contains
         any(band%rayleigh_diffuse_reflectance >= 1.0_real64)) error stop 'invalid band Rayleigh reflectance'
     if (.not. (band%magnification_numerator > 0.0_real64) .or. band%magnification_quadratic < 0.0_real64) &
       error stop 'invalid band magnification'
-    if (min(band%large_scale_cloud_shortwave_albedo, band%convective_cloud_shortwave_albedo, &
-            band%large_scale_cloud_longwave_emissivity, band%convective_cloud_longwave_emissivity) < 0.0_real64 .or. &
-        max(band%large_scale_cloud_shortwave_albedo, band%convective_cloud_shortwave_albedo, &
-            band%large_scale_cloud_longwave_emissivity, band%convective_cloud_longwave_emissivity) > 1.0_real64) &
-      error stop 'band cloud properties must lie in [0, 1]'
+    if (min(band%large_scale_cloud_longwave_emissivity, band%convective_cloud_longwave_emissivity) < 0.0_real64 .or. &
+        max(band%large_scale_cloud_longwave_emissivity, band%convective_cloud_longwave_emissivity) > 1.0_real64) &
+      error stop 'band cloud emissivities must lie in [0, 1]'
+    if (.not. (band%large_scale_cloud_optical_depth >= 0.0_real64) .or. &
+        .not. (band%convective_cloud_optical_depth >= 0.0_real64) .or. &
+        .not. (band%cloud_asymmetry_factor >= 0.0_real64 .and. band%cloud_asymmetry_factor < 1.0_real64)) &
+      error stop 'band cloud optical depths must be nonnegative and the asymmetry factor in [0, 1)'
   end subroutine validate_band_radiation_config
 
   !> Rejects cloud sub-columns outside [0, 1] or without a level in the column.

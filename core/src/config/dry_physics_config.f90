@@ -106,8 +106,13 @@ module dry_physics_config
     !> exp(-x) is taken as zero beyond this optical path.
     real(real64) :: maximum_optical_path = 200.0_real64
     !> Radiative properties of the large-scale and the convective cloud (docs/tendency/band-radiation.md, 6.3).
-    real(real64) :: large_scale_cloud_shortwave_albedo = 0.43_real64
-    real(real64) :: convective_cloud_shortwave_albedo = 0.43_real64
+    !> In the shortwave a cloud is a conservative delta-Eddington layer of visible
+    !> optical depth tau and asymmetry factor g: tau = 3.9 is the ISCCP D-series
+    !> global mean (Rossow and Schiffer 1999), g = 0.85 that of water droplets of
+    !> r_e = 10 um (Hansen and Travis 1974).
+    real(real64) :: large_scale_cloud_optical_depth = 3.9_real64
+    real(real64) :: convective_cloud_optical_depth = 3.9_real64
+    real(real64) :: cloud_asymmetry_factor = 0.85_real64
     real(real64) :: large_scale_cloud_longwave_emissivity = 1.0_real64
     real(real64) :: convective_cloud_longwave_emissivity = 1.0_real64
   end type band_radiation_config
