@@ -48,6 +48,7 @@ just run land-t63
 # 陸海ケースの地形を ETOPO 2022 から作った地球の地形に置き換えて T31 / T63 で5年間実行
 just run land-earth
 just run land-earth-t63
+# （T63 は対応する T31 の出力の最終状態から始めるので、先に land / land-earth を実行しておく）
 
 # ビジュアライザを起動し、http://127.0.0.1:8000 を開く（陸海ケースの出力だけを表示）
 just viz

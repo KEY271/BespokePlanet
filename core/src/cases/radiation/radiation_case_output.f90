@@ -432,7 +432,7 @@ contains
                                       duration, number_of_steps, maximum_cfl, elapsed_wall_seconds, nlon, mu, &
                                       pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
                                       a_half, b_half, options, terrain, terrain_diagnostics, &
-                                      earth_terrain, earth_terrain_diagnostics, q_flux)
+                                      earth_terrain, earth_terrain_diagnostics, q_flux, initial_condition)
     character(*), intent(in) :: case_directory, case_name
     type(dry_model_physics_config), intent(in) :: physics
     type(planet_config), intent(in) :: planet
@@ -447,6 +447,9 @@ contains
     type(earth_topography_config), intent(in), optional :: earth_terrain
     type(earth_topography_diagnostics), intent(in), optional :: earth_terrain_diagnostics
     type(q_flux_diagnostics), intent(in), optional :: q_flux
+    !> Replaces the description of the case's own initial condition (a restart).
+    !> An unallocated deferred-length actual argument counts as absent.
+    character(*), intent(in), optional :: initial_condition
     type(radiation_config) :: radiation
     logical :: earth
     integer :: unit
@@ -464,7 +467,9 @@ contains
     else
       write (unit, '(a)') '  "equation": "dry_hydrostatic_atmosphere",'
     end if
-    if (radiation%land_sea_mixing_enabled .and. earth) then
+    if (present(initial_condition)) then
+      write (unit, '(a)') '  "initial_condition": "'//initial_condition//'",'
+    else if (radiation%land_sea_mixing_enabled .and. earth) then
       write (unit, '(a)') '  "initial_condition": '// &
         '"pressure-coordinate Jablonowski-Williamson basic state over smoothed, truncated ETOPO 2022 terrain, '// &
         'mixed land and ocean",'

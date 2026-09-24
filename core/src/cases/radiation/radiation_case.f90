@@ -20,6 +20,7 @@ module radiation_case
   use dry_radiation, only: radiation_diagnostics, radiation_calendar_date
   use radiation_diagnostics_collector, only: radiation_case_diagnostics, radiation_monthly_means
   use filesystem, only: make_directory
+  use land_sea_restart, only: land_sea_restart_summary, set_land_sea_state_from_snapshot
   use radiation_case_output, only: radiation_output_options, initialize_radiation_daily_output, &
                                     append_radiation_daily_output, write_radiation_monthly_output, &
                                     write_radiation_yearly_snapshot, write_radiation_metadata
@@ -31,12 +32,19 @@ module radiation_case
   public :: run_land_earth_case, run_land_earth_t63_case
 
   real(real64), parameter :: radiation_time_step = dt
+  !> The T63 land cases halve the time step: the equilibrium subtropical jet
+  !> (about 110 m/s) gives an advective CFL of about 1.3 at T63 with dt
+  !> (docs/cases/land-sea.md#解像度).
+  real(real64), parameter, public :: land_t63_time_step = 600.0_real64
   integer, parameter :: radiation_number_of_years = 5
   !> The moist case is first run at a lower resolution than the other cases (docs/cases/moist.md).
   integer, parameter, public :: moist_case_truncation = 31
 
   integer, parameter :: ground_variant = 1, slab_ocean_variant = 2, moist_variant = 3, land_variant = 4
   integer, parameter :: land_earth_variant = 5
+  !> A land case above this truncation starts from the final yearly snapshot of the
+  !> same planet at this truncation (docs/cases/land-sea.md#t63-の初期値).
+  integer, parameter, public :: land_restart_source_truncation = 31
 
 contains
 
@@ -117,13 +125,20 @@ contains
     type(topography_diagnostics) :: terrain_diagnostics
     type(earth_topography_config) :: earth_terrain
     type(earth_topography_diagnostics) :: earth_terrain_diagnostics
+    type(harmonic_transform) :: source_transform
+    type(topography_diagnostics) :: source_terrain_diagnostics
+    type(earth_topography_diagnostics) :: source_earth_terrain_diagnostics
+    type(land_sea_restart_summary) :: restart_summary
     real(real64), allocatable :: land_fraction(:, :), analytic_height(:, :), truncated_height(:, :)
+    real(real64), allocatable :: source_land_fraction(:, :), source_analytic_height(:, :)
+    real(real64), allocatable :: source_truncated_height(:, :)
+    complex(real64), allocatable :: source_surface_geopotential(:, :)
     real(real64), allocatable :: q_flux(:, :)
     type(q_flux_diagnostics) :: q_flux_summary
     complex(real64), allocatable :: surface_geopotential(:, :)
     real(real64), allocatable :: pressure_half(:), delta_pressure(:), layer_l(:), alpha(:)
     real(real64), allocatable :: reference_temperature(:), a_half(:), b_half(:)
-    character(len=:), allocatable :: case_directory, case_name
+    character(len=:), allocatable :: case_directory, case_name, restart_directory, initial_condition
     integer :: completed_step, number_of_steps, daily_interval_steps
     integer :: month, month_boundary_step, year, year_boundary_step
     integer :: calendar_year, calendar_month, calendar_day, days_per_month, days_per_year
@@ -157,10 +172,14 @@ contains
         case_name = 'moist_land_sea_t31'
       else if (requested_truncation == 63) then
         case_name = 'moist_land_sea_t63'
+        numerics%time_step = land_t63_time_step
       else
         error stop 'land case supports only T31 and T63'
       end if
       if (variant == land_earth_variant) case_name = case_name(1:14)//'_earth'//case_name(15:)
+      if (requested_truncation > land_restart_source_truncation) then
+        restart_directory = context%output_root//'/'//case_name(1:len(case_name) - 3)//'t31'
+      end if
       options%include_deep_temperature = .true.
       options%include_moisture = .true.
       options%include_land_sea = .true.
@@ -190,7 +209,32 @@ contains
         call generate_earth_topography(transform, earth_terrain, land_fraction, analytic_height, &
                                        surface_geopotential, truncated_height, earth_terrain_diagnostics)
       end if
-      call set_land_sea_case_state(solver, transform, physics, planet, surface_geopotential, land_fraction)
+      if (allocated(restart_directory)) then
+        ! Regenerate the source terrain so that the source Phi_s is known exactly in spectral space.
+        call source_transform%init(land_restart_source_truncation)
+        if (variant == land_variant) then
+          call generate_topography(source_transform, terrain, source_land_fraction, source_analytic_height, &
+                                   source_surface_geopotential, source_truncated_height, source_terrain_diagnostics)
+        else
+          call generate_earth_topography(source_transform, earth_terrain, source_land_fraction, &
+                                         source_analytic_height, source_surface_geopotential, &
+                                         source_truncated_height, source_earth_terrain_diagnostics)
+        end if
+        call set_land_sea_state_from_snapshot(solver, transform, physics, planet, surface_geopotential, &
+          land_fraction, source_transform, source_surface_geopotential, source_land_fraction, restart_directory, &
+          radiation_number_of_years + 1, radiation_orbital_period(physics%radiation), restart_summary)
+        write (*, '(3a,i0,a,f0.1,a)') '  initial state: ', restart_directory, ' (T', &
+          restart_summary%source_truncation, ', t = ', restart_summary%source_time_seconds/solar_day, ' days)'
+        write (*, '(a,f0.4,a,i0,a,i0,a,i0)') '  max |d ln ps| (terrain) = ', &
+          restart_summary%maximum_log_surface_pressure_change, ', land fallback points = ', &
+          restart_summary%land_fallback_points, ', ocean fallback points = ', &
+          restart_summary%ocean_fallback_points, ', ice points = ', restart_summary%ice_points
+        initial_condition = 'final yearly snapshot of '//case_name(1:len(case_name) - 3)//'t31 '// &
+          '(zero-padded spectral state, ln p_s adjusted hydrostatically to this terrain, '// &
+          'grid surface fields interpolated with land and ocean masks)'
+      else
+        call set_land_sea_case_state(solver, transform, physics, planet, surface_geopotential, land_fraction)
+      end if
       call write_field(trim(case_directory)//'/land_fraction.bin', nlon, land_fraction)
       call write_field(trim(case_directory)//'/surface_height.bin', nlon, truncated_height)
     else
@@ -258,14 +302,16 @@ contains
                                     numerics%truncation, numerics%time_step, radiation_duration, number_of_steps, &
                                     maximum_cfl, elapsed_wall_seconds, nlon, transform%mu, &
                                     pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
-                                    a_half, b_half, options, terrain, terrain_diagnostics, q_flux=q_flux_summary)
+                                    a_half, b_half, options, terrain, terrain_diagnostics, q_flux=q_flux_summary, &
+                                    initial_condition=initial_condition)
     else if (variant == land_earth_variant) then
       call write_radiation_metadata(case_directory, case_name, physics, planet, &
                                     numerics%truncation, numerics%time_step, radiation_duration, number_of_steps, &
                                     maximum_cfl, elapsed_wall_seconds, nlon, transform%mu, &
                                     pressure_half, delta_pressure, layer_l, alpha, reference_temperature, &
                                     a_half, b_half, options, q_flux=q_flux_summary, earth_terrain=earth_terrain, &
-                                    earth_terrain_diagnostics=earth_terrain_diagnostics)
+                                    earth_terrain_diagnostics=earth_terrain_diagnostics, &
+                                    initial_condition=initial_condition)
     else
       call write_radiation_metadata(case_directory, case_name, physics, planet, &
                                     numerics%truncation, numerics%time_step, radiation_duration, number_of_steps, &
