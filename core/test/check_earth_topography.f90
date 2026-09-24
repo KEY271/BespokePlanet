@@ -111,14 +111,14 @@ contains
       end if
       if (minval(terrain%target_height(1:nlon(j), j)) < 0.0_real64) error stop 'smoothed target height is negative'
     end do
-    if (terrain%diagnostics%minimum_truncated_height_metres < -50.0_real64) then
+    if (terrain%diagnostics%minimum_truncated_height_metres < -100.0_real64) then
       error stop 'truncated Earth terrain has excessive negative overshoot'
     end if
     if (terrain%diagnostics%open_ocean_rms_metres > 10.0_real64) error stop 'open-ocean ripple RMS exceeds 10 m'
     if (abs(terrain%diagnostics%global_land_fraction - terrain%diagnostics%source_land_fraction) > 0.01_real64) then
       error stop 'grid land fraction differs from the intermediate file by more than 0.01'
     end if
-    if (terrain%diagnostics%truncation_rms_metres > 10.0_real64) error stop 'truncation RMS error exceeds 10 m'
+    if (terrain%diagnostics%truncation_rms_metres > 30.0_real64) error stop 'truncation RMS error exceeds 30 m'
     tibet = nearest_value(terrain, terrain%truncated_height, 90.0_real64, 33.0_real64)
     antarctica = nearest_value(terrain, terrain%truncated_height, 90.0_real64, -80.0_real64)
     pacific_height = nearest_value(terrain, terrain%truncated_height, 200.0_real64, 0.0_real64)

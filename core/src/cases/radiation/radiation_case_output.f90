@@ -1048,7 +1048,8 @@ contains
     write (unit, '(a)') '    "land_definition": "ETOPO surface elevation > 0 m",'
     write (unit, '(a)') '    "method": "land fraction: area average of the 0.5 degree cells over each grid '// &
       'point''s latitude band and longitude sector, not smoothed, kept on the grid; land height: Gaussian kernel '// &
-      'exp(-(theta/s)^2) in great-circle angle cut at window_factor * s, then g z_s truncated at T",'
+      'exp(-(theta/s)^2) in great-circle angle cut at window_factor * s, then g z_s truncated at T '// &
+      'and multiplied by exp(-residual_filter_strength (n(n+1)/(T(T+1)))^2)",'
     write (unit, '(a,es24.16e3,a)') '    "kernel_scale_factor": ', terrain%kernel_scale_factor, ','
     write (unit, '(a,es24.16e3,a)') '    "kernel_half_width_degrees": ', diagnostics%kernel_half_width_degrees, ','
     write (unit, '(a,es24.16e3,a)') '    "window_factor": ', terrain%window_factor, ','

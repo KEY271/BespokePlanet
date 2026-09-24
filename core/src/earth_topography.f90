@@ -2,7 +2,8 @@
 !> file (docs/dynamics/earth-topography.md).  The land fraction is the area average
 !> of the 0.5 degree cells over each grid point's own cell and is not smoothed; the
 !> land height is smoothed with a Gaussian kernel whose width follows the
-!> truncation before g z_s is truncated.  Same outputs as the analytic topography.
+!> truncation, g z_s is truncated, and a weak Hoskins filter damps the
+!> components near the truncation.  Same outputs as the analytic topography.
 module earth_topography
   use iso_fortran_env, only: real64
   use harmonics, only: harmonic_transform
@@ -21,11 +22,11 @@ module earth_topography
     character(len=128) :: data_path = 'data/earth_topography_0p5deg.bin'
     !> Half width s = kernel_scale_factor * 180 deg / T of the Gaussian kernel that
     !> smooths the land height before truncation.  The land fraction is not smoothed.
-    real(real64) :: kernel_scale_factor = 1.0_real64
+    real(real64) :: kernel_scale_factor = 0.75_real64
     !> The kernel is cut off at window_factor * s.
     real(real64) :: window_factor = 3.0_real64
     !> Residual spectral filter exp(-kappa (n(n+1)/(T(T+1)))^2) on Phi_s; 0 disables it.
-    real(real64) :: residual_filter_strength = 0.0_real64
+    real(real64) :: residual_filter_strength = 0.5_real64
     !> Ocean threshold of the diagnostics.  Grid points whose land fraction is below it
     !> are "ocean"; those whose kernel-smoothed land fraction is also below it are "open
     !> ocean", beyond the kernel's reach from any land, where z_s should be zero.
@@ -44,7 +45,7 @@ module earth_topography
     real(real64) :: maximum_truncated_height_metres = 0.0_real64
     real(real64) :: maximum_longitude_degrees = 0.0_real64
     real(real64) :: maximum_latitude_degrees = 0.0_real64
-    !> RMS of truncated minus smoothed target height.
+    !> RMS of truncated (and residual-filtered) minus smoothed target height.
     real(real64) :: truncation_rms_metres = 0.0_real64
     !> RMS of truncated minus raw cell heights box-averaged to the grid.
     real(real64) :: total_rms_metres = 0.0_real64
